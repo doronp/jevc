@@ -3,6 +3,7 @@ import { value, isUncertain, runReducer, choiceOf, evaluate } from '../src/runti
 import type { Program } from '../src/ir.js'
 import type { JevAnswer } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
+import { BadRequestError, APITimeoutError } from '@typesafe-ai/sdk'
 
 const p: Program = {
   decisions: [
@@ -51,6 +52,26 @@ describe('isUncertain', () => {
       probabilities: { source: 0.52, build: 0.48 }, confidence: 0.13 } })
     expect(isUncertain(low, 'target', p)).toBe(true)
   })
+  it('uses confidence for a score, same as choice', () => {
+    const low = answers({ radius: { type: 'score', score: 2.0,
+      legend: { '0': 'one file', '1': 'one dir', '2': 'whole repo' },
+      probabilities: { '0': 0, '1': 0, '2': 1 }, confidence: 0.4 } })
+    expect(isUncertain(low, 'radius', p)).toBe(true)
+    expect(isUncertain(answers(), 'radius', p)).toBe(false) // default confidence 0.97
+  })
+  it('fails loudly on a noul answer paired with a decision that has no band', () => {
+    // "target" is a choice decision, so uncertaintyOf gives it belowConfidence, not a band —
+    // pairing it with a noul-shaped answer is malformed data the function must not silently accept.
+    const mismatched: Record<string, JevAnswer> = { ...answers(), target: { type: 'noul', noul: 0.5 } }
+    expect(() => isUncertain(mismatched, 'target', p)).toThrow(/is a noul but has no band/)
+  })
+  it('fails loudly on a non-noul answer paired with a noul decision', () => {
+    // "destructive" is a noul decision, so uncertaintyOf always gives it a band, never
+    // belowConfidence — pairing it with a choice-shaped answer must not be silently accepted.
+    const mismatched: Record<string, JevAnswer> = { ...answers(),
+      destructive: { type: 'choice', choice: 'x', probabilities: { x: 1 }, confidence: 0.9 } }
+    expect(() => isUncertain(mismatched, 'destructive', p)).toThrow(/needs belowConfidence/)
+  })
 })
 
 describe('runReducer', () => {
@@ -71,6 +92,15 @@ describe('runReducer', () => {
       destructive: { type: 'noul', noul: 0.05 },
       target: { type: 'choice', choice: 'build', probabilities: { source: 0.1, build: 0.9 }, confidence: 0.9 },
     }))).toBe('allow')
+  })
+  it('prefers the earlier matching rule even when a later rule also matches', () => {
+    // Defaults (destructive 0.95, radius 2.0) already satisfy rule 2's deny condition;
+    // overriding only `target` to "build" makes rule 3's allow condition true too. First
+    // match must win — this is the whole reason the reducer replaces the model's verdict.
+    const bothMatch = answers({
+      target: { type: 'choice', choice: 'build', probabilities: { source: 0.1, build: 0.9 }, confidence: 0.9 },
+    })
+    expect(runReducer(p, bothMatch)).toBe('deny')
   })
 })
 
@@ -109,5 +139,51 @@ describe('evaluate', () => {
     expect(result.usage).toEqual({ input_tokens: 10, output_tokens: 5 })
     expect(result.uncertain).toEqual([])
     expect(result.latencyMs).toBe(7)
+  })
+
+  // Fix round 1, item 1: the SDK derives `APIError.message` (and Node then derives `.stack`
+  // from it) from the *body* at throw time, inside the SDK's own constructor — before
+  // evaluate()'s catch block ever runs. Mutating `.body` afterwards cannot retroactively
+  // scrub an already-computed message. This body has no `error`/`message`/`detail` field the
+  // SDK recognizes, so it falls back to JSON-stringifying the whole body into the message —
+  // exactly the "body echoes state at top level" case that leaks today.
+  it('never leaks state into the caught error message or stack', async () => {
+    const secretState = 'super-secret-token-should-never-be-logged'
+    const leakyBody = { context: { input: secretState } }
+    const thrown = new BadRequestError(400, leakyBody, new Headers({ 'x-typesafe-request-id': 'req-1' }))
+    // Prove the vulnerability is real and in the SDK, independent of jevc's fix.
+    expect(thrown.message).toContain(secretState)
+
+    const fakeClient = { systemOne: async () => { throw thrown } }
+    let caught: unknown
+    try {
+      await evaluate(p, secretState, { client: fakeClient as unknown as TypeSafeClient })
+      throw new Error('expected evaluate to reject')
+    } catch (e) {
+      caught = e
+    }
+
+    expect(caught).toBeInstanceOf(BadRequestError)
+    const err = caught as BadRequestError
+    expect(err.message).not.toContain(secretState)
+    expect(String(err.stack)).not.toContain(secretState)
+    // The existing body redaction mechanism (strips `input` fields) still applies.
+    expect(err.body).toEqual({ context: { input: '[redacted]' } })
+    // Class identity and request id survive the rebuild.
+    expect(err.status).toBe(400)
+    expect(err.requestId).toBe('req-1')
+  })
+
+  it('propagates a connection/timeout error unmodified (no body to redact)', async () => {
+    const thrown = new APITimeoutError(5_000)
+    const fakeClient = { systemOne: async () => { throw thrown } }
+    let caught: unknown
+    try {
+      await evaluate(p, 'some state', { client: fakeClient as unknown as TypeSafeClient })
+      throw new Error('expected evaluate to reject')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBe(thrown)
   })
 })
