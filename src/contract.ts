@@ -1,4 +1,8 @@
-export type EntryType = string | Record<string, unknown> | unknown[] | null
+// Mirrors the SDK's JsonValue/EntryType shape (see test/contract.sdk-compat.test-d.ts):
+// `unknown` isn't assignable to the SDK's JSON-only value type, so the wire
+// contract has to be expressed in JSON-safe values too.
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type EntryType = string | Record<string, JsonValue> | JsonValue[] | null
 
 export type JevQuestion =
   | { type: 'noul'; instructions: EntryType; criteria?: { true?: EntryType; false?: EntryType } | null }
@@ -8,16 +12,21 @@ export type JevQuestion =
 export type JevModel = 'jev-latest' | 'jev-preview' | 'jev-1.13.0'
 export const MODELS: readonly JevModel[] = ['jev-latest', 'jev-preview', 'jev-1.13.0']
 
+// The API silently ignores unknown fields (spec §3.1: a typo like `criterion`
+// never errors), so jevc has to whitelist what it emits instead.
+const REQUEST_FIELDS = ['model', 'state', 'questions'] as const
+const QUESTION_FIELDS = ['type', 'instructions', 'criteria'] as const
+
 export type JevRequest = {
   model: JevModel
-  state: string | Record<string, unknown> | unknown[]
+  state: string | Record<string, JsonValue> | JsonValue[]
   questions: Record<string, JevQuestion>
 }
 
 export type JevAnswer =
   | { type: 'noul'; noul: number }
   | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
-  | { type: 'score'; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+  | { type: 'score'; score: number; legend: Record<string, EntryType>; probabilities: Record<string, number>; confidence: number }
 
 export type JevResponse = {
   model: string
@@ -77,6 +86,13 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
       'State is empty. The API accepts this with 200 and answers from no evidence.')
   }
 
+  for (const key of Object.keys(req)) {
+    if (!(REQUEST_FIELDS as readonly string[]).includes(key)) {
+      err('unknown_field', key,
+        `Unknown field "${key}" on the request. The API silently ignores it. Legal fields: ${REQUEST_FIELDS.join(', ')}.`)
+    }
+  }
+
   const ids = Object.keys(req.questions)
   if (ids.length === 0) {
     err('questions_empty', 'questions', 'At least one question is required.')
@@ -87,6 +103,13 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
     const at = `questions.${id}`
     if (id === '') {
       err('id_empty', at, 'Question id cannot be empty.')
+    }
+
+    for (const key of Object.keys(q)) {
+      if (!(QUESTION_FIELDS as readonly string[]).includes(key)) {
+        err('unknown_field', `${at}.${key}`,
+          `Unknown field "${key}" on question "${id}". The API silently ignores it. Legal fields: ${QUESTION_FIELDS.join(', ')}.`)
+      }
     }
 
     if (q.type === 'score') {
