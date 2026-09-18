@@ -56,6 +56,11 @@ export function validateProgram(p: Program): ValidationIssue[] {
     }
     seen.add(d.id)
 
+    if ((d.kind === 'choice' || d.kind === 'score') && !d.criteria) {
+      err('criteria_missing', `decisions.${d.id}`,
+        `"${d.id}" is a ${d.kind} decision with no criteria. A noul may omit criteria, but ${d.kind} decisions require it (options for choice, levels for score).`)
+    }
+
     if (d.kind === 'noul' && d.uncertain && 'belowConfidence' in d.uncertain) {
       err('noul_has_no_confidence', `decisions.${d.id}.uncertain`,
         'A noul answer carries no confidence field; its probability is the answer. Use a band instead.')
@@ -98,11 +103,17 @@ export function lintProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
 
   for (const d of p.decisions) {
-    // Rule 1 — never emit a collapsed verdict question.
-    if (d.kind === 'choice' && d.criteria && !Array.isArray(d.criteria)) {
-      const opts = Object.keys(d.criteria).map(o => o.toLowerCase())
+    // Rule 1 — never emit a collapsed verdict question. Two independent signals:
+    // the option vocabulary (verdict-shaped words) and the instructions' framing
+    // (verdict-shaped phrasing), since a domain-named verdict set like
+    // {allow, deny, quarantine, sandbox} doesn't trip the vocabulary check alone.
+    if (d.kind === 'choice') {
+      const opts = d.criteria && !Array.isArray(d.criteria) ? Object.keys(d.criteria).map(o => o.toLowerCase()) : []
       const verdictish = opts.filter(o => VERDICT_WORDS.has(o)).length
-      if (verdictish >= 2 && verdictish >= opts.length - 1) {
+      const vocabCollapse = opts.length > 0 && verdictish >= 2 && verdictish >= opts.length - 1
+      const framingCollapse = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
+        .test(d.instructions.toLowerCase())
+      if (vocabCollapse || framingCollapse) {
         out.push({
           code: 'collapsed_verdict', path: `decisions.${d.id}`, severity: 'error',
           message: `"${d.id}" asks the model for a verdict (${opts.join('/')}). Measured: collapsed verdict questions return near-uniform distributions (allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13) while narrow evidence questions on the same input reach 0.93-0.97. Ask for evidence; the verdict must be computed in code by the reducer.`,
@@ -110,9 +121,13 @@ export function lintProgram(p: Program): ValidationIssue[] {
       }
     }
 
-    // Rule 3 — never emit a question spanning two scopes.
+    // Rule 3 — never emit a question spanning two scopes. The trailing ", or ...?"
+    // alternative is guarded against an earlier bare "or" in the same instructions:
+    // that earlier "or" is very likely enumerating options within one scope (e.g.
+    // "matching *.env or *.key") rather than introducing a second independent clause,
+    // so a trailing ", or <clause>?" after it is not treated as compound.
     const text = d.instructions.toLowerCase()
-    if (/\bor did it\b|\bor whether\b|, or .*\?|\band also\b/.test(text)) {
+    if (/\bor did it\b|\bor whether\b|^(?:(?!\bor\b)[\s\S])*, or\s+[^,?]{0,60}\?|\band also\b/.test(text)) {
       out.push({
         code: 'compound_question', path: `decisions.${d.id}`, severity: 'warn',
         message: `"${d.id}" appears to ask two things at once. Measured: a compound authorization question returned 0.59 — the wrong side of 0.5 — because it anchored on the authorized half of a command. Split it by scope.`,
