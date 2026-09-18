@@ -133,6 +133,27 @@ export function lintProgram(p: Program): ValidationIssue[] {
         message: `"${d.id}" appears to ask two things at once. Measured: a compound authorization question returned 0.59 — the wrong side of 0.5 — because it anchored on the authorized half of a command. Split it by scope.`,
       })
     }
+
+    // Rule 4 — carve-outs and exceptions are allowlists; a question that embeds one
+    // ("... except anything under test/fixtures/") is the shape that produces the
+    // near-uniform verdict distribution. Heuristic on wording, so it warns rather
+    // than blocks — it can both miss a phrasing and over-flag a legitimate "unless".
+    if (/\b(except|unless|other than|aside from)\b/.test(text)) {
+      out.push({
+        code: 'embedded_carveout', path: `decisions.${d.id}`, severity: 'warn',
+        message: `"${d.id}" appears to embed a carve-out or exception in the question text. Measured: declared deny-patterns matched semantics at 0.25/0.10/0.14 while the semantic question on the same input hit 0.96/0.87/0.85. Carve-outs are allowlists — put them in \`reduce\` or in code, not in the question.`,
+      })
+    }
+
+    // Rule 5 — pattern and glob matching stays in code; a model asked to match a
+    // literal pattern performs far worse than one asked the equivalent semantic
+    // question. Heuristic on a few glob-shaped tokens, so it warns rather than blocks.
+    if (/\*\.|\/\*|\*\//.test(text)) {
+      out.push({
+        code: 'embedded_pattern', path: `decisions.${d.id}`, severity: 'warn',
+        message: `"${d.id}" appears to embed a glob or pattern in the question text. Measured: declared deny-patterns matched semantics at 0.25/0.10/0.14 while the semantic question on the same input hit 0.96/0.87/0.85. Pattern matching stays in code — ask only what a pattern cannot express.`,
+      })
+    }
   }
 
   // Rule 2 — never emit two questions where one determines the other.
