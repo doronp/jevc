@@ -799,7 +799,7 @@
         }
       },
       "measured": {
-        "answers": "{\"claim_1_total_revenue\":{\"type\":\"noul\",\"noul\":0.99},\"claim_2_subscription_growth\":{\"type\":\"noul\",\"noul\":0.99},\"claim_3_services_growth\":{\"type\":\"noul\",\"noul\":0.01},\"claim_4_raised_both_guidances\":{\"type\":\"noul\",\"noul\":0.02},\"claim_5_net_adds_with_cause\":{\"type\":\"noul\",\"noul\":0.04},\"claim_3_direction_reversed\":{\"type\":\"noul\",\"noul\":0.98}},",
+        "answers": "{\"claim_1_total_revenue\":{\"type\":\"noul\",\"noul\":0.99},\"claim_2_subscription_growth\":{\"type\":\"noul\",\"noul\":0.99},\"claim_3_services_growth\":{\"type\":\"noul\",\"noul\":0.01},\"claim_4_raised_both_guidances\":{\"type\":\"noul\",\"noul\":0.02},\"claim_5_net_adds_with_cause\":{\"type\":\"noul\",\"noul\":0.04},\"claim_3_direction_reversed\":{\"type\":\"noul\",\"noul\":0.98}}",
         "latency_ms": 778,
         "model": "jev-1.13.0",
         "verdict": "keep",
