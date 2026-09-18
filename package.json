@@ -8,8 +8,9 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "check:live": "node dist/cli.js check --live"
   },
   "dependencies": { "@typesafe-ai/sdk": "^0.6.0" },
-  "devDependencies": { "typescript": "^5.6.0", "vitest": "^2.1.0", "@types/node": "^20.16.0" }
+  "devDependencies": { "typescript": "^5.6.0", "vitest": "^5.0.1", "@types/node": "^22.10.0" }
 }
