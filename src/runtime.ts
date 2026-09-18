@@ -1,4 +1,4 @@
-import { TypeSafeClient } from '@typesafe-ai/sdk'
+import { TypeSafeClient, APIError } from '@typesafe-ai/sdk'
 import type { SystemOneRequest } from '@typesafe-ai/sdk'
 import type { JevAnswer, JevModel, JevRequest } from './contract.js'
 import { redactErrorBody, validateRequest } from './contract.js'
@@ -93,8 +93,25 @@ export async function evaluate(
     // and it is the narrowest cast that compiles at this boundary.
     res = await client.systemOne(req as SystemOneRequest)
   } catch (e) {
-    const err = e as { body?: unknown }
-    if (err && typeof err === 'object' && 'body' in err) err.body = redactErrorBody(err.body)
+    // The SDK derives `.message` from `.body` inside its own `APIError` constructor, at
+    // throw time — before this catch block runs — and Node derives `.stack` from that
+    // message immediately after. Reassigning `.body` here cannot retroactively scrub an
+    // already-computed message: a body with no recognized `error`/`message`/`detail` field
+    // falls back to a raw `JSON.stringify` of the whole body, and the 422 envelope is known
+    // to echo the whole request — state included (see `redactErrorBody`). So rebuild the
+    // same error class with a redacted body and a fixed, safe message instead of mutating
+    // the one we caught; that bypasses `describe()` entirely and keeps `instanceof` intact.
+    // Non-`APIError` failures (`APIConnectionError`, `APITimeoutError`, `APIUserAbortError`)
+    // carry no `status`/`body` to redact, so they propagate unchanged.
+    if (e instanceof APIError) {
+      const rebuilt = Reflect.construct(e.constructor, [
+        e.status,
+        redactErrorBody(e.body),
+        e.headers,
+        `${e.status} request failed (body redacted)`,
+      ]) as APIError
+      throw rebuilt
+    }
     throw e
   }
   const latencyMs = clock() - t0
