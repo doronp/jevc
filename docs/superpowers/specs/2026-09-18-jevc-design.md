@@ -86,7 +86,7 @@ type Decision = {
   criteria: { true: string; false: string } | Record<string, string | null> | string[]
   fires?: { gte?: number; lte?: number; is?: string }
   then?: string
-  escalateBelowConfidence?: number
+  uncertain?: { belowConfidence?: number } | { band: [number, number] }
   source?: { file: string; line: number; quote: string }
 }
 
@@ -102,6 +102,12 @@ Two fields carry the weight:
 `fires` / `then` encode what a prompt never states explicitly — the threshold at which
 a judgment changes program behaviour. This is the difference between a classifier and
 a decision.
+
+`uncertain` is type-dependent, and deliberately so. `choice` and `score` return a
+`confidence`, so uncertainty is `belowConfidence`. **`noul` returns no confidence at
+all** — its probability *is* its answer — so uncertainty for a noul is a `band` around
+the middle (default `[0.35, 0.65]`): decisive at either end, escalate in between. The
+validator rejects `belowConfidence` on a noul rather than silently ignoring it.
 
 `source` carries provenance back to the originating line of natural language, so
 `jevc explain <id>` can always answer "why does this question exist". Per TypeSafe's
