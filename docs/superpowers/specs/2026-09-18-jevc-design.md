@@ -127,7 +127,6 @@ type Decision = {
 type Program = {
   decisions: Decision[]          // evidence questions only, never verdicts (see 4b)
   reduce: Reducer                // verdict computed in code from the evidence
-  stateBuilder?: StateBuilder    // how to assemble `state` at call time
   residual: string               // what still needs an LLM; '' when fully compiled
   dropped: Array<{ reason: string; quote: string }>
 }
@@ -150,14 +149,6 @@ not be asked of the model, every `Program` carries the code that derives it from
 evidence answers. It is generated, checked in, and reviewed like any other code — which
 is the point: the arbitration logic becomes visible and testable instead of hiding
 inside a model's near-uniform distribution.
-
-`stateBuilder` exists because in the harness domain **state is a runtime payload, not a
-document**. A PreToolUse rule is evaluated against `tool_name` + `tool_input` + `cwd`
-plus context a hook assembles cheaply (recent user turns, session tool history, git
-context, the nearest `AGENTS.md`). So compiling a rule emits two artifacts: the pure
-state-builder and the questions map. A rule whose evidence the builder cannot supply is
-not compilable, and `jevc` says so rather than emitting a question that will be answered
-from thin air.
 
 `source` carries provenance back to the originating line of natural language, so
 `jevc explain <id>` can always answer "why does this question exist". Per TypeSafe's
@@ -393,6 +384,8 @@ src/ir.ts            Decision / Program + schema
 src/from-schema.ts   JSON Schema | Zod | tool-def -> IR   (deterministic)
 src/from-prompt.ts   natural language -> IR               (agent lift + validate)
 src/compile.ts       IR -> request | decisions.ts | residual
+src/emit/capability.ts  what each target can express; refuses rather than drops
+src/emit/policy/     bouncer + toolgate YAML
 src/runtime.ts       evaluate()
 src/eval.ts          fixture runner + calibration report
 src/cli.ts           jevc
