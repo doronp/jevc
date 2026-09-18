@@ -32,6 +32,7 @@ function constOptions(s: JsonSchema): string[] | null {
 export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {}): Program {
   const decisions: Decision[] = []
   const dropped: Program['dropped'] = []
+  const residualParts: string[] = []
 
   const visit = (props: Record<string, JsonSchema>, prefix: string): void => {
     for (const [key, s] of Object.entries(props)) {
@@ -63,16 +64,70 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         continue
       }
 
+      // Bounded integer -> score, one level per value.
+      if ((s.type === 'integer' || s.type === 'number') &&
+          typeof s.minimum === 'number' && typeof s.maximum === 'number') {
+        const n = s.maximum - s.minimum + 1
+        if (n < 2) {
+          dropped.push({ reason: `"${id}" spans ${n} value(s); a score needs at least 2 levels.`, quote: key })
+          continue
+        }
+        if (n > 10) {
+          dropped.push({ reason: `"${id}" spans ${n} values; a score takes at most 10 levels. Bucket it, or keep it in code.`, quote: key })
+          continue
+        }
+        decisions.push({
+          id, kind: 'score',
+          instructions: desc ?? `Rate ${key}.`,
+          criteria: Array.from({ length: n }, (_, i) => `${key} = ${s.minimum! + i}`),
+        })
+        dropped.push({
+          reason: `"${id}" score levels are undescribed — generated from the numeric range. Describe each level concretely before shipping; an undescribed level destroys the distribution.`,
+          quote: key,
+        })
+        continue
+      }
+
+      // Multi-label: array of enum -> one noul per label.
+      if (s.type === 'array' && s.items) {
+        const labels = constOptions(s.items)
+        if (labels && labels.length >= 1) {
+          for (const label of labels) {
+            decisions.push({
+              id: `${id}.${label}`, kind: 'noul',
+              instructions: desc ? `${desc} Specifically: does "${label}" apply?` : `Does "${label}" apply to ${key}?`,
+            })
+          }
+          continue
+        }
+        residualParts.push(`- ${id}: ${desc ?? `array of ${String(s.items.type)}`} (unbounded extraction — Jev cannot generate this)`)
+        continue
+      }
+
+      // Nested object -> recurse, dotted ids.
+      if (s.type === 'object' && s.properties) {
+        visit(s.properties, id)
+        continue
+      }
+
+      // A const encodes no decision at all.
+      if ('const' in s) continue
+
+      // Free text -> residual. This is a first-class output, not a failure.
+      if (s.type === 'string') {
+        residualParts.push(`- ${id}: ${desc ?? 'free text'} (text generation — Jev emits no strings)`)
+        continue
+      }
+
       dropped.push({ reason: `"${id}" (${String(s.type)}) has no System One equivalent.`, quote: key })
     }
   }
 
   visit(schema.properties ?? {}, '')
 
-  return {
-    decisions,
-    reduce: { kind: 'rules', rules: [], otherwise: 'review' },
-    residual: '',
-    dropped,
-  }
+  const residual = residualParts.length
+    ? `The following still require a generative model:\n${residualParts.join('\n')}`
+    : ''
+
+  return { decisions, reduce: { kind: 'rules', rules: [], otherwise: 'review' }, residual, dropped }
 }
