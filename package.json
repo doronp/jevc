@@ -1,0 +1,15 @@
+{
+  "name": "jevc",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "jevc": "./dist/cli.js" },
+  "exports": { ".": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "check:live": "node dist/cli.js check --live"
+  },
+  "dependencies": { "@typesafe-ai/sdk": "^0.6.0" },
+  "devDependencies": { "typescript": "^5.6.0", "vitest": "^2.1.0", "@types/node": "^20.16.0" }
+}
