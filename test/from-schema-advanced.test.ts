@@ -6,7 +6,14 @@ describe('fromJsonSchema — advanced', () => {
     const p = fromJsonSchema({ type: 'object', properties: {
       severity: { type: 'integer', minimum: 1, maximum: 3, description: 'How severe?' } } })
     expect(p.decisions[0].kind).toBe('score')
-    expect(p.decisions[0].criteria).toHaveLength(3)
+    expect(p.decisions[0].criteria).toEqual(['severity = 1', 'severity = 2', 'severity = 3'])
+  })
+
+  it('does NOT treat a continuous number range as a score', () => {
+    const p = fromJsonSchema({ type: 'object', properties: {
+      confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Model confidence in the extraction' } } })
+    expect(p.decisions).toHaveLength(0)
+    expect(p.dropped[0].reason).toMatch(/no discrete-level equivalent/)
   })
 
   it('warns that generated score levels are undescribed', () => {
@@ -55,5 +62,6 @@ describe('fromJsonSchema — advanced', () => {
     const p = fromJsonSchema({ type: 'object', properties: { version: { const: 1 } } })
     expect(p.decisions).toHaveLength(0)
     expect(p.residual).toBe('')
+    expect(p.dropped).toHaveLength(0)
   })
 })
