@@ -144,4 +144,25 @@ describe('lintProgram — the decomposition law', () => {
       instructions: 'Is this a config file, matching *.env or *.key, or should it be ignored?' })
     expect(lintProgram(p).some(i => i.code === 'compound_question')).toBe(false)
   })
+
+  it('warns when a carve-out or exception is embedded in the question text', () => {
+    const p = prog()
+    p.decisions.push({ id: 'is_protected_delete', kind: 'noul',
+      instructions: 'Does this delete a file, except anything under test/fixtures/?' })
+    expect(lintProgram(p).some(i => i.code === 'embedded_carveout')).toBe(true)
+  })
+
+  it('warns when a glob or pattern is embedded in the question text', () => {
+    const p = prog()
+    p.decisions.push({ id: 'matches_deny_glob', kind: 'noul',
+      instructions: 'Does the changed path match *.env or *.key?' })
+    expect(lintProgram(p).some(i => i.code === 'embedded_pattern')).toBe(true)
+  })
+
+  it('does not warn about a carve-out or pattern when the question contains neither', () => {
+    const p = prog()
+    const codes = lintProgram(p).map(i => i.code)
+    expect(codes).not.toContain('embedded_carveout')
+    expect(codes).not.toContain('embedded_pattern')
+  })
 })

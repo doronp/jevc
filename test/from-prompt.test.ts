@@ -17,6 +17,14 @@ describe('buildLiftRequest', () => {
   it('demands provenance on every decision', () => {
     expect(buildLiftRequest(AGENTS, 'AGENTS.md')).toMatch(/source.*line/i)
   })
+  it('tells the agent about `dependsOn`, since it is the only way rule 2 can fire', () => {
+    expect(buildLiftRequest(AGENTS, 'AGENTS.md')).toContain('dependsOn')
+  })
+  it('does not overclaim enforcement: only the verdict rule is a hard error, the rest warn', () => {
+    const req = buildLiftRequest(AGENTS, 'AGENTS.md')
+    expect(req).toMatch(/hard error/i)
+    expect(req).toMatch(/warning/i)
+  })
 })
 
 describe('parseLiftResponse', () => {
@@ -93,4 +101,50 @@ describe('parseLiftResponse', () => {
     })
     expect(parseLiftResponse(bad, AGENTS, 'AGENTS.md').issues[0].code).toBe('provenance_too_short')
   })
+
+  it('strips a fenced code block regardless of language tag or case', () => {
+    const fenced = '```JavaScript\n' + good + '\n```'
+    const { issues } = parseLiftResponse(fenced, AGENTS, 'AGENTS.md')
+    expect(issues).toEqual([])
+  })
+})
+
+// A model can plausibly return any of these shapes for "no decisions" or a
+// half-formed answer. `validateProgram`/`lintProgram` assume well-typed input
+// (true on the deterministic path, where `fromJsonSchema` builds it), so on this
+// path `parseLiftResponse` must catch what would otherwise be an uncaught throw
+// and turn it into a reportable issue instead.
+describe('parseLiftResponse never throws on plausible malformed model output', () => {
+  const throwingInputs: Array<[string, string]> = [
+    ['a bare top-level null', 'null'],
+    ['a null entry in decisions', JSON.stringify({
+      decisions: [null],
+      reduce: { kind: 'rules', rules: [], otherwise: 'ask' }, residual: '', dropped: [],
+    })],
+    ['a bare string entry in decisions', JSON.stringify({
+      decisions: ['x'],
+      reduce: { kind: 'rules', rules: [], otherwise: 'ask' }, residual: '', dropped: [],
+    })],
+    ['source as a string instead of an object', JSON.stringify({
+      decisions: [{ id: 'x', kind: 'noul', instructions: 'q', source: 'AGENTS.md line 2' }],
+      reduce: { kind: 'rules', rules: [], otherwise: 'ask' }, residual: '', dropped: [],
+    })],
+    ['reduce.rules missing entirely', JSON.stringify({
+      decisions: [], reduce: { kind: 'rules', otherwise: 'ask' }, residual: '', dropped: [],
+    })],
+    ['a rule.when that is a bare condition object, not an array', JSON.stringify({
+      decisions: [],
+      reduce: { kind: 'rules', rules: [{ when: { id: 'x', op: 'gte', value: 1 }, then: 'ask' }], otherwise: 'ask' },
+      residual: '', dropped: [],
+    })],
+  ]
+
+  for (const [label, json] of throwingInputs) {
+    it(`returns issues instead of throwing for: ${label}`, () => {
+      let result: ReturnType<typeof parseLiftResponse> | undefined
+      expect(() => { result = parseLiftResponse(json, AGENTS, 'AGENTS.md') }).not.toThrow()
+      expect(result!.issues.length).toBeGreaterThan(0)
+      expect(result!.issues.every(i => i.severity === 'error')).toBe(true)
+    })
+  }
 })
