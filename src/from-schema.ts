@@ -64,9 +64,20 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         continue
       }
 
-      // Bounded integer -> score, one level per value.
-      if ((s.type === 'integer' || s.type === 'number') &&
-          typeof s.minimum === 'number' && typeof s.maximum === 'number') {
+      // Bounded integer -> score, one level per value. A continuous `number` range has
+      // no discrete-level equivalent — collapsing it would blur the level-index space
+      // a score lives in with the 0..1 probability space a noul answer lives in.
+      if (s.type === 'number' && typeof s.minimum === 'number' && typeof s.maximum === 'number') {
+        dropped.push({
+          reason: `"${id}" is a continuous range with no discrete-level equivalent for a score. Bucket it into described levels, or — if it is a 0..1 probability — model it as a noul, whose answer is itself a 0..1 probability.`,
+          quote: key,
+        })
+        continue
+      }
+
+      if (s.type === 'integer' &&
+          typeof s.minimum === 'number' && Number.isInteger(s.minimum) &&
+          typeof s.maximum === 'number' && Number.isInteger(s.maximum)) {
         const n = s.maximum - s.minimum + 1
         if (n < 2) {
           dropped.push({ reason: `"${id}" spans ${n} value(s); a score needs at least 2 levels.`, quote: key })
