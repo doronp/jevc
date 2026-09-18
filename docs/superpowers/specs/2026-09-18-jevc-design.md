@@ -254,13 +254,29 @@ than predicted values.
 
 ## 7. Outputs
 
-| Output | Command | Use |
+One `Program`, four emitters plus policy output. The IR exists precisely so these
+grow independently.
+
+| Emitter | `--emit` | Target | Carries uncertainty? |
+| --- | --- | --- | --- |
+| **native** | `sdk` | `@typesafe-ai/sdk@0.6` — `as const` TS codegen | yes |
+| **ai-sdk** | `ai-sdk` | `@ai-sdk/typesafe-ai@3` (`EvaluationModelV4`) | **degraded** — see below |
+| **langchain** | `langchain` | `langchain-typesafe` (Python) incl. middleware config | yes |
+| **json** | `json` | plain request JSON for curl/Go/Rust | n/a |
+
+The Vercel `EvaluationModelV4` spec **renames the primitives**: `noul`→`boolean`,
+answer field `noul`→`probability`, and it drops `confidence` and `legend` entirely. It
+also reads a different env var (`TYPESAFE_AI_API_KEY`) and a different baseURL
+(`.../v1`). Where a compiled decision's uncertainty rule depends on `confidence`, that
+emitter must either recompute it from the probability distribution or refuse to emit —
+the transpiler will not silently drop an uncertainty rule. Which of the two applies is
+being confirmed against the real type signatures before implementation.
+
+| Other output | Command | Use |
 | --- | --- | --- |
-| `JevRequest` | library | direct runtime call |
-| `decisions.ts` | `jevc compile -o` | checked in, reviewed in PRs, imported by app code |
 | residual prompt | `jevc compile --residual` | the shrunken LLM prompt |
-| hook config | `jevc guard --install` | Claude Code PreToolUse |
-| calibration report | `jevc eval` | measured behaviour per decision |
+| incumbent policy | `jevc emit-policy --for bouncer\|toolgate\|jev-guard` | see §9 |
+| calibration report | `jevc check` | measured behaviour per decision |
 
 ### 7.1 Codegen constraint: preserve literal types
 
@@ -289,39 +305,40 @@ matched, the resolved `then`, and an `escalate` flag when confidence falls below
 hand the uncertain case to a reasoning model or a human, which is the correct use of
 a calibrated model and the reason calibration matters at all.
 
-## 9. Claude Code guardrail hook
+## 9. Policy emitters for incumbent guardrails
 
-`hooks/pretooluse.ts` reads the PreToolUse payload on stdin (`tool_name`, `tool_input`,
-`cwd`, `transcript_path`), evaluates a decision set compiled from the project's own
-`AGENTS.md`/`CLAUDE.md`, and returns a `permissionDecision` of `allow` / `ask` / `deny`
-with a reason.
+A prior-art sweep found **seven** shipped Claude Code Jev guardrail hooks
+(`bouncer`, `toolgate`, `jev-guard`, `agent-guard`, `jev-gate`, `jev-claude`,
+`limpet`) and **eight** Jev CLIs. Building hook #8 would be the least valuable thing
+this project could do.
 
-**Default posture: `ask` on uncertainty, configurable to log-only** via
-`jevc.config.json`. Log-only records what it *would* have done without blocking
-anything, so the decision set can be calibrated against real traffic before it is
-given authority. Fail-open is mandatory: any API error, timeout, or missing key exits
-0 with no decision. A guardrail that bricks the agent when TypeSafe has an incident is
-worse than no guardrail.
+Critically: **none of the fifteen lowers anything.** Every one takes questions a human
+already wrote by hand. So they are competitors for the surface and have zero overlap
+with the core.
 
-Verified contract. stdin carries `session_id`, `transcript_path`, `cwd`,
-`permission_mode`, `hook_event_name`, `tool_name`, `tool_input`, `tool_use_id`
-(plus `prompt_id`, `scratchpad_dir`, `effort` when available). stdout is:
+`jevc` therefore emits *policy for them* rather than replacing them:
 
-```json
-{ "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow" | "deny" | "ask",
-    "permissionDecisionReason": "..." } }
+```
+jevc emit-policy --for bouncer   AGENTS.md   # -> bouncer YAML
+jevc emit-policy --for toolgate  AGENTS.md   # -> toolgate YAML (static rules + model layer)
+jevc emit-policy --for jev-guard AGENTS.md   # -> jev-guard config
 ```
 
-Exit 0 with valid JSON decides the outcome; exit 2 blocks unconditionally, overriding
-`permissionDecision`; exit 0 with no JSON means "no decision, normal flow". The legacy
-top-level `decision`/`reason` keys are **not** part of the current contract and are not
-emitted.
+This is the transpiler applied to their file formats, it is unbuilt, and it inherits
+their calibration harnesses and multi-host adapters for free. `toolgate` is the most
+interesting target because it already has a **static-rule layer that runs before any
+model call** — which is exactly the split §4b prescribes, so a compiled program can be
+emitted across both layers: patterns to the static rules, semantics to the questions.
 
-The SDK's `timeout` (default 10s) is **per attempt with no total budget**, so worst case
-is `timeout × (maxRetries+1)` plus backoff. The hook sets `retry: {maxRetries: 0}` and a
-short timeout — a guardrail must answer in under a second or get out of the way.
+**Known risk, being verified before implementation:** if a tool's question set is
+hardcoded rather than policy-defined, the emitter can only emit thresholds. That is a
+much weaker story, and any emitter in that position gets cut rather than shipped
+pretending to work.
+
+Independent corroboration of §4b from `bouncer`'s own published calibration against
+`jev-1.13.0`: five of its six questions clear its 0.85 accuracy gate. The one that
+fails, at 14/18, is `destructive` — the broadest and most collapsed question in its
+set. Same failure mode, measured by a different team.
 
 ## 10. Testing
 
@@ -360,12 +377,13 @@ blocks `rm -rf node_modules` is not a guard, it is an outage.
 - **Guessing thresholds.** A threshold is a product decision. `jevc` supplies a
   documented default and makes it easy to change; it does not tune it silently.
 - **A monorepo.** One package, three entry points.
-- **Competing on guardrail hooks or CLIs as such.** A prior-art sweep found ~7 existing
-  Claude Code guardrail hooks and ~6 Jev CLIs, plus `@mateonunez/jod` (schema-first
-  question authoring) and `pi-typesafe` (repairing LLM-emitted Jev JSON). None of them
-  *lower* prose or JSON Schema into questions — that gap is the whole product. `jevc`'s
-  hook is a thin demonstration that a compiled `AGENTS.md` is enforceable; it is not an
-  attempt to win the guardrail category.
+- **Shipping a guardrail hook.** Seven exist and two of them (`bouncer`, `jev-guard`)
+  are ahead of anything a fresh start would produce. `jevc` emits policy *for* them.
+- **A general-purpose eval CLI.** Eight Jev CLIs already do this. `jevc` stays
+  `compile` / `check` / `emit` / `emit-policy`.
+- **Reimplementing the SDK.** Client, retry policy, error taxonomy, `noul()`/`choice()`/
+  `score()`, `ResultFor`/`ScoreOf`/`ScoreLegend`, `APIPromise`, env resolution are all
+  present and good in `@typesafe-ai/sdk@0.6.0`. Depend on it.
 
 ## 12. Layout
 
