@@ -47,7 +47,7 @@ export function emitAiSdk(p: Program, name = 'program'): string {
       const at = `a[${JSON.stringify(c.id)}]`
       if (c.op === 'is') return `${at}?.choice === ${JSON.stringify(c.value)}`
       if (c.op === 'uncertain') return `uncertain(a, ${JSON.stringify(c.id)}, confidence)`
-      return `valueOf(a, ${JSON.stringify(c.id)}, confidence) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
+      return `compare(a, ${JSON.stringify(c.id)}, confidence, ${c.op === 'gte' ? '">="' : '"<="'}, ${c.value})`
     }).join(' && ')
     return `  if (${conds}) return ${JSON.stringify(r.then)}`
   }).join('\n')
@@ -101,9 +101,21 @@ export function confidenceFrom(
  * rejected because this target takes an arbitrary reducer: the Program is expressible
  * here, so the emitter should express it rather than narrow the target.
  */
-function valueOf(a: Record<string, any>, id: string, confidence: Record<string, number>): number {
+function valueOf(a: Record<string, any>, id: string, confidence: Record<string, number>): number | undefined {
   const ans = a[id]
-  return ans?.probability ?? ans?.score ?? confidenceFrom(ans, confidence[id])
+  if (!ans) return undefined
+  return ans.probability ?? ans.score ?? confidenceFrom(ans, confidence[id])
+}
+
+/** A rule whose question was not answered does not fire, in either direction: absence of
+ *  evidence is not evidence, and it is bouncer's rule for the same situation. An
+ *  unanswered question read as 0 satisfies every upper bound, which turns "we never
+ *  asked" into a confident no. */
+function compare(a: Record<string, any>, id: string, confidence: Record<string, number>,
+                 op: '>=' | '<=', threshold: number): boolean {
+  const v = valueOf(a, id, confidence)
+  if (v === undefined) return false
+  return op === '>=' ? v >= threshold : v <= threshold
 }
 
 /** Uncertainty per UNCERTAINTY above, not a fixed 0.5. A boolean's band is tested on its

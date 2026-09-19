@@ -49,7 +49,7 @@ export function emitLangchain(p: Program, name = 'program'): string {
     const conds = r.when.map(c => {
       if (c.op === 'is') return `answers[${py(c.id)}].choice == ${py(c.value)}`
       if (c.op === 'uncertain') return `_uncertain(answers, ${py(c.id)})`
-      return `_value(answers, ${py(c.id)}) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
+      return `_compare(answers, ${py(c.id)}, ${py(c.op === 'gte' ? '>=' : '<=')}, ${c.value})`
     }).join(' and ')
     return `    if ${conds}:\n        return ${py(r.then)}`
   }).join('\n')
@@ -80,13 +80,26 @@ def _value(answers, qid):
     <= pass whatever the model said. Nested getattr with a None sentinel, not "or": a
     legitimate noul of 0.0 is falsy and would fall through."""
     ans = answers.get(qid)
+    if ans is None:
+        return None
     noul = getattr(ans, "noul", None)
     if noul is not None:
         return noul
     score = getattr(ans, "score", None)
     if score is not None:
         return score
-    return getattr(ans, "confidence", 0)
+    return getattr(ans, "confidence", None)
+
+
+def _compare(answers, qid, op, threshold) -> bool:
+    """A rule whose question was not answered does not fire, in either direction: absence
+    of evidence is not evidence, and it is bouncer's rule for the same situation. An
+    unanswered question read as 0 satisfies every upper bound, which turns "we never
+    asked" into a confident no."""
+    v = _value(answers, qid)
+    if v is None:
+        return False
+    return v >= threshold if op == ">=" else v <= threshold
 
 
 def _uncertain(answers, qid) -> bool:

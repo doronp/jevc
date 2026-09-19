@@ -298,3 +298,36 @@ describe('threshold against a choice', () => {
     expect(got).toEqual(expectedThreshold)
   }, 60_000)
 })
+
+// ---------------------------------------------------------------------------
+// I4 — a missing answer skips the rule
+// ---------------------------------------------------------------------------
+
+/** `lte` is the dangerous direction: a missing answer read as 0 satisfies every upper
+ *  bound, so the rule fires on evidence that was never collected. */
+const lower: Program = {
+  decisions: [{ id: 'is_urgent', kind: 'noul', instructions: 'Urgent?' }],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'is_urgent', op: 'lte', value: 0.3 }], then: 'ignore' }], otherwise: 'handle' },
+  residual: '', dropped: [],
+}
+
+describe('a missing answer', () => {
+  // runReducer throws here, so there is no oracle to compare against; the target's own
+  // rule decides. bouncer skips a rule whose question was not answered
+  // (target-bouncer.md:65) — absence of evidence is not evidence — and the code targets
+  // follow it. Reading 0 turned a missing answer into a confident "no".
+  it('ai-sdk: skips the rule instead of reading zero', () => {
+    expect(runAiSdk(emitAiSdk(lower), [
+      { answers: {} },
+      { answers: { is_urgent: { type: 'boolean', probability: 0.2 } } },
+    ])).toEqual(['handle', 'ignore'])
+  }, 60_000)
+
+  it('langchain: skips the rule instead of reading zero', () => {
+    expect(runLangchain(emitLangchain(lower), [
+      {},
+      { is_urgent: { kind: 'noul', noul: 0.2 } },
+    ])).toEqual(['handle', 'ignore'])
+  }, 60_000)
+})
