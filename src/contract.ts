@@ -21,11 +21,40 @@ export const MODELS: readonly JevModel[] = ['jev-latest', 'jev-preview', 'jev-1.
 // never errors), so jevc has to whitelist what it emits instead.
 const REQUEST_FIELDS = ['model', 'state', 'questions'] as const
 const QUESTION_FIELDS = ['type', 'instructions', 'criteria'] as const
-// A noul's criteria is the only criteria shape with fixed key names — a choice's keys are
-// the author's option names and a score's are array indices — so it is the only one a
-// whitelist can cover. `criteria: {treu: ...}` is accepted by the API, ignored by it, and
-// the description the author wrote for that outcome never reaches the model.
-const NOUL_CRITERIA_KEYS = ['true', 'false'] as const
+/** A noul's criteria is the only criteria shape with fixed key names — a choice's keys are
+ * the author's option names and a score's are array indices — so it is the only one a
+ * whitelist can cover. `criteria: {treu: ...}` is accepted by the API, ignored by it, and
+ * the description the author wrote for that outcome never reaches the model.
+ *
+ * Exported because `validateProgram` (ir.ts) enforces the same rule on the Program, and this
+ * check spent a round living only here: `validateRequest` gates the path that gets an answer
+ * BACK, while `emit-policy` and every library caller that emits without asking run
+ * `validateProgram` alone — so the path that writes a file somebody deploys was the ungated
+ * one. Measured before sharing it: `emit-policy --for bouncer` on a noul with `criteria:
+ * {treu: "...", false: "..."}` exited 0 and wrote a policy whose question carries only the
+ * `false` description. Shared rather than moved, matching the deliberate validateProgram /
+ * validateRequest overlap the wire limits already use (runtime.ts:156-160 gates them
+ * sequentially, so an overlapping code is still reported once). `noulCriteriaIssues` below
+ * holds the whole rule, so the two halves cannot drift. */
+export const NOUL_CRITERIA_KEYS = ['true', 'false'] as const
+
+/** The one place the rule and its message live. `path` differs between the two callers
+ * (`questions.<id>.criteria.<key>` on the wire, `decisions.<id>.criteria.<key>` in the
+ * program) and nothing else does. */
+export function noulCriteriaIssues(
+  criteria: unknown, id: string, pathPrefix: string,
+): ValidationIssue[] {
+  // An array is a different defect with its own code in each caller; an absent or empty
+  // criteria object stays legal (emit/policy builds one, and "described neither outcome" is
+  // the `noul_empty` case, reported once).
+  if (criteria === null || typeof criteria !== 'object' || Array.isArray(criteria)) return []
+  return Object.keys(criteria)
+    .filter(key => !(NOUL_CRITERIA_KEYS as readonly string[]).includes(key))
+    .map(key => ({
+      code: 'unknown_field', path: `${pathPrefix}.criteria.${key}`, severity: 'error' as const,
+      message: `Unknown criteria key "${key}" on noul "${id}". A noul describes two outcomes: ${NOUL_CRITERIA_KEYS.join(', ')}. The API silently ignores anything else, so this description never reaches the model.`,
+    }))
+}
 
 export type JevRequest = {
   model: JevModel
@@ -165,16 +194,10 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
       if (noInstructions && noCriteria) {
         err('noul_empty', at, 'A noul needs instructions or criteria.')
       }
-      // An empty criteria object stays legal (emit/policy builds one, and "described
-      // neither outcome" is the noul_empty case above, reported once). A key that is
-      // neither `true` nor `false` is the typo case: silently ignored on the wire, so the
-      // model answers one of its two outcomes with no guidance and nothing says so.
-      for (const key of Object.keys(q.criteria ?? {})) {
-        if (!(NOUL_CRITERIA_KEYS as readonly string[]).includes(key)) {
-          err('unknown_field', `${at}.criteria.${key}`,
-            `Unknown criteria key "${key}" on noul "${id}". A noul describes two outcomes: ${NOUL_CRITERIA_KEYS.join(', ')}. The API silently ignores anything else, so this description never reaches the model.`)
-        }
-      }
+      // A key that is neither `true` nor `false` is the typo case: silently ignored on the
+      // wire, so the model answers one of its two outcomes with no guidance and nothing says
+      // so. Shared with validateProgram — see `noulCriteriaIssues`.
+      out.push(...noulCriteriaIssues(q.criteria, id, at))
     }
 
     for (const path of backtickPaths(q)) {

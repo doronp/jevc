@@ -434,6 +434,159 @@ describe('validateProgram — ids that a plain object already has', () => {
   })
 })
 
+// The rule is right and stays. Its DIAGNOSIS was a mechanism that does not occur: round 3
+// made every emitter define an own key (emit/json.ts's Object.fromEntries, native/ai-sdk's
+// computed `idKey`), so the option is not lost and `is` matches it. A message that names a
+// mechanism a reader can check and find absent is how a correct rule gets deleted by the next
+// person. The tests below measure both halves and hold the message to the measurement.
+const RESERVED = [...Object.getOwnPropertyNames(Object.prototype), 'prototype']
+
+describe('validateProgram — reserved_option diagnoses the read that actually breaks', () => {
+  const choiceOn = (opt: string): Program => {
+    const p = prog()
+    // As data, never an object literal: `{__proto__: v}` in source is the prototype setter.
+    p.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team owns this?',
+      criteria: JSON.parse(`{${JSON.stringify(opt)}:"payments","technical":"bugs"}`) })
+    p.reduce.rules.push({ when: [{ id: 'department', op: 'is', value: opt }], then: 'deny' })
+    return p
+  }
+  const messageOn = (opt: string) => {
+    const hit = validateProgram(choiceOn(opt)).find(i => i.code === 'reserved_option')
+    if (!hit) throw new Error(`validateProgram produced no reserved_option for "${opt}"`)
+    return hit.message
+  }
+
+  it('still refuses every one of them — only the diagnosis changes', () => {
+    for (const opt of RESERVED) {
+      expect(validateProgram(choiceOn(opt)).map(i => i.code), opt).toContain('reserved_option')
+    }
+  })
+
+  it('measures the refuted half: the option survives the wire and `is` matches it', async () => {
+    const { emitJson } = await import('../src/emit/json.js')
+    const { runReducer } = await import('../src/runtime.js')
+    for (const opt of RESERVED) {
+      const p = choiceOn(opt)
+      // Through JSON.stringify/parse, which is what the wire actually does to this map.
+      const wire = JSON.parse(JSON.stringify(emitJson(p, { tool: 'Bash' })))
+      expect(Object.getOwnPropertyNames(wire.questions.department.criteria), opt).toContain(opt)
+      expect(wire.questions.department.criteria[opt], opt).toBe('payments')
+      const answers = JSON.parse(JSON.stringify({
+        is_destructive: { type: 'noul', noul: 0.1 },
+        department: { type: 'choice', choice: opt, probabilities: { [opt]: 0.9 }, confidence: 0.9 },
+      }))
+      expect(runReducer(p, answers), opt).toBe('deny')
+    }
+  })
+
+  it('measures the real half: prob_lte on a reserved name asserts nothing and reports health', async () => {
+    const { assertExpectation } = await import('../src/check.js')
+    const answers = JSON.parse(JSON.stringify({
+      department: { type: 'choice', choice: 'technical', probabilities: { technical: 1 }, confidence: 0.9 },
+    }))
+    // "constructor" is absent from this probability map. The lookup returns Object.prototype's
+    // own member instead of undefined, the `p > max` comparison against a function is false,
+    // and a bound that compared nothing is reported as held.
+    expect(assertExpectation({ department: { prob_lte: { constructor: 0.01 } } }, answers)).toEqual([])
+    // The identical clause on an ordinary absent name is correctly a failure.
+    expect(assertExpectation({ department: { prob_lte: { engineering: 0.01 } } }, answers))
+      .toEqual(['department: no probability recorded for "engineering"'])
+    // 12 of the 13 names in the set do this; `prototype` is not an Object.prototype member and
+    // is in the set for the code emitters, which write option names into generated source.
+    const silent = RESERVED.filter(opt =>
+      assertExpectation({ department: { prob_lte: { [opt]: 0.01 } } }, answers).length === 0)
+    expect(silent).toHaveLength(12)
+    expect(RESERVED.filter(o => !silent.includes(o))).toEqual(['prototype'])
+  })
+
+  it('does not claim the option is lost, or that `is` cannot match it', () => {
+    for (const opt of RESERVED) {
+      const m = messageOn(opt)
+      expect(m, opt).not.toMatch(/silently lost/)
+      expect(m, opt).not.toMatch(/can never match/)
+    }
+  })
+
+  it('names the read that does break, concretely enough to check', () => {
+    const m = messageOn('constructor')
+    expect(m).toContain('prob_lte')
+    expect(m).toContain('check.ts')
+    expect(m).toContain('Rename it.')
+  })
+})
+
+// R1 put this whitelist on `validateRequest` only. The wire path runs that; the two paths
+// that WRITE A FILE somebody deploys — `jevc emit-policy`, and any library caller that emits
+// without asking — run `validateProgram` and nothing else. A typo'd outcome key is accepted
+// by the API, ignored by it, and dropped by every emitter, so the description the author
+// wrote never reaches the model and nothing says so.
+describe('validateProgram — a noul criteria key that is neither true nor false', () => {
+  const withCriteria = (criteria: unknown): Program => {
+    const p = prog()
+    p.decisions.push({ id: 'is_protected', kind: 'noul',
+      instructions: 'Does this touch a protected path?', criteria: criteria as never })
+    return p
+  }
+  const typo = { treu: 'the command deletes data the user cannot regenerate', false: 'it is reversible' }
+
+  it('refuses it on the program path, where the artifact is produced', () => {
+    const issues = validateProgram(withCriteria(typo))
+    expect(issues.map(i => `${i.code} ${i.path}`))
+      .toEqual(['unknown_field decisions.is_protected.criteria.treu'])
+    expect(issues[0].severity).toBe('error')
+  })
+
+  it('is what emit-policy silently discards: the author\'s `true` side never reaches the model', async () => {
+    const { emitBouncerPolicy } = await import('../src/emit/policy/bouncer.js')
+    // bouncer takes nouls only, so this is the whole program rather than prog() plus one.
+    const yaml = emitBouncerPolicy({
+      decisions: [{ id: 'is_protected', kind: 'noul',
+        instructions: 'Does this touch a protected path?', criteria: typo as never }],
+      reduce: { kind: 'rules', rules: [{ when: [{ id: 'is_protected', op: 'gte', value: 0.8 }], then: 'deny' }],
+        otherwise: 'allow' },
+      residual: '', dropped: [],
+    })
+    expect(yaml).toContain('it is reversible')                                // the `false` side ships
+    expect(yaml).not.toContain('the command deletes data the user cannot regenerate')
+  })
+
+  it('agrees with validateRequest, which already refused the same key on the wire', async () => {
+    const { validateRequest } = await import('../src/contract.js')
+    const { emitJson } = await import('../src/emit/json.js')
+    const onWire = validateRequest(emitJson(withCriteria(typo), { tool: 'Bash' }))
+      .filter(i => i.code === 'unknown_field')
+    expect(onWire.map(i => i.path)).toEqual(['questions.is_protected.criteria.treu'])
+    // Same code, same severity, same prose — one whitelist, read from two places.
+    const inProgram = validateProgram(withCriteria(typo)).filter(i => i.code === 'unknown_field')
+    expect(inProgram[0].severity).toBe(onWire[0].severity)
+    expect(inProgram[0].message).toBe(onWire[0].message)
+  })
+
+  it('accepts true, false, both, and an omitted or empty criteria', () => {
+    for (const c of [{ true: 'yes' }, { false: 'no' }, { true: 'yes', false: 'no' }, {}, undefined]) {
+      expect(validateProgram(withCriteria(c)).map(i => i.code), JSON.stringify(c) ?? 'undefined').toEqual([])
+    }
+  })
+
+  it('does not double-report on an array, which criteria_shape already owns', () => {
+    expect(validateProgram(withCriteria(['yes', 'no'])).map(i => i.code)).toEqual(['criteria_shape'])
+  })
+
+  it('costs the corpus nothing: 252 nouls, and every key is true or false', () => {
+    const keys = new Set<string>()
+    let nouls = 0
+    for (const f of corpus) {
+      for (const q of Object.values(f.questions)) {
+        if (q.type !== 'noul') continue
+        nouls++
+        for (const k of Object.keys(q.criteria ?? {})) keys.add(k)
+      }
+    }
+    expect(nouls).toBe(252)
+    expect([...keys].sort()).toEqual(['false', 'true'])
+  })
+})
+
 describe('lintProgram — the collapsed verdict is not a choice-only defect', () => {
   it('refuses a collapsed verdict asked as a noul', () => {
     const p = prog()
@@ -584,6 +737,67 @@ describe('lintProgram — a score whose levels describe nothing', () => {
     const fired = scores.filter(([, , criteria]) =>
       codes(criteria as unknown[]).includes('score_levels_undescribed'))
     expect(fired.map(([fid, id]) => `${fid}.${id}`)).toEqual([])
+  })
+
+  // It fires on 100% of the scores this tool's own primary path produces, and half its remedy
+  // ("describe each level") is a field a schema author cannot set. A warning that is true,
+  // permanent and unactionable is one users learn to scroll past, which costs the times it
+  // matters. The rule stays and the firing stays — what changes is that the remedy names a
+  // step the reader can actually take, and these tests execute those steps.
+  describe('its remedy is reachable from where it fires', () => {
+    const fromSchema = async (properties: Record<string, unknown>) => {
+      const { fromJsonSchema } = await import('../src/from-schema.js')
+      return fromJsonSchema({ type: 'object', properties } as never)
+    }
+    const m = () => messageFor('score_levels_undescribed', score(['severity = 0', 'severity = 1']))
+
+    it('fires on every score fromJsonSchema can produce — the bounded integer is its only score branch', async () => {
+      const program = await fromSchema({
+        blast: { type: 'integer', minimum: 0, maximum: 2, description: 'How wide is the impact?' },
+        severity: { type: 'integer', minimum: 0, maximum: 4 },
+      })
+      const scores = program.decisions.filter(d => d.kind === 'score')
+      expect(scores.flatMap(d => d.criteria as string[])).toEqual([
+        'blast = 0', 'blast = 1', 'blast = 2',
+        'severity = 0', 'severity = 1', 'severity = 2', 'severity = 3', 'severity = 4',
+      ])
+      expect(lintProgram(program).filter(i => i.code === 'score_levels_undescribed').map(i => i.path))
+        .toEqual(['decisions.blast.criteria', 'decisions.severity.criteria'])
+      expect(program.dropped).toEqual([])      // nothing else in the toolchain mentions it either
+    })
+
+    it('does not send a schema author to a keyword that does not exist', () => {
+      // `description` on the integer is the FIELD's prose and becomes `instructions`; there is
+      // no per-level text anywhere on that branch, so "describe each level" is unreachable here.
+      expect(m()).not.toMatch(/Describe each level/)
+    })
+
+    it('names the oneOf-of-described-consts route, and that route clears the warning', async () => {
+      expect(m()).toContain('oneOf')
+      expect(m()).toContain('const')
+      const described = await fromSchema({ blast: { oneOf: [
+        { const: 0, description: 'one file' },
+        { const: 1, description: 'one directory' },
+        { const: 2, description: 'the whole repo' },
+      ] } })
+      expect(lintProgram(described).map(i => i.code)).toEqual([])
+      expect(described.decisions[0].criteria)
+        .toEqual({ 0: 'one file', 1: 'one directory', 2: 'the whole repo' })
+      // And it is honest about the cost: the levels come back as a choice, which the reducer
+      // matches with `is`, not with the gte/lte thresholds a score takes.
+      expect(described.decisions[0].kind).toBe('choice')
+      expect(m()).toContain('`is`')
+    })
+
+    it('names the noul-per-level route, and that route clears the warning too', async () => {
+      expect(m()).toContain('noul')
+      const perLevel = await fromSchema({
+        blast: { type: 'array', items: { enum: ['one_file', 'one_directory', 'whole_repo'] } },
+      })
+      expect(perLevel.decisions.map(d => `${d.id}:${d.kind}`))
+        .toEqual(['blast.one_file:noul', 'blast.one_directory:noul', 'blast.whole_repo:noul'])
+      expect(lintProgram(perLevel).map(i => i.code)).toEqual([])
+    })
   })
 })
 

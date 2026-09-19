@@ -1,5 +1,5 @@
 import type { ValidationIssue } from '../contract.js'
-import { uncertaintyOf, type Decision, type Program } from '../ir.js'
+import { uncertaintyOf, type Condition, type Decision, type Program } from '../ir.js'
 
 export type TargetCapability = {
   name: string
@@ -76,6 +76,22 @@ export const TARGETS: Record<string, TargetCapability> = {
 const issue = (code: string, path: string, message: string): ValidationIssue =>
   ({ code, path, message, severity: 'error' })
 
+/**
+ * `when` as the array its type claims it already is. Every Program that reaches canEmit is
+ * a bare cast of parsed JSON — cli.ts parses a file, parseLiftResponse parses a model
+ * response — so a rule that arrived without its `when` is live input, not a type error, and
+ * a lifted response is exactly where it arrives. This file read `rule.when` directly and
+ * threw `rule.when is not iterable` out of the one gate a library consumer branches on:
+ * no issue list, no path, no remedy, and on the bouncer emitter the TypeError surfaced one
+ * layer further away still, as `Cannot read properties of undefined (reading 'op')`.
+ *
+ * Absent and empty are treated alike, matching ir.ts's predicate exactly (see the note on
+ * `rule_always_matches` below): both mean the rule states no condition, and neither policy
+ * target can express a rule that always matches.
+ */
+const conditionsOf = (rule: { when?: unknown }): readonly Condition[] =>
+  Array.isArray(rule.when) ? rule.when as Condition[] : []
+
 const F64 = new DataView(new ArrayBuffer(8))
 /**
  * The adjacent double. jevc's uncertainty band is EXCLUSIVE at both ends (runtime.ts
@@ -145,7 +161,7 @@ export function toolgateThresholds(p: Program): { thresholds?: { deny: number; a
     // threshold is legal and every question covered, so nothing else here catches it.
     if (r.then === 'ask') sawAsk = true
     else if (sawAsk) no(`reduce.rules[${i}]`, `a deny rule comes after an ask rule; toolgate always tests deny first, so the order cannot be preserved. List every deny rule before every ask rule.`)
-    for (const c of r.when) {
+    for (const c of conditionsOf(r)) {
       // `is` and `uncertain` are reported once, generically, by canEmit below.
       if (c.op !== 'gte') { if (c.op === 'lte') no(`reduce.rules[${i}]`, `condition op "lte" on "${c.id}"; only >= maps to a threshold.`); continue }
       byVerdict.set(r.then, (byVerdict.get(r.then) ?? new Set()).add(c.value))
@@ -258,7 +274,7 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
   // `when: { ghost: ... }`, a rule naming an undeclared question, which is a load error,
   // which stops policy resolution and disables the gate at exit 0.
   for (const [i, rule] of p.reduce.rules.entries()) {
-    for (const c of rule.when) {
+    for (const c of conditionsOf(rule)) {
       if (!declared.has(c.id)) {
         out.push(issue('rule_unknown_decision', `reduce.rules[${i}]`,
           `Rule ${i} tests "${c.id}", which is not one of the program's decisions (${[...declared].join(', ') || 'none'}).`))
@@ -268,6 +284,7 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
 
   if (cap.reducer !== 'code') {
     for (const [i, rule] of p.reduce.rules.entries()) {
+      const when = conditionsOf(rule)
       // `when: [a, b]` is a CONJUNCTION (runtime.ts:39 evaluates `rule.when.every(...)`).
       // Neither policy target has one: bouncer's `when` names exactly one question, and
       // toolgate's max(probability) >= threshold is a DISJUNCTION. Exempting 'thresholds'
@@ -280,15 +297,33 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       // policy target can. bouncer's emitter read when[0] and threw a TypeError on
       // `undefined.op`, and toolgate's simply never saw the rule while its coverage
       // check went on believing every question was accounted for.
-      if (rule.when.length === 0) {
+      //
+      // ir.ts's validateProgram emits this same code at this same path, and the overlap is
+      // DELIBERATE and load-bearing in both directions — do not "deduplicate" it away.
+      //   - Deleting it here was measured on this tree: emitBouncerPolicy falls straight to
+      //     `r.when[0].op` and dies with `Cannot read properties of undefined`, and
+      //     emitToolgatePolicy is worse — the conditionless rule contributes nothing to its
+      //     threshold accounting, so `[{when:[x>=0.9] -> deny}, {when:[] -> ask}]` EMITS,
+      //     at exit 0, a policy with `deny: 0.9, ask: 0.9` for a program that asks on every
+      //     input below 0.9. Valid YAML, loads clean, different verdict.
+      //   - Deleting it in ir.ts is worse still: runReducer answers "allow" at p = 0.99 for
+      //     `[{when:[] -> allow}, {when:[is_destructive>=0.8] -> deny}]`, which is target
+      //     independent, and the code emitters carry that program through verbatim.
+      // canEmit is the gate a library consumer branches on; validateProgram is the gate the
+      // CLI and the runtime branch on. Same sentence, two layers, neither one reachable
+      // from the other. What must NOT drift is the predicate, and it had: this tested
+      // `.length === 0` while ir.ts tested `!Array.isArray(when) || length === 0`, so a
+      // rule that lost its `when` crashed here instead of being refused. conditionsOf now
+      // holds the two in agreement.
+      if (when.length === 0) {
         out.push({ code: 'rule_always_matches', path: `reduce.rules[${i}]`, severity: 'error',
           message: `Target "${target}" needs one question per rule; this rule has no conditions, which always matches. Give it a condition, or emit to a code target.` })
       }
-      if (rule.when.length > 1) {
+      if (when.length > 1) {
         out.push({ code: 'reducer_too_complex', path: `reduce.rules[${i}]`, severity: 'error',
-          message: `Target "${target}" allows one question per rule; this rule tests ${rule.when.length}, which is a conjunction. Split it into one rule per question, or emit to a code target.` })
+          message: `Target "${target}" allows one question per rule; this rule tests ${when.length}, which is a conjunction. Split it into one rule per question, or emit to a code target.` })
       }
-      for (const c of rule.when) {
+      for (const c of when) {
         if (c.op === 'gte' || c.op === 'lte') {
           if (cap.thresholdRange) {
             const [lo, hi] = cap.thresholdRange
