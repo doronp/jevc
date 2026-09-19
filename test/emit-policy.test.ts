@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { parse } from 'yaml'
 import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
 import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
+import { runReducer } from '../src/runtime.js'
 import type { Program } from '../src/ir.js'
 
 const p: Program = {
@@ -77,7 +78,16 @@ describe('emitBouncerPolicy', () => {
       { id: 'x', kind: 'noul', instructions: 'Yes?', criteria: { true: { note: 'yes' }, false: null } }] }
     const q = parse(emitBouncerPolicy(obj)).gate.questions.x
     expect(q.criteria.true).toBe('{"note":"yes"}')
-    expect(q.criteria.false).toBe('')
+    // Absent, not empty: bouncer forwards criteria verbatim to the model, and `false: ""`
+    // tells it the negative case is described by nothing at all, which is a worse prompt
+    // than not naming the side. The Program said nothing about it; so does the policy.
+    expect('false' in q.criteria).toBe(false)
+  })
+
+  it('omits criteria entirely when the decision describes neither side', () => {
+    const none: Program = { ...p, decisions: [
+      { id: 'x', kind: 'noul', instructions: 'Yes?', criteria: {} }] }
+    expect('criteria' in parse(emitBouncerPolicy(none)).gate.questions.x).toBe(false)
   })
   it('keeps residual visible as a comment, the only place the schema leaves for it', () => {
     expect(emitBouncerPolicy({ ...p, residual: 'summary: write a summary.' }))
@@ -142,9 +152,49 @@ describe('emitToolgatePolicy', () => {
     ], otherwise: 'allow' } }
     expect(() => emitToolgatePolicy(partial)).toThrow(/outside_repo/)
   })
+  // validatePolicy allows ask == deny, but the ask branch is then unreachable: toolgate
+  // tests `>= deny` first, so every probability that would have asked denies instead.
+  // The Program's two rules say something its policy cannot.
+  it('refuses equal ask and deny thresholds, which make the ask rule unreachable', () => {
+    const same: Program = { ...flat, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.7 }], then: 'deny' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.7 }], then: 'deny' },
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.7 }], then: 'ask' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.7 }], then: 'ask' },
+    ], otherwise: 'allow' } }
+    expect(() => emitToolgatePolicy(same)).toThrow(/ask \(0\.7\).*deny \(0\.7\)/)
+  })
+
+  // NOT in the review's list — found while testing I13. jevc's reducer is first-match-
+  // wins over an ORDERED list; toolgate always tests deny before ask. So a Program that
+  // lists its ask rules first means something different from the policy it emits, even
+  // though every threshold is legal and every question is covered.
+  it('refuses a program whose ask rules precede its deny rules', () => {
+    const askFirst: Program = { ...flat, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.85 }], then: 'deny' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' },
+    ], otherwise: 'allow' } }
+    // The divergence itself, before the refusal that prevents it.
+    expect(runReducer(askFirst, { deletes_tracked_files: { type: 'noul', noul: 0.9 },
+      outside_repo: { type: 'noul', noul: 0.1 } })).toBe('ask')
+    expect(() => emitToolgatePolicy(askFirst)).toThrow(/before|order/)
+  })
+
   it('refuses a non-allow fallthrough', () => {
     expect(() => emitToolgatePolicy({ ...flat, reduce: { ...flat.reduce, otherwise: 'deny' } }))
       .toThrow(/fallthrough/)
+  })
+
+  // Same reasoning as bouncer's: criteria.true/false are forwarded into the prompt, so a
+  // side the Program does not describe is left out rather than sent as "".
+  it('omits a criteria side the decision does not describe', () => {
+    const half: Program = { ...flat, decisions: [
+      { ...p.decisions[0], criteria: { true: 'deletes tracked source' } }, p.decisions[1]],
+      reduce: { kind: 'rules', rules: flat.reduce.rules, otherwise: 'allow' } }
+    const q = parse(emitToolgatePolicy(half)).questions.deletes_tracked_files
+    expect(q.criteria).toEqual({ true: 'deletes tracked source' })
   })
 
   // Same CR hazard as bouncer's, asserted the same way and for the same reason.
