@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { JevAnswer, JevQuestion, JevRequest } from './contract.js'
-import { evaluate } from './runtime.js'
+import { askModel, type EvaluateOptions } from './runtime.js'
 import type { Program } from './ir.js'
 
 export type Expectation = Record<string, {
@@ -166,28 +166,58 @@ export function buildProgram(f: Fixture): Program {
 
 /** Diff one fixture's recorded answers against a live answer set. Pure, and exported so the
  * classification (stable / drifted / broken) — including an answer vanishing from the live
- * response, or a new one appearing — can be exercised in a test with no network call. */
+ * response, or a new one appearing — can be exercised in a test with no network call.
+ *
+ * Confidence is part of the comparison for the two kinds that carry it. A choice used to be
+ * diffed on its argmax alone, so a fixture whose winner held while confidence fell 0.95 ->
+ * 0.15 reported `stable` — the loudest possible signal that a model bump broke the fixture,
+ * and the report said nothing. Both numbers are compared against the same `threshold`: the
+ * recorded answer is one measurement, and either half of it moving is drift. A noul has no
+ * confidence field at all (its probability IS the answer), so it keeps the single comparison.
+ * `recorded`/`live` render as `value@confidence` for those two kinds because the status can
+ * now be driven by either number — printing only the winner would show a `drifted` row whose
+ * recorded and live columns are identical. */
 export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, threshold: number): DriftRow[] {
   const rows: DriftRow[] = []
 
   for (const [id, liveAnswer] of Object.entries(live)) {
+    const at = `${f.id}.${id}`
     const was = f.measured.answers[id]
-    if (!was) { rows.push({ id: `${f.id}.${id}`, recorded: '-', live: 'new', delta: null, status: 'broken' }); continue }
+    if (!was) { rows.push({ id: at, recorded: '-', live: 'new', delta: null, status: 'broken' }); continue }
     if (was.type !== liveAnswer.type) {
-      rows.push({ id: `${f.id}.${id}`, recorded: was.type, live: liveAnswer.type, delta: null, status: 'broken' })
+      rows.push({ id: at, recorded: was.type, live: liveAnswer.type, delta: null, status: 'broken' })
+      continue
+    }
+    if (was.type === 'noul' && liveAnswer.type === 'noul') {
+      const delta = Math.abs(was.noul - liveAnswer.noul)
+      rows.push({ id: at, recorded: was.noul, live: liveAnswer.noul, delta,
+        status: delta > threshold ? 'drifted' : 'stable' })
       continue
     }
     if (was.type === 'choice' && liveAnswer.type === 'choice') {
-      const same = was.choice === liveAnswer.choice
-      rows.push({ id: `${f.id}.${id}`, recorded: was.choice, live: liveAnswer.choice, delta: null,
-        status: same ? 'stable' : 'drifted' })
+      const delta = Math.abs(was.confidence - liveAnswer.confidence)
+      rows.push({ id: at, recorded: `${was.choice}@${was.confidence}`,
+        live: `${liveAnswer.choice}@${liveAnswer.confidence}`, delta,
+        status: was.choice !== liveAnswer.choice || delta > threshold ? 'drifted' : 'stable' })
       continue
     }
-    const a = was.type === 'noul' ? was.noul : (was as { score: number }).score
-    const b = liveAnswer.type === 'noul' ? liveAnswer.noul : (liveAnswer as { score: number }).score
-    const delta = Math.abs(a - b)
-    rows.push({ id: `${f.id}.${id}`, recorded: a, live: b, delta,
-      status: delta > threshold ? 'drifted' : 'stable' })
+    if (was.type === 'score' && liveAnswer.type === 'score') {
+      // Two independent movements, one row: `delta` reports whichever moved further, and the
+      // rendered columns say which it was. Level-index space and confidence share the one
+      // threshold deliberately — a 0.15 move is the same size of surprise in either.
+      const dScore = Math.abs(was.score - liveAnswer.score)
+      const dConfidence = Math.abs(was.confidence - liveAnswer.confidence)
+      rows.push({ id: at, recorded: `${was.score}@${was.confidence}`,
+        live: `${liveAnswer.score}@${liveAnswer.confidence}`, delta: Math.max(dScore, dConfidence),
+        status: dScore > threshold || dConfidence > threshold ? 'drifted' : 'stable' })
+      continue
+    }
+    // Matching types that are none of the three primitives. Both sides are untrusted JSON (a
+    // hand-edited fixture, a response off a moving alias), so this is reachable without a type
+    // error, and the alternative to a row here is the answer vanishing from the report — the
+    // same silence F22 exists to remove. The old arithmetic tail reached it as NaN > threshold,
+    // which is false, so an unreadable pair reported `stable`.
+    rows.push({ id: at, recorded: was.type, live: liveAnswer.type, delta: null, status: 'broken' })
   }
 
   // An id the recording has but the live response doesn't is the model no longer answering a
@@ -204,16 +234,55 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
 /** Re-measure the corpus against the live API and diff against what was recorded.
  * `jev-latest` is an alias that moves under you; this is how a model bump surfaces as a
  * diff in a report rather than as a production incident. Requires TYPESAFE_API_KEY (read
- * by the SDK client `evaluate` constructs internally). Never run as part of `npm test`. */
-export async function checkLive(fixtures: Fixture[], opts: { driftThreshold?: number } = {}): Promise<Report> {
+ * by the SDK client `askModel` constructs internally). Never run as part of `npm test`.
+ *
+ * `askModel`, not `evaluate`: this function's whole output is a classification of what moved,
+ * so it must SEE a bad answer set rather than die on it. `evaluate` computes a verdict, and
+ * every path to one throws on the first missing answer — `runReducer` via `value`, and
+ * `uncertain:` via `isUncertain` for EVERY decision, which fires even when no rule reads the
+ * one that vanished. Measured on this corpus: drop one answer from fixture 3 of 60 and the
+ * old loop died there with 12 rows collected, cli.ts:149's `.catch` turned it into
+ * `check --live failed: ...` and exit 1, and 57 fixtures went unmeasured — a model bump
+ * dropping one id destroyed the entire report the tool exists to produce. askModel hands back
+ * the incomplete set with the missing ids as issues, so diffFixture classifies them `broken`.
+ *
+ * The per-fixture try/catch is the other half. askModel still throws — on a program or
+ * request the validators refuse, and on transport/auth/quota failures, which are the normal
+ * case against a live API — and one of those must cost one fixture, not the run. An
+ * unmeasured fixture is `broken` rather than skipped: a report that quietly covers 59 of 60
+ * and exits 0 is the failure this function is supposed to detect, one level up. */
+export async function checkLive(
+  fixtures: Fixture[],
+  opts: EvaluateOptions & { driftThreshold?: number } = {},
+): Promise<Report> {
   const threshold = opts.driftThreshold ?? 0.15   // well outside the +/-0.01 noise floor
   const rows: DriftRow[] = []
   let model = ''
 
   for (const f of fixtures) {
-    const res = await evaluate(buildProgram(f), f.state)
-    model = res.model ?? model
-    rows.push(...diffFixture(f, res.answers, threshold))
+    try {
+      const res = await askModel(buildProgram(f), f.state, opts)
+      model = res.model ?? model
+      rows.push(...diffFixture(f, res.answers, threshold))
+      // The threshold that matters is the one the corpus recorded, not the flat 0.15: a noul
+      // moving 0.96 -> 0.82 is inside no band in particular, but `noul_gte: 0.90` is the gate
+      // the fixture was written to hold and crossing it flips the verdict. `broken`, not
+      // `drifted`, and that respects the exit policy rather than overriding it — offline
+      // `jevc check` already exits 1 when assertExpectation fails against the RECORDED
+      // answers (cli.ts:165-171), so the same predicate failing against live answers cannot
+      // be exit 0 without the two commands disagreeing about the same corpus. The reason
+      // drift is not gated (36 of 60 thresholds moved on the last bump, benign recalibration)
+      // does not reach here: an expectation is a band a human chose per fixture, so failing
+      // one is a contract break, not a value moving. Overlap with a `live:'missing'` row for
+      // the same id is intended — "this id stopped coming back" and "the recorded gate no
+      // longer holds" are different findings and a report should carry both.
+      for (const fail of assertExpectation(f.expect, res.answers)) {
+        rows.push({ id: `${f.id}.expect`, recorded: 'held', live: fail, delta: null, status: 'broken' })
+      }
+    } catch (e) {
+      rows.push({ id: f.id, recorded: 'measurable', live: `unmeasured: ${(e as Error).message}`,
+        delta: null, status: 'broken' })
+    }
   }
 
   return {
