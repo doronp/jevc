@@ -139,6 +139,35 @@ describe('fromJsonSchema — primitives', () => {
     expect(p.dropped[0].reason).toMatch(/both name the option "1"/)
   })
 
+  // The collision guard above is a JSON.stringify comparison, and JSON.stringify renders
+  // EVERY non-finite number as the same four characters, `null`. So the one collision the
+  // guard's own comment promised it caught was the one it could not see: two distinct
+  // members merged into a single option named "null", `dropped` empty, exit 0. Measured
+  // before the fix: `enum: [NaN, Infinity, 'z']` -> criteria {null, z}, dropped [].
+  // Unreachable from a JSON file (JSON has no NaN literal), so this is library callers —
+  // a Program built from a Zod/Pydantic-derived schema object in the same process.
+  it('refuses non-finite enum members instead of merging them into one "null" option', () => {
+    for (const members of [[NaN, Infinity, 'z'], [Infinity, -Infinity, 'z'], [NaN, -Infinity, 'z']]) {
+      const p = fromJsonSchema({ type: 'object', properties: { k: { enum: members } } })
+      expect(p.decisions, JSON.stringify(members.map(String))).toHaveLength(0)
+      expect(p.dropped[0].kind).toBe('collision')
+      expect(p.dropped[0].reason).toMatch(/both name the option "null"/)
+    }
+
+    // Nested one level down, where `{"x":null}` is what both members stringify to. The
+    // top-level fix has to be in the identity of the whole value, not a special case on
+    // the member itself, or this still merges.
+    const nested = fromJsonSchema({ type: 'object', properties: {
+      k: { enum: [{ x: NaN }, { x: Infinity }, 'z'] } } })
+    expect(nested.decisions).toHaveLength(0)
+    expect(nested.dropped[0].kind).toBe('collision')
+
+    // And a finite enum is untouched: this is a refusal of members that collapse, not a
+    // new tax on numbers.
+    const ok = fromJsonSchema({ type: 'object', properties: { k: { enum: [1, 2.5, 'z'] } } })
+    expect(Object.keys(ok.decisions[0].criteria as object)).toEqual(['1', '2.5', 'z'])
+  })
+
   // A const union member's `description` is the only text saying what the option MEANS;
   // dropping it left the model choosing between bare labels it was never told apart.
   it('carries each const union member description into its criteria', () => {
