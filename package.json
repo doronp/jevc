@@ -1,6 +1,28 @@
 {
   "name": "jevc",
   "version": "0.1.0",
+  "description": "Compile natural-language instructions into Jev programs: narrow evidence questions for the model, the verdict computed in code.",
+  "keywords": [
+    "jev",
+    "typesafe",
+    "llm",
+    "guardrails",
+    "policy",
+    "agents",
+    "claude-code",
+    "langchain",
+    "ai-sdk"
+  ],
+  "license": "Apache-2.0",
+  "author": "Doron Podoleanu <doron.podoleanu@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/doronp/jevc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/doronp/jevc/issues"
+  },
+  "homepage": "https://github.com/doronp/jevc#readme",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -18,11 +40,18 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "fixtures",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.typecheck.json",
-    "check:live": "node dist/cli.js check --live"
+    "check:live": "node dist/cli.js check --live",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",
