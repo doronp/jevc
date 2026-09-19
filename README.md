@@ -164,7 +164,7 @@ with the part that cannot compile reported on stderr rather than invented:
 residual:
 The following still require a generative model:
 - reply: Draft a reply to the customer. (text generation — Jev emits no strings)
-dropped: "frustration" score levels are undescribed — generated from the numeric range. Describe each level concretely before shipping; an undescribed level destroys the distribution.
+dropped: "frustration" is 1..5, but a score answer is a level index 0..4: every threshold written in the schema's numbers would fire 1 level(s) early, and neither the level labels nor validateProgram record the offset. Re-base it to 0..4 — the one range where the two spaces coincide — or bucket it into described levels.
 ```
 
 Compile prose. `jevc` ships the lift *protocol*, not a second model: `--lift` prints a
@@ -182,8 +182,25 @@ Lower the natural-language rules below into a jevc Program (JSON only, no prose)
 ```
 
 The agent's answer is a **hypothesis until measured**: `parseLiftResponse` puts it through
-the same validator the deterministic path uses, and rejects any decision whose `source.quote`
-does not appear verbatim in the file it claims to come from.
+the same validator the deterministic path uses, and checks all three fields of every
+decision's `source`, not just the quote.
+
+- `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
+  re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing
+  even when it does occur: 328 of the 676 two-letter pairs appear in this README, and
+  phrases taken from an unrelated instruction file turn up in it anyway 90% of the time at
+  ≤3 characters, 9% at 10-11, and 1.8% by 17-20. Real rule sentences run a median of 50
+  characters; the sub-12 units in real instruction files are headings and code fences.
+- `file` must be the one document that was lifted. A name that was never supplied cannot be
+  checked, and the `// from <file>:<line>` comment the emitter writes would send a reviewer
+  somewhere unrelated.
+- `line` must be a line of that document, and one the quote actually spans. Outside the file
+  it is invented, and an error; inside the file but off the quote it is a repairable
+  mis-citation, so it warns and names the right line.
+
+The document itself is fenced with a run of dashes long enough not to occur in it, because
+an instruction file can contain the delimiter — by accident or on purpose — and two
+terminators in one prompt is how text after the fake one gets read as instructions.
 
 ---
 
@@ -194,7 +211,7 @@ Four commands. Output below is real, from this repo.
 | Command | Flags | Does |
 | --- | --- | --- |
 | `jevc compile <file\|->` | `--lift`, `--emit sdk\|json`, `-o <path>` | JSON Schema → TypeScript (`sdk`, default) or a wire request (`json`); `--lift` prints the lift request for prose. `-` reads stdin. |
-| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift. |
+| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why does this question exist — its provenance, the prompt it replaced, and what it measured. |
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
 
@@ -211,6 +228,14 @@ check --live requires TYPESAFE_API_KEY in the environment.
 `--live` is the only command that touches the network, and it refuses before reaching it
 if there is no key. `jev-latest` is an alias that moves under you, so a TypeSafe model bump
 should surface as a diff in a drift report rather than as a production incident.
+
+A drift row compares **both** numbers a `choice` or `score` answer carries, and renders them
+as `value@confidence`: a winner that holds while its confidence falls 0.95 → 0.15 is drift,
+not stability. A `noul` keeps the single comparison, having no confidence field. Each
+fixture's own `expect` bands are then re-checked against the live answers — a band that no
+longer holds is `broken`, not `drifted`, because offline `jevc check` already exits 1 on the
+same predicate against the recorded answers and the two commands must not disagree about the
+same corpus.
 
 ```console
 $ npx jevc explain user_explicitly_asked_to_commit
@@ -278,7 +303,10 @@ Schema first, so there is one mapper.
 | `boolean` | `noul` | `description` becomes the instructions |
 | `string` + `enum` | `choice` | enum members become criteria keys |
 | `oneOf`/`anyOf` of `const` | `choice` | a const union is an enum |
-| `integer` + `minimum`/`maximum`, span 2..10 | `score` | levels derived from the range, **plus a `dropped` note**: undescribed levels destroy the distribution, so describe them before shipping |
+| `allOf` | merged, then mapped | members compose into one effective schema, which is what a `$ref` plus local overrides becomes once resolved |
+| `anyOf`/`oneOf` of `[X, null]`, or `type: ["X", "null"]` | mapped as `X` | the Pydantic v2 and OpenAI strict spelling of an optional field; a union of two *decidable* branches names no single decision and stays **dropped** |
+| `integer` + `minimum: 0`/`maximum`, span 2..10 | `score` | one level per value, labelled `field = i` — `i` is both the schema's value and the answer's level index. Those labels carry no meaning: describe each level concretely before shipping, because an undescribed level destroys the distribution. Nothing enforces that today |
+| `integer` + `minimum` other than `0`, span 2..10 | **dropped** | a score answer is a level index `0..n-1`, so a threshold written in the schema's numbers fires `minimum` levels early and nothing in the `Program` records the offset; re-base the range, or bucket it into described levels |
 | `array` of `enum` | **one `noul` per member** (`field.member`) | several labels may apply at once |
 | nested `object` | recurse; ids flattened dotted (`a.b`) | the questions map is flat |
 | `string` (free) | **residual** | text generation |
@@ -308,7 +336,7 @@ by `test/contract.test.ts` and refused locally by `validateRequest` or `validate
 | `choice` with 1 option | 200 — `confidence: 1.0` | degenerate certainty; always "right" | `choice_too_few_options` |
 | duplicate question id | 200 — last definition silently wins | a JSON object cannot hold duplicate keys, so one question vanishes before it is sent | `duplicate_id`, in the IR |
 | unknown field (`temperature`, `weight`) | 200 — silently ignored | a typo like `criterion` never errors; emitted keys must be whitelisted | `unknown_field` |
-| nonexistent `` `backtick.path` `` | 200 — answered from the whole state | a typo'd path never errors, it silently degrades | `path_unresolved` |
+| nonexistent `` `backtick.path` `` | 200 — answered from the whole state | a typo'd path never errors, it silently degrades | `path_unresolved` — an **error** against a structured state, where the path is provably absent; a **warning** against a string state, where backticks are ordinary prose markup (`` `sys.exit` `` in a question about a source file) and no path can resolve |
 | empty `state: ""` | 200 | the model answers from no evidence | `state_empty` |
 
 Two more the wire types pin: `score` answers come back in **level-index space** (3 levels
@@ -317,6 +345,25 @@ habitual 0..1 threshold either never fires or always does. And a `noul` carries 
 confidence field**; its probability *is* the answer, so its uncertainty rule is a band
 around the middle (default `[0.35, 0.65]`), and `validateProgram` rejects
 `belowConfidence` on a noul rather than ignoring it.
+
+`Program` is obtained from untrusted JSON by a cast in three places, so both closed
+vocabularies a cast cannot enforce are checked too: a `kind` outside noul/choice/score (which
+`toQuestion` would ship as a *choice*), and a condition `op` outside gte/lte/is/uncertain
+(which `runReducer` and every emitter would execute as `lte` — the inverse of the rule, at
+exit 0). `evaluate()` runs `validateProgram` before it spends a call, which it did not
+before: a duplicate decision id used to collapse into one question inside `emitJson` before
+the wire validator could count it, and the verdict came back computed from an answer to a
+question the program did not contain.
+
+The response crosses the same boundary in the other direction, and used to be a bare
+`res.answers as Record<string, JevAnswer>`. `validateResponse(program, res)` checks it
+against the program that asked: every declared decision answered, answered as the kind it was
+asked as, numbers that are numbers and in range, and a `choice` that picked a declared
+option. Score answers are *not* required to be integers — 23 of the 26 measured score answers
+in `fixtures/` are fractional, because the answer is the probability-weighted expectation over
+the level indices. `evaluate()` throws rather than reduce a response it cannot read;
+`askModel()` returns the identical issue list instead of throwing, which is how
+`check --live` reports a dropped answer rather than dying on it.
 
 Budget: 64,000 tokens per request, 32,000 for state plus the longest single question,
 estimated at the measured ratio of 5.1 characters per token. Choice takes 2..255 options
