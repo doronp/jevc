@@ -26,6 +26,16 @@ import type { ValidationIssue } from '../src/contract.js'
 // is not the way back in. `parseLiftResponse` is the library entry point the README
 // documents for that half, and `emit-policy` is the CLI command that takes a Program
 // JSON. That is the real chain, and it is the one exercised below.
+//
+// That chain has no gate in it, which is why `parseLiftResponse` is the gate. It returns
+// a Program and an issues array, and nothing makes a caller read the second: the CLI
+// never calls it, so there is no `process.exit(1)` downstream of it the way there is at
+// cli.ts:237/:295/:390. It used to hand back the fully-parsed Program for a FAILED
+// citation — errors beside it, decisions intact — and a fabricated rule then emitted a
+// bouncer policy at exit 0 whose audit comment cited a line of the document that says
+// the opposite. It now returns the empty Program on any error-severity issue, exactly as
+// it always did for a parse or shape failure: one failure mode, not two. The last two
+// describes below pin that, and pin the warn case it must not swallow with it.
 // ---------------------------------------------------------------------------
 
 type ExecError = Error & { stderr?: string; stdout?: string; status?: number | null }
@@ -186,11 +196,13 @@ describe('--lift round trip, broken the ways a model breaks it', () => {
   }
 
   it('a fence labelled with a basename where the request asked for a path', () => {
-    const { program, issues } = broken(file =>
-      JSON.stringify(response(file)).replaceAll(JSON.stringify(file), JSON.stringify('AGENTS.md')))
+    const { file, issues } = broken(f =>
+      JSON.stringify(response(f)).replaceAll(JSON.stringify(f), JSON.stringify('AGENTS.md')))
     expect(codes(errors(issues))).toEqual(['provenance_file_unknown'])
-    // Both decisions, not just the first: a partial trace is not a trace.
-    expect(errors(issues)).toHaveLength(program.decisions.length)
+    // Both decisions, not just the first: a partial trace is not a trace. Counted
+    // against the RESPONSE's decisions, because the returned Program no longer has any
+    // — an error empties it — and counting against an emptied Program would assert 0.
+    expect(errors(issues)).toHaveLength(response(file).decisions.length)
     expect(issues[0].message).toContain('which was not supplied')
   })
 
@@ -246,21 +258,38 @@ describe('--lift round trip, broken the ways a model breaks it', () => {
     expect(issues[0].path).toBe('decisions.deletes_tracked_source')
   })
 
+  // Every break above, in one list, so the two invariants below are stated over all of
+  // them at once rather than re-derived per case.
+  const breaks: Array<(file: string) => string> = [
+    f => JSON.stringify(response(f)).replaceAll(JSON.stringify(f), JSON.stringify('AGENTS.md')),
+    f => JSON.stringify(response(f)).slice(0, 220),
+    () => '```json\n\n```',
+    () => JSON.stringify({ questions: {} }),
+    () => '```json\n' + JSON.stringify(response('x')) + '\n```\n```json\n{}\n```',
+    f => JSON.stringify(response(f)).replace(QUOTE_DELETES, 'Always force-push immediately.'),
+  ]
+
   it('every one of them is an error, so the caller\'s gate fires', () => {
     // The gate cli.ts writes at every boundary it owns. Stated once, over every break
     // above, so a future issue downgraded from `error` to `warn` is caught here even if
     // its own test still finds the code.
-    const breaks: Array<(file: string) => string> = [
-      f => JSON.stringify(response(f)).replaceAll(JSON.stringify(f), JSON.stringify('AGENTS.md')),
-      f => JSON.stringify(response(f)).slice(0, 220),
-      () => '```json\n\n```',
-      () => JSON.stringify({ questions: {} }),
-      () => '```json\n' + JSON.stringify(response('x')) + '\n```\n```json\n{}\n```',
-      f => JSON.stringify(response(f)).replace(QUOTE_DELETES, 'Always force-push immediately.'),
-    ]
     for (const b of breaks) {
       const { issues } = broken(b)
       expect(issues.some(i => i.severity === 'error'), b.toString()).toBe(true)
+    }
+  })
+
+  it('and none of them returns a Program, so a caller without a gate still cannot ship', () => {
+    // The other half of the same contract, and the one a caller gets for free.
+    // `parseLiftResponse` has ONE failure mode, not two: a parse failure, a shape
+    // failure and a failed citation all come back as the empty stand-in Program. There
+    // is no way to hold a populated Program that did not verify end to end, so the
+    // `const { program } = parseLiftResponse(...)` call — the one the README's
+    // description invites — cannot silently carry an unverified rule forward.
+    for (const b of breaks) {
+      const { program } = broken(b)
+      expect(program.decisions, b.toString()).toEqual([])
+      expect(program.reduce.rules, b.toString()).toEqual([])
     }
   })
 
@@ -279,6 +308,112 @@ describe('--lift round trip, broken the ways a model breaks it', () => {
       expect(error.stderr, args.join(' ')).toMatch(/no decisions/)
       expect(error.stderr, args.join(' ')).not.toMatch(/at Object\.|at Function\.|node:internal/)
     }
+  })
+})
+
+// F1. The break above, run all the way to the artifact — because the reason a failed
+// citation matters is not the issue object, it is what the caller ships when they do not
+// read it. A citation is the mechanism by which a model's judgement is supposed to become
+// checkable: a human opens the cited line and reads the sentence that justified the rule.
+// A citation nothing enforces is worse than none, because it converts "I should verify
+// this" into "someone already did."
+describe('--lift round trip, a fabricated citation cannot reach an artifact', () => {
+  // A sentence nobody wrote, cited to a line that does exist — the shape a model
+  // actually produces. Not a malformed response: everything about it is well-formed
+  // except that the rule is an invention.
+  const FABRICATED = 'Force-pushing to main is always permitted.'
+
+  const forged = (file: string) => JSON.stringify({
+    decisions: [
+      { id: 'always_allow_force_push', kind: 'noul',
+        instructions: 'Is the command a force-push to main?',
+        source: { file, line: 3, quote: FABRICATED } },
+    ],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'always_allow_force_push', op: 'gte', value: 0.5 }], then: 'allow' },
+    ], otherwise: 'ask' },
+    residual: '', dropped: [],
+  })
+
+  // Stated on its own rather than as a lead-in to the contract tests below: a
+  // precondition asserted inside the test it guards can fail on the wrong line and
+  // hide the thing the test is for.
+  it('line 3 of the document says something else entirely', () => {
+    expect(AGENTS.split('\n')[2]).toBe(QUOTE_DELETES)
+    expect(AGENTS).not.toContain(FABRICATED)
+  })
+
+  it('returns the empty Program, not the forged one, alongside the error', () => {
+    const { request } = lifted()
+    const file = declaredPath(request)
+    const { program, issues } = parseLiftResponse(forged(file), AGENTS, file)
+
+    expect(codes(errors(issues))).toEqual(['provenance_not_found'])
+    // This is the bug: `program.decisions` used to be the forged decision, fully
+    // parsed and ready to emit, with the error sitting in a field beside it.
+    expect(program.decisions).toEqual([])
+    expect(program.reduce.rules).toEqual([])
+  })
+
+  it('and the artifact it would have produced is refused at exit 1', () => {
+    const { dir, request } = lifted()
+    const file = declaredPath(request)
+    // Destructuring only `program` is the call the README's description of
+    // parseLiftResponse invites; it must not be a way to lose the verdict.
+    const { program } = parseLiftResponse(forged(file), AGENTS, file)
+    const programJson = join(dir, 'program.json')
+    writeFileSync(programJson, JSON.stringify(program, null, 2))
+
+    const error = cliExpectingFailure(['emit-policy', '--for', 'bouncer', programJson])
+    expect(error.status).toBe(1)
+    expect(error.stderr).toMatch(/no decisions/)
+    // What must not exist anywhere: a policy that allows the invented rule, and the
+    // audit comment attributing that sentence to a line of a file that contradicts it.
+    const out = (error.stdout ?? '') + (error.stderr ?? '')
+    expect(out).not.toContain(FABRICATED)
+    expect(out).not.toContain('then: allow')
+  })
+
+  it('the issues carry the whole citation, because the Program no longer does', () => {
+    // Emptying the Program takes away the caller's other copy of what the response
+    // claimed, so each error has to carry it: the decision, the file and line it cited,
+    // and the quote it attributed to them — everything needed to open the document and
+    // see the invention, without the Program in hand.
+    const { request } = lifted()
+    const file = declaredPath(request)
+    const claims: Array<[string, { file: string; line: number; quote: string }]> = [
+      ['provenance_not_found', { file, line: 3, quote: FABRICATED }],
+      ['provenance_file_unknown', { file: 'some-other-doc.md', line: 3, quote: FABRICATED }],
+      ['provenance_too_short', { file, line: 3, quote: 'main' }],
+      ['provenance_line_out_of_range', { file, line: 99, quote: QUOTE_DELETES }],
+    ]
+    for (const [code, source] of claims) {
+      const json = forged(file).replace(
+        JSON.stringify({ file, line: 3, quote: FABRICATED }), JSON.stringify(source))
+      const { issues } = parseLiftResponse(json, AGENTS, file)
+      expect(codes(errors(issues)), code).toEqual([code])
+      const message = issues[0].message
+      expect(message, code).toContain('always_allow_force_push')  // which decision
+      expect(message, code).toContain(source.file)                // the file it claimed
+      expect(message, code).toContain(`:${source.line}`)          // the line it claimed
+      expect(message, code).toContain(source.quote)               // the quote it attributed
+    }
+  })
+
+  it('a warn still returns the Program: a mis-cited line is a repairable rule', () => {
+    // The distinction the fix must not flatten. A quote that IS in the document, cited
+    // to the wrong line, is a real rule with a wrong pointer — we know the right answer,
+    // so it warns and the Program stays usable. Only an error empties it.
+    const { request } = lifted()
+    const file = declaredPath(request)
+    const r = response(file)
+    r.decisions[0].source = { file, line: 4, quote: QUOTE_DELETES }   // it is on line 3
+    const { program, issues } = parseLiftResponse(JSON.stringify(r), AGENTS, file)
+
+    expect(codes(issues)).toEqual(['provenance_line_mismatch'])
+    expect(errors(issues)).toEqual([])
+    expect(program.decisions.map(d => d.id))
+      .toEqual(['deletes_tracked_source', 'targets_build_output'])
   })
 })
 
