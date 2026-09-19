@@ -393,3 +393,23 @@ describe('residual', () => {
     expect(runLangchain(emitLangchain(r), [{}])).toEqual(['handle'])
   }, 60_000)
 })
+
+// ---------------------------------------------------------------------------
+// I2 — the package entry point
+// ---------------------------------------------------------------------------
+
+// Four emitters and the capability table were reachable only by deep-importing
+// dist/emit/*.js, which the exports map ("." -> ./dist/index.js) does not expose: a
+// consumer could not reach them at all. The CLI's --emit set is checked in cli.test.ts.
+describe('the public API', () => {
+  it('exports every emitter and the capability table', async () => {
+    const api = await import('../src/index.js')
+    for (const name of ['emitNative', 'emitJson', 'emitAiSdk', 'emitLangchain',
+                        'canEmit', 'TARGETS', 'emitBouncerPolicy', 'emitToolgatePolicy']) {
+      expect(api, `index.ts does not export ${name}`).toHaveProperty(name)
+    }
+    // Reachable AND usable: a name re-exported from the wrong module still type-checks.
+    expect((api as any).emitAiSdk(lower)).toMatch(/createTypeSafeAi/)
+    expect(Object.keys((api as any).TARGETS)).toContain('toolgate')
+  })
+})
