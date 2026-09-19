@@ -127,6 +127,54 @@ describe('jevc compile', () => {
     expect(error.status).not.toBe(0)
     expect(error.stderr).toMatch(/emit/i)
   })
+
+  // `--flag=value` is the other half of GNU flag syntax and every CLI the user has typed
+  // into accepts it. It was read as an unknown argument, so `--emit=json` silently
+  // produced native TypeScript: the wrong artifact at exit 0.
+  it('accepts --flag=value as well as --flag value', () => {
+    const out = run(['compile', '-', '--emit=json'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(JSON.parse(out).questions.ok.type).toBe('noul')
+  })
+
+  it('accepts -o=<path> for the short flag too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const schemaFile = join(dir, 's.json')
+    writeFileSync(schemaFile, JSON.stringify({ type: 'object', properties: {
+      is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
+    const outFile = join(dir, 'out.ts')
+    run(['compile', schemaFile, `-o=${outFile}`])
+    expect(readFileSync(outFile, 'utf8')).toMatch(/type: 'noul'/)
+  })
+
+  // The two code emitters existed and had no way to be reached: the CLI knew only
+  // sdk and json, so the only way to emit for @ai-sdk/typesafe-ai or langchain-typesafe
+  // was to import jevc as a library.
+  it('emits for ai-sdk', () => {
+    const out = run(['compile', '-', '--emit', 'ai-sdk'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean', description: 'OK?' } } }))
+    expect(out).toMatch(/createTypeSafeAi/)
+  })
+
+  it('emits for langchain', () => {
+    const out = run(['compile', '-', '--emit', 'langchain'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean', description: 'OK?' } } }))
+    expect(out).toMatch(/TypeSafeClassifier/)
+  })
+
+  // Fix round 1 gave `read` a clean message; the write side kept throwing a raw ENOENT
+  // with a node:fs stack. Both ends of the same I/O are user error, not a jevc bug.
+  it('reports an unwritable -o as a message instead of a raw stack trace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const schemaFile = join(dir, 's.json')
+    writeFileSync(schemaFile, JSON.stringify({ type: 'object', properties: {
+      is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
+    const dest = join(dir, 'no-such-dir', 'out.ts')
+    const error = runExpectingFailure(['compile', schemaFile, '-o', dest])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toContain(dest)
+    expect(error.stderr).not.toMatch(/at Object\.|at Function\.|node:internal/)
+  })
 })
 
 describe('jevc check', () => {
@@ -224,6 +272,30 @@ describe('jevc emit-policy', () => {
     expect(error.status).not.toBe(0)
     expect(error.stderr).toMatch(/only noul/)
     expect(error.stderr).not.toMatch(/at Object\.|node:internal/)
+  })
+
+  // The program path was found by scanning for the first argument ending in `.json`,
+  // which is the -o value whenever the output is named that way: jevc then read the
+  // file it was about to write (usually ENOENT) instead of the program it was given.
+  it('takes the program from the positional argument, not the first .json on the line', () => {
+    const f = write()
+    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'out.json')
+    run(['emit-policy', '--for', 'bouncer', '-o', dest, f])
+    expect(readFileSync(dest, 'utf8')).toMatch(/version: 1/)
+  })
+
+  it('accepts a program file that is not named *.json', () => {
+    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program')
+    writeFileSync(f, JSON.stringify(program))
+    expect(run(['emit-policy', '--for', 'bouncer', f])).toMatch(/version: 1/)
+  })
+
+  it('reports an unwritable -o as a message instead of a raw stack trace', () => {
+    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'no-such-dir', 'policy.yaml')
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(), '-o', dest])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toContain(dest)
+    expect(error.stderr).not.toMatch(/at Object\.|at Function\.|node:internal/)
   })
 
   it('names the known targets when given an unknown one', () => {

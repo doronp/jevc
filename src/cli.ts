@@ -5,6 +5,8 @@ import { fromJsonSchema } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
+import { emitAiSdk } from './emit/ai-sdk.js'
+import { emitLangchain } from './emit/langchain.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
 import { assertExpectation, checkLive, loadFixtures } from './check.js'
 import { validateRequest } from './contract.js'
@@ -13,10 +15,41 @@ const argv = process.argv.slice(2)
 const cmd = argv[0]
 const flag = (name: string): string | undefined => {
   // Single-char flags are documented in short form (-o); accept the long form too.
-  const i = argv.findIndex(a => a === `--${name}` || (name.length === 1 && a === `-${name}`))
-  return i >= 0 ? argv[i + 1] : undefined
+  const forms = name.length === 1 ? [`--${name}`, `-${name}`] : [`--${name}`]
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (forms.includes(a)) return argv[i + 1]
+    // `--name=value` is the other half of GNU flag syntax. Matching only the
+    // space-separated form left `--emit=json` looking like an unknown argument, so the
+    // value was ignored and the DEFAULT emitter ran: the wrong artifact at exit 0.
+    const form = forms.find(f => a.startsWith(`${f}=`))
+    if (form) return a.slice(form.length + 1)
+  }
+  return undefined
 }
 const has = (name: string) => argv.includes(`--${name}`)
+
+/** Flags that consume the argument after them. Everything else is a bare switch. */
+const VALUED = new Set(['emit', 'o', 'for', 'fixtures'])
+
+/**
+ * The first argument after the subcommand that is neither a flag nor a flag's value.
+ * emit-policy used to find its program by scanning for the first argument ending in
+ * `.json`, which is the `-o` destination whenever the output is named that way: jevc then
+ * read the file it was about to write (ENOENT, or worse, a stale policy) instead of the
+ * program it was handed. It also refused a program file not named *.json at all.
+ */
+const positional = (): string | undefined => {
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i]
+    if (a.startsWith('-') && a !== '-') {
+      if (!a.includes('=') && VALUED.has(a.replace(/^--?/, ''))) i++
+      continue
+    }
+    return a
+  }
+  return undefined
+}
 
 const die = (msg: string): never => { process.stderr.write(`${msg}\n`); process.exit(1) }
 
@@ -37,13 +70,21 @@ const read = (p: string) => {
   try { return p === '-' ? readFileSync(0, 'utf8') : readFileSync(p, 'utf8') }
   catch (e) { return die(`Cannot read ${p === '-' ? 'stdin' : p}: ${(e as Error).message}`) }
 }
+// The write side is user error for exactly the same reasons as the read side: a
+// destination directory that does not exist, a read-only path. It threw a raw ENOENT with
+// a node:fs stack trace before.
+const write = (p: string, text: string): void => {
+  try { writeFileSync(p, text) }
+  catch (e) { die(`Cannot write ${p}: ${(e as Error).message}`) }
+  process.stderr.write(`wrote ${p}\n`)
+}
 const fixtures = (dir: string) => {
   try { return loadFixtures(dir) }
   catch (e) { return die(`Cannot load fixtures from ${dir}: ${(e as Error).message}`) }
 }
 
 if (cmd === 'compile') {
-  const path = argv[1] ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json] [-o out]')
+  const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json|ai-sdk|langchain] [-o out]')
   const text = read(path)
 
   if (has('lift')) {
@@ -65,13 +106,17 @@ if (cmd === 'compile') {
   if (program!.residual) process.stderr.write(`\nresidual:\n${program!.residual}\n`)
   for (const d of program!.dropped) process.stderr.write(`dropped: ${d.reason}\n`)
 
+  // ai-sdk and langchain existed as emitters with no way to reach them: the only route to
+  // either was to import jevc as a library.
   const emit = flag('emit') ?? 'sdk'
-  if (emit !== 'sdk' && emit !== 'json') {
-    die(`Unknown --emit value "${emit}". Expected sdk or json.`)
+  if (!['sdk', 'json', 'ai-sdk', 'langchain'].includes(emit)) {
+    die(`Unknown --emit value "${emit}". Expected sdk, json, ai-sdk or langchain.`)
   }
 
   let out: string
-  if (emit === 'json') {
+  if (emit === 'ai-sdk') out = emitAiSdk(program!)
+  else if (emit === 'langchain') out = emitLangchain(program!)
+  else if (emit === 'json') {
     // Amendment: the API is the only thing that used to enforce this (e.g. the 255-option
     // choice ceiling, question-id uniqueness) — run the wire validator locally so a request
     // that would 422 is caught here instead.
@@ -85,7 +130,7 @@ if (cmd === 'compile') {
   }
 
   const dest = flag('o')
-  if (dest) { writeFileSync(dest, out); process.stderr.write(`wrote ${dest}\n`) }
+  if (dest) write(dest, out)
   else process.stdout.write(out)
   process.exit(0)
 }
@@ -126,7 +171,7 @@ if (cmd === 'check') {
 
 if (cmd === 'explain') {
   // The provenance payoff: answer "why does this question exist?"
-  const id = argv[1] ?? die('usage: jevc explain <decision-id>')
+  const id = positional() ?? die('usage: jevc explain <decision-id>')
   const hits = fixtures(flag('fixtures') ?? 'fixtures')
     .flatMap(f => Object.keys(f.questions).includes(id) ? [f] : [])
   if (!hits.length) die(`No decision "${id}" found.`)
@@ -146,7 +191,7 @@ if (cmd === 'emit-policy') {
   // jev-guard is deliberately absent: its questions are `export const` literals in
   // src/guard.js and decide() destructures four fixed ids, so there is nothing to emit into.
   const target = flag('for') ?? die('usage: jevc emit-policy --for <bouncer|toolgate> <program.json> [-o out]')
-  const path = argv.find(a => a.endsWith('.json')) ?? die('supply a compiled program JSON file')
+  const path = positional() ?? die('supply a compiled program JSON file')
   let program: Program
   try {
     program = JSON.parse(read(path))
@@ -177,7 +222,7 @@ if (cmd === 'emit-policy') {
   }
 
   const dest = flag('o')
-  if (dest) { writeFileSync(dest, out!); process.stderr.write(`wrote ${dest}\n`) }
+  if (dest) write(dest, out!)
   else process.stdout.write(out!)
   process.exit(0)
 }
