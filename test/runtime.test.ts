@@ -386,3 +386,21 @@ describe('evaluate — a body that cannot be redacted', () => {
     expect(err.message).toBe('400 request failed (body redacted)')
   })
 })
+
+// Integration: src/index.ts is the only file the exports map ("." -> ./dist/index.js)
+// reaches, and it was written before askModel existed. `value`'s throw message — asserted
+// three tests up — tells a consumer to call askModel(), so an unexported one sends them
+// after a function no import of `jevc` can name.
+describe('the package entry point', () => {
+  it('exports both halves of the evaluate/askModel fork', async () => {
+    const api = await import('../src/index.js')
+    expect(api).toHaveProperty('evaluate')
+    expect(api).toHaveProperty('askModel')
+    // Reachable AND the same function: a name re-exported from the wrong module still
+    // type-checks, so prove it runs and returns the AskResult shape rather than a Verdict.
+    const r = await api.askModel(p, 'rm -rf /', {
+      client: serves({ model: 'jev-1.13.0', answers: answers(), usage }), now: tick() })
+    expect(r).toHaveProperty('issues')
+    expect(r).not.toHaveProperty('verdict')
+  })
+})

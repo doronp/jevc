@@ -12,5 +12,10 @@ export type { TargetCapability } from './emit/capability.js'
 export { emitBouncerPolicy } from './emit/policy/bouncer.js'
 export type { BouncerOptions } from './emit/policy/bouncer.js'
 export { emitToolgatePolicy } from './emit/policy/toolgate.js'
-export { value, choiceOf, isUncertain, runReducer, evaluate } from './runtime.js'
-export type { Verdict, EvaluateOptions } from './runtime.js'
+// `askModel` is listed here, not just `evaluate`: the two are one API with a fork in it.
+// `evaluate` throws on anything that would make the verdict wrong — and `value`'s own
+// throw message names `askModel()` as the way to collect those as issues instead — so
+// leaving it unexported pointed a consumer at a function the exports map ("." ->
+// ./dist/index.js, no subpaths) gives them no way to reach.
+export { value, choiceOf, isUncertain, runReducer, askModel, evaluate } from './runtime.js'
+export type { Verdict, AskResult, EvaluateOptions } from './runtime.js'
