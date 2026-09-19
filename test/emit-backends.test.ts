@@ -350,6 +350,30 @@ describe('a missing answer', () => {
 })
 
 // ---------------------------------------------------------------------------
+// I3 — a rule with no conditions
+// ---------------------------------------------------------------------------
+
+/** `[].every(...)` is true, so runReducer fires this rule unconditionally. The emitters
+ *  joined the conditions with && / and, producing `if () {` and `if :` — neither
+ *  language parses that. */
+const always: Program = {
+  decisions: [{ id: 'is_urgent', kind: 'noul', instructions: 'Urgent?' }],
+  reduce: { kind: 'rules', rules: [{ when: [], then: 'ignore' }], otherwise: 'handle' },
+  residual: '', dropped: [],
+}
+
+describe('a rule with no conditions', () => {
+  it('ai-sdk: always matches, like the empty conjunction it is', () => {
+    expect(runReducer(always, {})).toBe('ignore')
+    expect(runAiSdk(emitAiSdk(always), [{ answers: {} }])).toEqual(['ignore'])
+  }, 60_000)
+
+  it('langchain: always matches, like the empty conjunction it is', () => {
+    expect(runLangchain(emitLangchain(always), [{}])).toEqual(['ignore'])
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
 // I10 / M1 — residual text is lifted prose and cannot be trusted to be inert
 // ---------------------------------------------------------------------------
 
