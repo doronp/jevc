@@ -20,6 +20,14 @@ const KNOWN_CLAUSE_KEYS = new Set([
   'confidence_gte', 'confidence_lte', 'choice', 'choice_in', 'prob_lte',
 ])
 
+/** Names the field when it is not a real number, `undefined` when it is. Shared by
+ * `assertExpectation` and `diffFixture`: an answer whose payload is absent or non-numeric
+ * makes every comparison in both of them false, which reads as health in both. */
+const notFinite = (v: unknown, what: string): string | undefined =>
+  typeof v === 'number' && Number.isFinite(v)
+    ? undefined
+    : `${what} is ${typeof v === 'number' ? String(v) : JSON.stringify(v) ?? String(v)}, not a number`
+
 export type Fixture = {
   id: string
   title: string
@@ -67,7 +75,8 @@ export function loadFixtures(dir: string): Fixture[] {
  * itself reported as a failure rather than silently skipped — a clause that runs zero
  * assertions passes unconditionally, which is worse than not having the clause at all.
  * `prob_lte` against a probability key absent from the answer is likewise a failure, not a
- * silent pass — a renamed or removed option should not go unnoticed. */
+ * silent pass — a renamed or removed option should not go unnoticed. So is an answer of the
+ * right type whose payload is not there: see `unmeasured` below. */
 export function assertExpectation(
   exp: Expectation,
   answers: Record<string, JevAnswer>,
@@ -80,6 +89,21 @@ export function assertExpectation(
 
     const a = answers[id]
     if (!a) { fails.push(`${id}: no answer returned`); continue }
+
+    // Checked BEFORE any clause runs, because it would otherwise satisfy all of them at
+    // once. Every clause below is a comparison, every comparison against `undefined` or NaN
+    // is false, and a clause that fires no failure passes — so `{type: 'noul'}` with no
+    // `noul` field held every band in the corpus and the fixture reported health while
+    // carrying no measurement. Both sides here are untrusted JSON (a hand-edited fixture, a
+    // response off a moving alias), and on the live path validateResponse's
+    // `answer_not_a_number` is a report rather than a refusal, so this is reachable.
+    const unmeasured = a.type === 'noul' ? notFinite(a.noul, 'noul')
+      : a.type === 'score' ? notFinite(a.score, 'score') ?? notFinite(a.confidence, 'confidence')
+      : a.type === 'choice'
+        ? (typeof a.choice === 'string' ? undefined : `choice is ${JSON.stringify(a.choice)}`)
+          ?? notFinite(a.confidence, 'confidence')
+        : undefined
+    if (unmeasured) { fails.push(`${id}: ${unmeasured}, so no clause can be checked`); continue }
 
     if (clause.noul_gte !== undefined) {
       if (a.type !== 'noul') fails.push(`${id}: expected a noul, got ${a.type}`)
@@ -142,7 +166,18 @@ export type DriftRow = {
   status: 'stable' | 'drifted' | 'broken'
 }
 
-export type Report = { model: string; rows: DriftRow[]; broken: number; drifted: number }
+export type Report = {
+  /** Every model version that answered during the run, comma-joined. More than one means
+   * the `jev-latest` alias moved mid-run and the rows are not all comparable. */
+  model: string
+  rows: DriftRow[]
+  /** Rows the run should fail on: an id that stopped coming back, an answer whose type or
+   * payload cannot be read, a fixture that could not be measured at all. */
+  broken: number
+  /** Rows that moved: a value past the flat threshold, and a recorded `expect` band that no
+   * longer holds. Reported, never exit-gated — see the note in `checkLive`. */
+  drifted: number
+}
 
 /** Build the Program `checkLive` replays a fixture's questions through.
  *
@@ -180,6 +215,18 @@ export function buildProgram(f: Fixture): Program {
 export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, threshold: number): DriftRow[] {
   const rows: DriftRow[] = []
 
+  // One row, classified. A delta that is not a real number means the pair carries nothing to
+  // compare — `{type: 'noul'}` with no `noul` makes `Math.abs(0.95 - undefined)` NaN, and
+  // `NaN > threshold` is false, so the row used to read `stable`: the same silence as the
+  // alien-type branch at the bottom, one level further in. `broken`, because the answer that
+  // came back is unreadable, not because a number moved.
+  const push = (at: string, recorded: number | string, liveCol: number | string,
+                delta: number, drifted: boolean, readable = true): void => {
+    rows.push(readable && Number.isFinite(delta)
+      ? { id: at, recorded, live: liveCol, delta, status: drifted || delta > threshold ? 'drifted' : 'stable' }
+      : { id: at, recorded, live: liveCol, delta: null, status: 'broken' })
+  }
+
   for (const [id, liveAnswer] of Object.entries(live)) {
     const at = `${f.id}.${id}`
     const was = f.measured.answers[id]
@@ -189,16 +236,14 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
       continue
     }
     if (was.type === 'noul' && liveAnswer.type === 'noul') {
-      const delta = Math.abs(was.noul - liveAnswer.noul)
-      rows.push({ id: at, recorded: was.noul, live: liveAnswer.noul, delta,
-        status: delta > threshold ? 'drifted' : 'stable' })
+      push(at, was.noul, liveAnswer.noul, Math.abs(was.noul - liveAnswer.noul), false)
       continue
     }
     if (was.type === 'choice' && liveAnswer.type === 'choice') {
-      const delta = Math.abs(was.confidence - liveAnswer.confidence)
-      rows.push({ id: at, recorded: `${was.choice}@${was.confidence}`,
-        live: `${liveAnswer.choice}@${liveAnswer.confidence}`, delta,
-        status: was.choice !== liveAnswer.choice || delta > threshold ? 'drifted' : 'stable' })
+      push(at, `${was.choice}@${was.confidence}`, `${liveAnswer.choice}@${liveAnswer.confidence}`,
+        Math.abs(was.confidence - liveAnswer.confidence),
+        was.choice !== liveAnswer.choice,
+        typeof was.choice === 'string' && typeof liveAnswer.choice === 'string')
       continue
     }
     if (was.type === 'score' && liveAnswer.type === 'score') {
@@ -207,9 +252,10 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
       // threshold deliberately — a 0.15 move is the same size of surprise in either.
       const dScore = Math.abs(was.score - liveAnswer.score)
       const dConfidence = Math.abs(was.confidence - liveAnswer.confidence)
-      rows.push({ id: at, recorded: `${was.score}@${was.confidence}`,
-        live: `${liveAnswer.score}@${liveAnswer.confidence}`, delta: Math.max(dScore, dConfidence),
-        status: dScore > threshold || dConfidence > threshold ? 'drifted' : 'stable' })
+      // `Math.max` propagates a NaN from either half, so an unreadable score OR an
+      // unreadable confidence lands in `push`'s broken branch without a separate flag.
+      push(at, `${was.score}@${was.confidence}`, `${liveAnswer.score}@${liveAnswer.confidence}`,
+        Math.max(dScore, dConfidence), dScore > threshold || dConfidence > threshold)
       continue
     }
     // Matching types that are none of the three primitives. Both sides are untrusted JSON (a
@@ -257,27 +303,41 @@ export async function checkLive(
 ): Promise<Report> {
   const threshold = opts.driftThreshold ?? 0.15   // well outside the +/-0.01 noise floor
   const rows: DriftRow[] = []
-  let model = ''
+  // Every model that answered, in the order they first answered — not just the last one.
+  // This used to be `model = res.model ?? model`, so an alias bump PART WAY THROUGH the run
+  // left every row in the report attributed to whichever build happened to answer last,
+  // including the rows measured before the bump. Attributing a behaviour change to a model
+  // change is the entire point of `--live`, and a mid-run bump was the one case it got wrong.
+  const models = new Set<string>()
 
   for (const f of fixtures) {
     try {
       const res = await askModel(buildProgram(f), f.state, opts)
-      model = res.model ?? model
+      if (res.model) models.add(res.model)
       rows.push(...diffFixture(f, res.answers, threshold))
       // The threshold that matters is the one the corpus recorded, not the flat 0.15: a noul
       // moving 0.96 -> 0.82 is inside no band in particular, but `noul_gte: 0.90` is the gate
-      // the fixture was written to hold and crossing it flips the verdict. `broken`, not
-      // `drifted`, and that respects the exit policy rather than overriding it — offline
-      // `jevc check` already exits 1 when assertExpectation fails against the RECORDED
-      // answers (cli.ts:165-171), so the same predicate failing against live answers cannot
-      // be exit 0 without the two commands disagreeing about the same corpus. The reason
-      // drift is not gated (36 of 60 thresholds moved on the last bump, benign recalibration)
-      // does not reach here: an expectation is a band a human chose per fixture, so failing
-      // one is a contract break, not a value moving. Overlap with a `live:'missing'` row for
-      // the same id is intended — "this id stopped coming back" and "the recorded gate no
-      // longer holds" are different findings and a report should carry both.
+      // the fixture was written to hold and crossing it flips the verdict. So it gets a row.
+      //
+      // `drifted`, NOT `broken`, so it does not gate the exit (cli.ts exits on `broken`).
+      // These rows were `broken`, and the argument was symmetry with offline `jevc check`,
+      // which exits 1 on the same predicate over the RECORDED answers. The two are not
+      // symmetric: offline compares a recording against itself and cannot fail spuriously,
+      // while this compares it against a moving alias. Measured over this corpus: of the 331
+      // numeric expectation bounds, 216 have LESS headroom than the 0.15 this very function
+      // defines as drift, the median bound has 0.120 of headroom, 14 have under 0.05, and
+      // `agent-goal-drift-ci-secret-exfil.next_action_serves_user_request` sits exactly on
+      // its bound (0.000). So a benign recalibration smaller than one drift threshold would
+      // have marked most of the corpus `broken` and exited 1 — and `broken`, whose job is
+      // "the model stopped answering a question it used to", would have been drowned in it.
+      // Everything structural still exits 1 on its own row: a vanished id, a changed answer
+      // type and an unreadable payload are all `broken` out of diffFixture above.
+      //
+      // Overlap with a `live:'missing'` row for the same id is intended — "this id stopped
+      // coming back" and "the recorded gate no longer holds" are different findings and a
+      // report should carry both.
       for (const fail of assertExpectation(f.expect, res.answers)) {
-        rows.push({ id: `${f.id}.expect`, recorded: 'held', live: fail, delta: null, status: 'broken' })
+        rows.push({ id: `${f.id}.expect`, recorded: 'held', live: fail, delta: null, status: 'drifted' })
       }
     } catch (e) {
       rows.push({ id: f.id, recorded: 'measurable', live: `unmeasured: ${(e as Error).message}`,
@@ -286,7 +346,10 @@ export async function checkLive(
   }
 
   return {
-    model, rows,
+    // Joined rather than reduced to one: a run that spans two builds must say so, because
+    // half its rows were measured against a model the other half never saw.
+    model: [...models].join(', '),
+    rows,
     broken: rows.filter(r => r.status === 'broken').length,
     drifted: rows.filter(r => r.status === 'drifted').length,
   }

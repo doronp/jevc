@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkLive, diffFixture, loadFixtures } from '../src/check.js'
+import { assertExpectation, checkLive, diffFixture, loadFixtures } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
@@ -157,6 +157,26 @@ describe('diffFixture — confidence is half the answer', () => {
     expect(rows[0]?.delta).toBeCloseTo(0.01, 5)
   })
 
+  // R4 — the sibling of the alien-type case below, one level in: the TYPE matches, the
+  // payload is gone. `Math.abs(0.95 - undefined)` is NaN and `NaN > threshold` is false, so
+  // the row reported `stable` — a fixture claiming health while carrying no measurement.
+  // Reachable live: validateResponse flags it `answer_not_a_number`, but checkLive reads
+  // askModel's answers and not its issues, so the answer still arrives here.
+  it('refuses to call a right-typed answer with no numeric payload stable', () => {
+    const f = fixture('f1', {}, { destructive: noul(0.95) })
+    const payloadless = { type: 'noul' } as unknown as JevAnswer
+    expect(diffFixture(f, { destructive: payloadless }, 0.15)[0])
+      .toMatchObject({ id: 'f1.destructive', delta: null, status: 'broken' })
+  })
+
+  it('refuses to call a score or choice whose confidence went missing stable', () => {
+    const f = fixture('f1', {}, { radius: score(2, 0.97), action: choice('reread_full', 0.9) })
+    const noConfidence = { type: 'score', score: 2, legend: {}, probabilities: {} } as unknown as JevAnswer
+    const noChoice = { type: 'choice', probabilities: {}, confidence: 0.9 } as unknown as JevAnswer
+    const rows = diffFixture(f, { radius: noConfidence, action: noChoice }, 0.15)
+    expect(rows.map(r => [r.id, r.status])).toEqual([['f1.radius', 'broken'], ['f1.action', 'broken']])
+  })
+
   it('refuses to call a pair of unreadable answer types stable', () => {
     // Both sides are untrusted JSON. The old arithmetic tail reached this as NaN > threshold,
     // which is false, so an answer nothing can read reported `stable`.
@@ -180,12 +200,52 @@ describe('checkLive — the thresholds the corpus recorded', () => {
     // The flat threshold saw nothing: 0.14 is inside 0.15, so the numeric row is `stable`.
     expect(report.rows[0]).toMatchObject({ id: 'f1.destructive', status: 'stable' })
     // The gate the fixture was written to hold did not: 0.82 is under noul_gte 0.90, so the
-    // verdict this fixture pins has flipped. Classified `broken`, so cli.ts:160 exits 1 —
-    // the same predicate, and the same exit code, as offline `jevc check` on the recorded
-    // answers (cli.ts:165-171). Gating on `drifted` was rejected and is not what happens here.
+    // verdict this fixture pins has flipped. It gets its own row, and the CLI prints it.
     expect(report.rows[1]).toEqual({ id: 'f1.expect', recorded: 'held',
-      live: 'destructive: noul 0.82 < 0.9', delta: null, status: 'broken' })
-    expect(report).toMatchObject({ broken: 1, drifted: 0 })
+      live: 'destructive: noul 0.82 < 0.9', delta: null, status: 'drifted' })
+    // R6: `drifted`, NOT `broken`, so it does not gate the exit. Measured over this corpus:
+    // of the 331 numeric expectation bounds, 216 have less headroom than the report's own
+    // 0.15 drift threshold, the median bound has 0.120, 14 have under 0.05, and
+    // `agent-goal-drift-ci-secret-exfil.next_action_serves_user_request` sits exactly on its
+    // bound (0.000). A bump smaller than the movement this tool DEFINES as drift would have
+    // marked most of the corpus `broken` and exited 1.
+    expect(report).toMatchObject({ broken: 0, drifted: 1 })
+  })
+
+  it('does not exit-gate the corpus on a bump inside its own drift threshold', async () => {
+    // The whole R6 scenario in one fixture: every answer moved 0.06 — a third of the 0.15
+    // drift threshold — and every recorded band it crosses is a band with under 0.06 of
+    // headroom, which 14 bounds in the real corpus have. Nothing here is the model refusing
+    // to answer, so nothing here may be `broken`.
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.92) },
+      { destructive: { noul_gte: 0.9 } })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': wire({ destructive: noul(0.86) }) }),
+    })
+    expect(report.rows.map(r => [r.id, r.status]))
+      .toEqual([['f1.destructive', 'stable'], ['f1.expect', 'drifted']])
+    expect(report.broken).toBe(0)
+  })
+
+  it('still reports a vanished answer as broken alongside the band it also breaks', async () => {
+    // The distinction R6 is drawing: "the model stopped answering a question it used to" is
+    // `broken` and gates the exit; "a band calibrated from one measurement moved" is not.
+    const f = fixture('f1', { destructive: Q.destructive, action: Q.action },
+      { destructive: noul(0.96), action: choice('reread_full', 0.9) },
+      { destructive: { noul_gte: 0.9 }, action: { choice: 'reread_full' } })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': wire({ destructive: noul(0.82) }) }),
+    })
+    expect(report.rows.map(r => [r.id, r.status, r.live])).toEqual([
+      ['f1.destructive', 'stable', 0.82],
+      // The vanishing is `broken` and gates the exit — reported by diffFixture, which is
+      // where that finding lives. The expectation rows are the second, non-gating view of
+      // the same run.
+      ['f1.action', 'broken', 'missing'],
+      ['f1.expect', 'drifted', 'destructive: noul 0.82 < 0.9'],
+      ['f1.expect', 'drifted', 'action: no answer returned'],
+    ])
+    expect(report).toMatchObject({ broken: 1, drifted: 2 })
   })
 
   it('reports a confidence band the corpus recorded, which no numeric delta would reach', async () => {
@@ -208,6 +268,70 @@ describe('checkLive — the thresholds the corpus recorded', () => {
     expect(report.rows).toEqual([{ id: 'f1.destructive', recorded: 0.96, live: 0.93,
       delta: expect.closeTo(0.03, 5), status: 'stable' }])
     expect(report).toMatchObject({ broken: 0, drifted: 0 })
+  })
+})
+
+// R4 — every comparison against `undefined`/NaN is false, so an answer of the right type
+// carrying no measurement satisfied every clause of its expectation and the fixture reported
+// health. This is the expectation half; the diffFixture half is two describes up.
+describe('assertExpectation — a right-typed answer with no measurement in it', () => {
+  it('fails instead of satisfying every clause at once', () => {
+    const payloadless = { type: 'noul' } as unknown as JevAnswer
+    const fails = assertExpectation(
+      { destructive: { noul_gte: 0.9, noul_lte: 0.99 } }, { destructive: payloadless })
+    expect(fails).toHaveLength(1)
+    expect(fails[0]).toContain('destructive')
+    expect(fails[0]).toContain('noul')
+  })
+
+  it('fails a score or choice whose confidence is not a number', () => {
+    const noConfidence = { type: 'score', score: 2, legend: {}, probabilities: {} } as unknown as JevAnswer
+    expect(assertExpectation({ radius: { score_gte: 1, confidence_gte: 0.8 } },
+      { radius: noConfidence })).toHaveLength(1)
+    const nanConfidence = { type: 'choice', choice: 'reread_full', probabilities: {}, confidence: NaN } as JevAnswer
+    expect(assertExpectation({ action: { choice: 'reread_full', confidence_gte: 0.8 } },
+      { action: nanConfidence })).toHaveLength(1)
+  })
+
+  it('still passes every expectation the recorded corpus actually holds', () => {
+    // The no-false-rejection guard for the clause above: offline `jevc check` runs exactly
+    // this over all 60 fixtures and exits 1 on any failure.
+    for (const f of loadFixtures('fixtures')) {
+      const fails = assertExpectation(f.expect, f.measured.answers)
+      expect(fails, `${f.id}: ${fails.join('; ')}`).toEqual([])
+    }
+  })
+})
+
+// R5 — `model` was `res.model ?? model`, so only the last non-null string survived and every
+// row in the report claimed it. A mid-run alias bump is the one event `--live` exists to
+// attribute, and it was the one event the report misattributed.
+describe('checkLive — which model answered', () => {
+  it('names every model that answered when the alias moves mid-run', async () => {
+    const fs = ['f1', 'f2', 'f3'].map(id =>
+      fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const report = await checkLive(fs, {
+      client: serves({
+        'state for f1': { ...wire({ destructive: noul(0.9) }), model: 'jev-1.13.0' },
+        'state for f2': { ...wire({ destructive: noul(0.9) }), model: 'jev-1.14.0' },
+        'state for f3': { ...wire({ destructive: noul(0.9) }), model: 'jev-1.14.0' },
+      }),
+    })
+    // Not "jev-1.14.0": fixture 1 was measured against a different model than 2 and 3, and a
+    // report that names one of them attributes two thirds of its rows to the wrong build.
+    expect(report.model).toBe('jev-1.13.0, jev-1.14.0')
+  })
+
+  it('names the single model unchanged when it does not move', async () => {
+    const fs = ['f1', 'f2'].map(id =>
+      fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const report = await checkLive(fs, {
+      client: serves({
+        'state for f1': wire({ destructive: noul(0.9) }),
+        'state for f2': wire({ destructive: noul(0.9) }),
+      }),
+    })
+    expect(report.model).toBe('jev-1.13.0')
   })
 })
 
