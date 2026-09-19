@@ -195,6 +195,52 @@ describe('canEmit', () => {
     expect(canEmit(always, 'ai-sdk')).toEqual([])
   })
 
+  // The same rule is refused by ir.ts's validateProgram, and that duplication is
+  // deliberate (see the note beside `rule_always_matches` in capability.ts) — but the two
+  // copies had DRIFTED. validateProgram refuses `!Array.isArray(rule.when) ||
+  // rule.when.length === 0`; this file tested `.length === 0` alone, so a rule whose
+  // `when` a lossy producer dropped crashed canEmit with `rule.when is not iterable`.
+  // canEmit is the only gate a library consumer has, and a gate that throws a TypeError
+  // tells the caller nothing about their program. A missing `when` arrives exactly where
+  // a Program is a bare cast of parsed JSON: a lifted model response.
+  const lossy = (): Program => ({ ...nouls, reduce: { kind: 'rules',
+    rules: [{ then: 'deny' }] as unknown as Program['reduce']['rules'], otherwise: 'allow' } })
+
+  it('refuses a rule whose `when` never arrived, instead of throwing on it', () => {
+    for (const target of ['bouncer', 'toolgate']) {
+      expect([target, canEmit(lossy(), target).map(i => i.code)])
+        .toEqual([target, expect.arrayContaining(['rule_always_matches'])])
+    }
+    // The code targets are exempt from `rule_always_matches` — they can write "always" —
+    // and validateProgram owns the lossy-producer case for them. They must still not throw.
+    for (const target of ['sdk', 'json', 'ai-sdk', 'langchain']) {
+      expect(() => canEmit(lossy(), target)).not.toThrow()
+    }
+  })
+
+  // A gate that reveals its objections one at a time turns a single fix into a guessing
+  // game. canEmit aggregates, and the throw above truncated the list at the first rule:
+  // a program that also names a verdict bouncer cannot parse reported NOTHING, because
+  // the TypeError escaped before the verdict check ran.
+  it('reports every capability problem in one run, conditionless rule included', () => {
+    const both: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+      { then: 'deny' },
+      { when: [{ id: 'destructive', op: 'gte', value: 0.8 }], then: 'escalate' },
+    ] as unknown as Program['reduce']['rules'], otherwise: 'allow' } }
+    expect(canEmit(both, 'bouncer').map(i => i.code).sort())
+      .toEqual(['rule_always_matches', 'verdict_unsupported'])
+  })
+
+  // The refusal has to reach the caller of the emitter, not just canEmit: emitBouncerPolicy
+  // reads `r.when[0]` on the strength of canEmit having guaranteed exactly one condition.
+  // With `when` absent that guarantee was never made, and the emitter died on
+  // `undefined.op` — the same raw crash, one layer further from the user.
+  it('makes both policy emitters refuse a `when`-less rule with a message, not a TypeError', () => {
+    for (const emit of [emitBouncerPolicy, emitToolgatePolicy]) {
+      expect(() => emit(lossy())).toThrow(/no conditions, which always matches/)
+    }
+  })
+
   // A Program with no decisions compiles to a gate that asks nothing and therefore
   // always returns `otherwise`. Every target accepts it in its own way and none of them
   // complains: bouncer emits `questions: {}`, toolgate emits a thresholds block that
