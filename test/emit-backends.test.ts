@@ -413,3 +413,456 @@ describe('the public API', () => {
     expect(Object.keys((api as any).TARGETS)).toContain('toolgate')
   })
 })
+
+// ===========================================================================
+// Round 3, owner C — ai-sdk.ts + langchain.ts. Appended; nothing above moved.
+// ===========================================================================
+
+/** runAiSdk (above) only reaches reduce(). These findings are about the module's
+ *  OTHER exports — the question map's own keys and the confidence extractor — and
+ *  about whether a call site a consumer would actually write compiles. The driver is
+ *  typechecked here too, not just the module: "the wrong call compiles and the right
+ *  one does not" is precisely the defect, so the typecheck has to cover the call. */
+function runAiSdkDriver(src: string, driver: string[]): unknown {
+  const dir = tmp('aisdk-drv')
+  writeFileSync(join(dir, 'mod.ts'), stripProvider(src))
+  const run = join(dir, 'run.ts')
+  writeFileSync(run, driver.join('\n'))
+  execFileSync('node_modules/.bin/tsc', ['--noEmit', '--strict', '--target', 'es2022',
+    '--module', 'es2022', '--moduleResolution', 'bundler', '--skipLibCheck',
+    '--allowImportingTsExtensions', run], { encoding: 'utf8' })
+  return JSON.parse(execFileSync('node_modules/.bin/tsx', [run], { encoding: 'utf8' }))
+}
+
+/** '' when the driver compiles, the diagnostics when it does not. A call that MUST NOT
+ *  compile is the only tool an emitter has against a wrong call that otherwise runs clean. */
+function tscConsumer(src: string, driver: string[]): string {
+  const dir = tmp('aisdk-tsc')
+  writeFileSync(join(dir, 'mod.ts'), stripProvider(src))
+  const use = join(dir, 'use.ts')
+  writeFileSync(use, driver.join('\n'))
+  try {
+    execFileSync('node_modules/.bin/tsc', ['--noEmit', '--strict', '--target', 'es2022',
+      '--module', 'es2022', '--moduleResolution', 'bundler', '--skipLibCheck',
+      '--allowImportingTsExtensions', use], { encoding: 'utf8' })
+    return ''
+  } catch (e) {
+    const x = e as { stdout?: Buffer | string; stderr?: Buffer | string }
+    return `${x.stdout ?? ''}${x.stderr ?? ''}`
+  }
+}
+
+// ---------------------------------------------------------------------------
+// C1/C2/C5 — `is` against an answer that is missing, or is not a choice
+// ---------------------------------------------------------------------------
+
+/** Unlike the `lte` case in I4 above, `is` HAS an oracle: runtime.choiceOf never throws
+ *  (runtime.ts:32-37, "an `is` comparison against `undefined` is correctly false"), so
+ *  runReducer returns a verdict here and the emitted code has something to agree with. */
+const isRule: Program = {
+  decisions: [
+    { id: 'c', kind: 'choice', instructions: 'Classify the action.',
+      criteria: { destructive: 'deletes data', read_only: 'reads only' } },
+    { id: 'n', kind: 'noul', instructions: 'Urgent?' },
+  ],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'c', op: 'is', value: 'destructive' }], then: 'deny' },
+    { when: [{ id: 'n', op: 'gte', value: 0.8 }], then: 'ask' },
+  ], otherwise: 'allow' },
+  residual: '', dropped: [],
+}
+
+const choiceAnswer = (choice: string): JevAnswer =>
+  ({ type: 'choice', choice, confidence: 0.9,
+     probabilities: { destructive: 0.9, read_only: 0.1 } })
+
+const isExpected = [
+  // c unanswered
+  runReducer(isRule, { n: { type: 'noul', noul: 0.9 } }),
+  // c answered with the wrong kind — a NoulAnswer has no .choice at all
+  runReducer(isRule, { c: { type: 'noul', noul: 0.5 }, n: { type: 'noul', noul: 0.9 } }),
+  runReducer(isRule, { c: choiceAnswer('destructive'), n: { type: 'noul', noul: 0.1 } }),
+  runReducer(isRule, { c: choiceAnswer('read_only'), n: { type: 'noul', noul: 0.1 } }),
+]
+
+describe('`is` against a missing or wrong-kind answer', () => {
+  it('langchain: the rule does not fire, and reduce() does not raise', () => {
+    expect(isExpected).toEqual(['ask', 'ask', 'deny', 'allow'])
+    expect(runLangchain(emitLangchain(isRule), [
+      { n: { kind: 'noul', noul: 0.9 } },
+      { c: { kind: 'noul', noul: 0.5 }, n: { kind: 'noul', noul: 0.9 } },
+      { c: { kind: 'choice', choice: 'destructive', confidence: 0.9 }, n: { kind: 'noul', noul: 0.1 } },
+      { c: { kind: 'choice', choice: 'read_only', confidence: 0.9 }, n: { kind: 'noul', noul: 0.1 } },
+    ])).toEqual(isExpected)
+  }, 60_000)
+
+  it('ai-sdk: the same four inputs, the same four verdicts', () => {
+    expect(runAiSdk(emitAiSdk(isRule), [
+      { answers: { n: { type: 'boolean', probability: 0.9 } }, confidence: {} },
+      { answers: { c: { type: 'boolean', probability: 0.5 }, n: { type: 'boolean', probability: 0.9 } }, confidence: {} },
+      { answers: { c: { type: 'choice', choice: 'destructive', probabilities: {} }, n: { type: 'boolean', probability: 0.1 } }, confidence: { c: 0.9 } },
+      { answers: { c: { type: 'choice', choice: 'read_only', probabilities: {} }, n: { type: 'boolean', probability: 0.1 } }, confidence: { c: 0.9 } },
+    ])).toEqual(isExpected)
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// C3/C6 — the confidence map is the model's own statistic, not a default
+// ---------------------------------------------------------------------------
+
+/** target-ai-sdk-and-langchain.md A.4: confidence is RELOCATED to
+ *  providerMetadata.typesafe.confidence, and the doc's own live answer shows it is a
+ *  different number from the top-minus-second margin confidenceFrom recomputes
+ *  (0.13 against a 0.07 margin). Defaulting the map to {} makes the recomputation the
+ *  default path, which line 179 ("prefer the provider's own confidence when present")
+ *  forbids. */
+const confProgram: Program = {
+  decisions: [{ id: 'action_class', kind: 'choice', instructions: 'Classify the action.',
+    criteria: { destructive: 'deletes data', read_only: 'reads only', other: null },
+    uncertain: { belowConfidence: 0.1 } }],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'action_class', op: 'uncertain' }], then: 'escalate' }], otherwise: 'allow' },
+  residual: '', dropped: [],
+}
+
+const A4_PROBS = { destructive: 0.42, read_only: 0.35, other: 0.23 }
+const A4_CONFIDENCE = 0.13
+
+describe('the ai-sdk confidence map', () => {
+  it('cannot be omitted: reduce(answers) does not compile', () => {
+    const out = tscConsumer(emitAiSdk(confProgram), [
+      `import { reduce } from './mod.ts'`,
+      `console.log(reduce({}))`,
+    ])
+    expect(out).toMatch(/error TS2554/)
+  }, 60_000)
+
+  it('is reachable: confidenceOf(result) narrows providerMetadata and matches runReducer', () => {
+    const expected = runReducer(confProgram, { action_class: {
+      type: 'choice', choice: 'destructive', confidence: A4_CONFIDENCE, probabilities: A4_PROBS } })
+    expect(expected).toBe('allow')   // 0.13 >= belowConfidence 0.1, so: certain
+    // `result` is typed exactly as A.3 declares it — providerMetadata is JSONObject, which
+    // is why reaching .typesafe.confidence by hand is a TS2345 and the emitter has to
+    // supply the narrowing itself (A.4: "jevc must emit a narrowing cast/guard").
+    const got = runAiSdkDriver(emitAiSdk(confProgram), [
+      `import { reduce, confidenceOf } from './mod.ts'`,
+      `type JSONValue = string | number | boolean | null | JSONValue[] | { [k: string]: JSONValue }`,
+      `type JSONObject = { [k: string]: JSONValue }`,
+      `const result: { answers: Record<string, unknown>; providerMetadata?: Record<string, JSONObject> } = {`,
+      `  answers: { action_class: { type: 'choice', choice: 'destructive', probabilities: ${JSON.stringify(A4_PROBS)} } },`,
+      `  providerMetadata: { typesafe: { confidence: { action_class: ${A4_CONFIDENCE} } } },`,
+      `}`,
+      `console.log(JSON.stringify(reduce(result.answers, confidenceOf(result))))`,
+    ])
+    expect(got).toBe(expected)
+  }, 60_000)
+
+  it('falls back to recomputation only where the provider returned nothing', () => {
+    // A.4 degradation 1: the entry is ABSENT, not null, when the wire returned none.
+    const got = runAiSdkDriver(emitAiSdk(confProgram), [
+      `import { confidenceOf } from './mod.ts'`,
+      `console.log(JSON.stringify([`,
+      `  confidenceOf({ providerMetadata: { typesafe: { confidence: {} } } }),`,
+      `  confidenceOf({}),`,
+      `  confidenceOf({ providerMetadata: { typesafe: { confidence: { a: 0.5, b: null } } } }),`,
+      `]))`,
+    ])
+    expect(got).toEqual([{}, {}, { a: 0.5 }])
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// C4 — a question id of `__proto__` is an own key, not the object's prototype
+// ---------------------------------------------------------------------------
+
+/** `{ __proto__: v }` — bare OR quoted — is the prototype setter in an object
+ *  initializer, so the question disappears from the emitted map: never sent, never
+ *  answered, and the rule that names it can never fire. Reachable straight from the CLI,
+ *  because from-schema uses the JSON Schema property name as the id and JSON.parse does
+ *  create an own `__proto__` key. Built here with JSON.parse for the same reason: a
+ *  `{ __proto__: ... }` literal in THIS file would be the setter too. */
+const protoProgram: Program = {
+  decisions: [
+    { id: '__proto__', kind: 'noul', instructions: 'Does the call touch credentials?' },
+    { id: 'dept', kind: 'choice', instructions: 'Which team?',
+      criteria: JSON.parse('{"__proto__":"the platform team","billing":"payments"}') },
+  ],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: '__proto__', op: 'gte', value: 0.8 }], then: 'deny' }], otherwise: 'allow' },
+  residual: '', dropped: [],
+}
+
+describe('a `__proto__` id', () => {
+  it('ai-sdk: survives as an own key in every emitted map', () => {
+    const got = runAiSdkDriver(emitAiSdk(protoProgram), [
+      `import { programQuestions, UNCERTAINTY } from './mod.ts'`,
+      `console.log(JSON.stringify({`,
+      `  questions: Object.keys(programQuestions),`,
+      // A STRING, not a parsed object: chai's property-path lookup cannot address
+      // `__proto__`, and the point of the assertion is what goes over the wire anyway.
+      `  sent: JSON.stringify(programQuestions),`,
+      `  uncertainty: Object.keys(UNCERTAINTY),`,
+      `  options: Object.keys(programQuestions.dept.criteria),`,
+      `}))`,
+    ]) as { questions: string[]; sent: string; uncertainty: string[]; options: string[] }
+    expect(got.questions).toEqual(['__proto__', 'dept'])
+    expect(got.uncertainty).toEqual(['__proto__', 'dept'])
+    expect(got.options).toEqual(['__proto__', 'billing'])
+    // The map is what the consumer puts on the wire; a question missing from the
+    // serialisation is a question the model is never asked.
+    expect(got.sent).toContain('"__proto__":{"type":"boolean","instructions":"Does the call touch credentials?"}')
+  }, 60_000)
+
+  it('langchain: keeps it too, as it always did — a Python dict has no prototype', () => {
+    expect(emitLangchain(protoProgram)).toContain('"__proto__": Noul(')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// C7 — a non-finite threshold Python can express
+// ---------------------------------------------------------------------------
+
+/** Round 2's `probability_threshold_out_of_range` refuses inf/-inf/NaN for noul and
+ *  choice, and inf/-inf for score — but NOT NaN against a score, because the check is
+ *  `value < 0 || value > levels-1` and both comparisons are false for NaN. That one
+ *  survivor still reaches py(), which renders it `None`, and `2 >= None` is a TypeError
+ *  in Python 3 where runReducer's `2 >= NaN` is simply false. */
+const nanScore: Program = {
+  decisions: [{ id: 'radius', kind: 'score', instructions: 'How wide is the blast radius?',
+    criteria: ['none', 'single file', 'directory', 'whole system'] }],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'radius', op: 'gte', value: NaN }], then: 'deny' }], otherwise: 'allow' },
+  residual: '', dropped: [],
+}
+
+const scoreAnswer = (score: number): JevAnswer =>
+  ({ type: 'score', score, confidence: 0.9, legend: {}, probabilities: {} })
+
+describe('a non-finite threshold', () => {
+  it('langchain: compares false rather than raising, exactly as runReducer does', async () => {
+    const { validateProgram } = await import('../src/ir.js')
+    // Nothing upstream refuses this one, so the emitter is the last line.
+    expect(validateProgram(nanScore)).toEqual([])
+    const expected = [3, 0].map(s => runReducer(nanScore, { radius: scoreAnswer(s) }))
+    expect(expected).toEqual(['allow', 'allow'])
+    expect(runLangchain(emitLangchain(nanScore), [
+      { radius: { kind: 'score', score: 3, confidence: 0.9 } },
+      { radius: { kind: 'score', score: 0, confidence: 0.9 } },
+    ])).toEqual(expected)
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// C8 — a NUL byte in the residual
+// ---------------------------------------------------------------------------
+
+describe('residual, continued', () => {
+  // CPython rejects a NUL anywhere in source text, comments included, so one NUL in
+  // lifted prose makes the whole emitted module unimportable. Reachable from the CLI:
+  // a JSON Schema `description` may legally contain \u0000 and from-schema copies it
+  // into the residual verbatim.
+  it('langchain: a NUL byte in the residual does not make the module unimportable', () => {
+    const r: Program = { ...lower, residual: 'One-line summary\u0000of the ticket' }
+    expect(runLangchain(emitLangchain(r), [{}])).toEqual(['handle'])
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// The consumer-semantics grid: both emitted artifacts against runReducer, over a
+// probability grid that straddles every threshold in the program.
+// ---------------------------------------------------------------------------
+
+/** Every op the code targets can lower, and every kind, with thresholds and uncertainty
+ *  rules chosen so the grid below has points on both sides of each one. */
+const gridProgram: Program = {
+  decisions: [
+    { id: 'is_urgent', kind: 'noul', instructions: 'Urgent?' },                       // band [0.35, 0.65]
+    { id: 'dept', kind: 'choice', instructions: 'Which team?',
+      criteria: { billing: 'payments', technical: 'bugs' }, uncertain: { belowConfidence: 0.6 } },
+    { id: 'radius', kind: 'score', instructions: 'How wide is the blast radius?',
+      criteria: ['none', 'single file', 'directory', 'whole system'] },               // belowConfidence 0.5
+  ],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'radius', op: 'gte', value: 2 }], then: 'deny' },
+    { when: [{ id: 'is_urgent', op: 'gte', value: 0.8 }], then: 'escalate' },
+    { when: [{ id: 'dept', op: 'uncertain' }], then: 'ask' },
+    { when: [{ id: 'dept', op: 'is', value: 'billing' }, { id: 'is_urgent', op: 'lte', value: 0.3 }], then: 'queue' },
+    { when: [{ id: 'dept', op: 'gte', value: 0.9 }], then: 'route' },
+    { when: [{ id: 'radius', op: 'uncertain' }], then: 'review' },
+    { when: [{ id: 'is_urgent', op: 'uncertain' }], then: 'hold' },
+  ], otherwise: 'allow' },
+  residual: '', dropped: [],
+}
+
+const NOUL_GRID = [0, 0.3, 0.35, 0.5, 0.65, 0.79, 0.8, 1]
+const CONF2_GRID = [0, 0.5, 0.59, 0.6, 0.89, 0.9, 1]
+const SCORE_GRID = [0, 1, 2, 3]
+const SCONF_GRID = [0.4, 0.5, 0.6]
+const LABELS = ['billing', 'technical']
+
+type GridPoint = { nv: number; cv: string; cc: number; sv: number; sc: number }
+const GRID: GridPoint[] = []
+for (const nv of NOUL_GRID) for (const cv of LABELS) for (const cc of CONF2_GRID)
+  for (const sv of SCORE_GRID) for (const sc of SCONF_GRID) GRID.push({ nv, cv, cc, sv, sc })
+
+describe('consumer-semantics grid', () => {
+  it('ai-sdk and langchain agree with runReducer at every point', () => {
+    const expected = GRID.map(g => runReducer(gridProgram, {
+      is_urgent: { type: 'noul', noul: g.nv },
+      dept: { type: 'choice', choice: g.cv, confidence: g.cc,
+        probabilities: { billing: g.cc, technical: 1 - g.cc } },
+      radius: { type: 'score', score: g.sv, confidence: g.sc, legend: {}, probabilities: {} },
+    }))
+    // More than one verdict, or the grid proves nothing.
+    expect(new Set(expected).size).toBeGreaterThan(3)
+
+    // TARGET A. Answers shaped per A.3 (boolean -> probability, no inline confidence,
+    // legend absent) and the confidence map read back through the emitter's own
+    // extractor, which is how A.4 says a consumer gets at it.
+    const aiCases = GRID.map(g => ({
+      answers: {
+        is_urgent: { type: 'boolean', probability: g.nv },
+        dept: { type: 'choice', choice: g.cv, probabilities: { billing: g.cc, technical: 1 - g.cc } },
+        radius: { type: 'score', score: g.sv, probabilities: {} },
+      },
+      providerMetadata: { typesafe: { confidence: { dept: g.cc, radius: g.sc } } },
+    }))
+    const ai = runAiSdkDriver(emitAiSdk(gridProgram), [
+      `import { reduce, confidenceOf } from './mod.ts'`,
+      `const cases = ${JSON.stringify(aiCases)}`,
+      `console.log(JSON.stringify(cases.map(c => reduce(c.answers, confidenceOf(c)))))`,
+    ]) as string[]
+
+    // TARGET B. Answers shaped per B.3: confidence inline and required on choice/score,
+    // legend inline on score, NoulAnswer carrying neither.
+    const lc = runLangchain(emitLangchain(gridProgram), GRID.map(g => ({
+      is_urgent: { kind: 'noul', noul: g.nv },
+      dept: { kind: 'choice', choice: g.cv, confidence: g.cc,
+        probabilities: { billing: g.cc, technical: 1 - g.cc } },
+      radius: { kind: 'score', score: g.sv, confidence: g.sc, legend: {}, probabilities: {} },
+    })))
+
+    const disagree = GRID.flatMap((g, i) => ai[i] === expected[i] && lc[i] === expected[i]
+      ? [] : [`${JSON.stringify(g)} jevc=${expected[i]} ai-sdk=${ai[i]} langchain=${lc[i]}`])
+    expect(disagree.slice(0, 8).join('\n')).toBe('')
+    expect(disagree.length).toBe(0)
+  }, 180_000)
+})
+
+// ---------------------------------------------------------------------------
+// TARGET sdk (src/emit/native.ts) — round 3, owner A. Appended; nothing above moved.
+// The CLI default target, and until now the only code target with no execution
+// harness: every assertion on it was a regex over the emitted string, which is how
+// `if () return "ignore"` shipped. target-jev-guard.md/mapping-notes-1 fixes what the
+// consumer does with the artifact — "a small ES module — your `decisions` as a
+// questions literal, your `reduce` as a pure function over the answers" — so the
+// check is: build it the way a consumer builds it, read `programQuestions`, call
+// `reduce`, and compare against runReducer.
+// ---------------------------------------------------------------------------
+
+import { emitNative } from '../src/emit/native.js'
+
+/** The artifact imports the published package name; in-repo that is the source entry.
+ *  Module AND driver are typechecked together, because "the artifact compiles" is only
+ *  half of what a consumer does with it and "the call they write compiles" is the rest. */
+const JEVC_ENTRY = new URL('../src/index.js', import.meta.url).pathname
+
+function runNative(src: string, driver: string[]): unknown {
+  // execFileSync hides a compiler's diagnostics inside the thrown Error, so a red run
+  // would report "Command failed" and prove nothing. Re-throw with them attached.
+  const exec = (bin: string, args: string[]) => {
+    try {
+      return execFileSync(bin, args, { encoding: 'utf8' })
+    } catch (e) {
+      const x = e as { stdout?: string; stderr?: string }
+      throw new Error(`${bin} failed:\n${x.stdout ?? ''}${x.stderr ?? ''}`)
+    }
+  }
+  const dir = tmp('native')
+  writeFileSync(join(dir, 'mod.ts'),
+    src.replaceAll(`from 'jevc'`, `from ${JSON.stringify(JEVC_ENTRY)}`))
+  const run = join(dir, 'run.ts')
+  writeFileSync(run, driver.join('\n'))
+  exec('node_modules/.bin/tsc', ['--noEmit', '--strict', '--target', 'es2022',
+    '--module', 'nodenext', '--moduleResolution', 'nodenext', '--skipLibCheck',
+    '--allowImportingTsExtensions', run])
+  return JSON.parse(exec('node_modules/.bin/tsx', [run]))
+}
+
+/** The sdk reducer is a lowering of runReducer, so the two take one answer shape. */
+const nativeVerdicts = (prog: Program, cases: Array<Record<string, JevAnswer>>) =>
+  runNative(emitNative(prog), [
+    `import type { JevAnswer } from ${JSON.stringify(JEVC_ENTRY)}`,
+    `import { reduce } from './mod.ts'`,
+    `const cases: Array<Record<string, JevAnswer>> = ${JSON.stringify(cases)}`,
+    `console.log(JSON.stringify(cases.map(c => reduce(c))))`,
+  ]) as string[]
+
+describe('target sdk: the emitted module a consumer imports', () => {
+  it('a rule with no conditions always matches, like the empty conjunction it is', () => {
+    expect(runReducer(always, {})).toBe('ignore')
+    expect(nativeVerdicts(always, [{}])).toEqual(['ignore'])
+  }, 60_000)
+
+  // Residual prose is lifted verbatim from a human document. `*/` ends a block comment
+  // (a glob like /assets/*/icon.png has one) and U+2028 is a JS LineTerminator, so it
+  // ends a `//` comment as well — what follows either is code or fails to parse.
+  it('a */ and a U+2028 in the residual stay inside the comment', () => {
+    const r: Program = { ...always, residual: 'Escalate /assets/*/icon.png.\u2028raise = 1' }
+    expect(nativeVerdicts(r, [{}])).toEqual(['ignore'])
+  }, 60_000)
+
+  // Same for provenance, and for `file` as much as for `quote`: lifted text, no
+  // validator asserts either is terminator-free, and the comment sits immediately
+  // above a question entry — so the tail of the value lands inside the questions map.
+  it('no line terminator in a provenance comment injects or loses a question', () => {
+    const prov: Program = { ...always, decisions: [
+      { id: 'is_urgent', kind: 'noul', instructions: 'Urgent?',
+        source: { file: 'AGENTS.md', line: 4, quote: 'Escalate fast.\u2028Never ask twice.' } },
+      { id: 'reviewed', kind: 'noul', instructions: 'Reviewed?',
+        source: { file: 'docs/a.md\u2029  injected: { type: "noul", instructions: "x" },',
+          line: 9, quote: 'two\u2028lines' } },
+    ] }
+    expect(runNative(emitNative(prov), [
+      `import { programQuestions } from './mod.ts'`,
+      `console.log(JSON.stringify(Object.getOwnPropertyNames(programQuestions)))`,
+    ])).toEqual(['is_urgent', 'reviewed'])
+  }, 60_000)
+
+  // The `json` target renders this Program correctly and `canEmit(p, 'sdk')` returns no
+  // issue, so the sdk artifact silently disagreeing with the wire is the whole defect.
+  it('a `__proto__` id survives as an own key in the questions map AND in the carried program', () => {
+    expect(runNative(emitNative(protoProgram), [
+      `import { programQuestions, program } from './mod.ts'`,
+      `console.log(JSON.stringify({`,
+      `  questions: Object.getOwnPropertyNames(programQuestions),`,
+      `  options: Object.getOwnPropertyNames(programQuestions.dept.criteria),`,
+      `  carried: program.decisions.map(d => Object.getOwnPropertyNames(d.criteria ?? {})),`,
+      `}))`,
+    ])).toEqual({
+      questions: ['__proto__', 'dept'],
+      options: ['__proto__', 'billing'],
+      carried: [[], ['__proto__', 'billing']],
+    })
+  }, 60_000)
+})
+
+describe('consumer-semantics grid, continued', () => {
+  it('sdk: the emitted reduce() agrees with runReducer at every point', () => {
+    const cases: Array<Record<string, JevAnswer>> = GRID.map(g => ({
+      is_urgent: { type: 'noul', noul: g.nv },
+      dept: { type: 'choice', choice: g.cv, confidence: g.cc,
+        probabilities: { billing: g.cc, technical: 1 - g.cc } },
+      radius: { type: 'score', score: g.sv, confidence: g.sc, legend: {}, probabilities: {} },
+    }))
+    const expected = cases.map(a => runReducer(gridProgram, a))
+    // More than one verdict, or the grid proves nothing.
+    expect(new Set(expected).size).toBeGreaterThan(3)
+
+    const got = nativeVerdicts(gridProgram, cases)
+    const disagree = GRID.flatMap((g, i) => got[i] === expected[i]
+      ? [] : [`${JSON.stringify(g)} jevc=${expected[i]} sdk=${got[i]}`])
+    expect(disagree.slice(0, 8).join('\n')).toBe('')
+    expect(disagree.length).toBe(0)
+  }, 180_000)
+})

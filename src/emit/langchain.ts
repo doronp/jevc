@@ -17,6 +17,25 @@ function py(v: JsonValue | undefined): string {
   return `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${py(x)}`).join(', ')}}`
 }
 
+/**
+ * A Python literal for a THRESHOLD, which py() alone cannot render. py() maps every
+ * non-finite number to `None` because a JSON null really is None wherever an EntryType
+ * appears — but in `_compare(answers, "q", ">=", None)` that is a TypeError the moment
+ * the rule is evaluated, where runReducer's `2 >= NaN` is simply false. Python has the
+ * literals: `float("inf") / float("-inf") / float("nan")` reproduce JS comparison
+ * results exactly. validateProgram refuses most of these now (a noul or choice threshold
+ * must be in 0..1, a score threshold inside level-index space), but NOT NaN against a
+ * score — `NaN < 0` and `NaN > levels-1` are both false — so the emitter is the last
+ * line for that one. Anything that is not a number at all still goes through py(), which
+ * renders it faithfully rather than guessing.
+ */
+function pyThreshold(v: unknown): string {
+  if (typeof v === 'number' && !Number.isFinite(v)) {
+    return Number.isNaN(v) ? 'float("nan")' : v > 0 ? 'float("inf")' : 'float("-inf")'
+  }
+  return py(v as JsonValue)
+}
+
 function question(d: Decision): string {
   if (d.kind === 'noul') {
     const c = d.criteria && !Array.isArray(d.criteria)
@@ -47,11 +66,16 @@ export function emitLangchain(p: Program, name = 'program'): string {
 
   const rules = p.reduce.rules.map(r => {
     const conds = r.when.map(c => {
-      if (c.op === 'is') return `answers[${py(c.id)}].choice == ${py(c.value)}`
+      // _choice(), not a subscript: `answers["q"].choice` raises KeyError on an
+      // unanswered question and AttributeError on an answer that is not a choice, where
+      // runtime.choiceOf (runtime.ts:32-37) returns undefined and the rule simply does
+      // not fire. This branch was the one operator in this emitter that still crashed
+      // where its own _compare and _uncertain skip.
+      if (c.op === 'is') return `_choice(answers, ${py(c.id)}) == ${py(c.value)}`
       if (c.op === 'uncertain') return `_uncertain(answers, ${py(c.id)})`
-      // py(), not interpolation: Infinity and NaN are JS globals and Python NameErrors,
-      // and nothing upstream rejects a non-finite threshold.
-      return `_compare(answers, ${py(c.id)}, ${py(c.op === 'gte' ? '>=' : '<=')}, ${py(c.value)})`
+      // pyThreshold(), not interpolation: Infinity and NaN are JS globals and Python
+      // NameErrors, and py()'s None would turn the comparison into a TypeError.
+      return `_compare(answers, ${py(c.id)}, ${py(c.op === 'gte' ? '>=' : '<=')}, ${pyThreshold(c.value)})`
     }).join(' and ')
     // `when: []` is an empty conjunction and `[].every(...)` is true, so the rule fires
     // unconditionally — `True` is what that means here, and joining nothing produced the
@@ -96,6 +120,15 @@ def _value(answers, qid):
     return getattr(ans, "confidence", None)
 
 
+def _choice(answers, qid):
+    """A choice answer's chosen label, or None — mirrors runtime.choiceOf. getattr with a
+    default, not attribute access: an unanswered question and an answer of the wrong kind
+    (a NoulAnswer has no .choice at all) both collapse to None, and None matches no
+    option, so the rule does not fire. Neither is an error a generated module could
+    report anywhere."""
+    return getattr(answers.get(qid), "choice", None)
+
+
 def _compare(answers, qid, op, threshold) -> bool:
     """A rule whose question was not answered does not fire, in either direction: absence
     of evidence is not evidence, and it is bouncer's rule for the same situation. An
@@ -129,5 +162,11 @@ ${p.residual ? `\n# Still requires a generative model:\n${
   // Python's tokenizer ends a line at a lone \r as readily as at \n, so splitting on '\n'
   // alone leaves everything after a CR uncommented — and executed at import. Residual is
   // prose lifted from a human document and arrives with that document's line endings.
-  p.residual.split(/\r\n|\r|\n/g).map(l => `# ${l}`).join('\n')}\n` : ''}`
+  // NUL is the other character the tokenizer will not accept: CPython refuses a NUL
+  // anywhere in source text, comments included ("source code string cannot contain null
+  // bytes"), so one of them makes the whole module unimportable. It is the one hole left
+  // in this emitter — every other user string goes through py() -> JSON.stringify, which
+  // escapes it. Fuzzed the rest of C0 through ast.parse: \0, \n and \r are the only three
+  // that escape or break a `#` comment, and the split already covers the other two.
+  p.residual.split(/\r\n|\r|\n/g).map(l => `# ${l.replace(/\0/g, '\\x00')}`).join('\n')}\n` : ''}`
 }
