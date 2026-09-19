@@ -13,6 +13,49 @@ import { validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
+
+/**
+ * Every byte jevc prints goes through `toStdout`/`toStderr`, and they write the file
+ * descriptor SYNCHRONOUSLY instead of going through `process.stdout`/`process.stderr`.
+ *
+ * A `process.stdout` write is synchronous only when stdout is a file or a TTY. To a PIPE
+ * it is asynchronous, and the `process.exit()` that followed every write in this file
+ * discarded whatever had not drained. Measured on this tree:
+ *
+ *   jevc emit-policy --for bouncer big-program.json > file   ->  185,550 bytes
+ *   jevc emit-policy --for bouncer big-program.json | cat    ->   65,536 bytes, exit 0
+ *
+ * 65,536 is the pipe buffer, not a property of the program. The short policy is not a
+ * crash and not even a parse error — it is YAML that LOADS, with 43 of 701 rules and no
+ * terminal `default`, and docs/targets/target-bouncer.md:59 says a policy with no
+ * `default` emits nothing when nothing matches. A gate reduced to 6% of itself, silently,
+ * at exit 0: the exact "well-formed artifact, different meaning" failure this tool exists
+ * to refuse. `--emit sdk` (a 313 KB module cut mid-token), `--emit json` and `--lift` (the
+ * terminating fence deleted, so the anti-injection fence no longer closes) all did it too.
+ *
+ * Fixing it at the write rather than at the exit covers every exit at once, and stderr
+ * needs it too. The `process.exit(1)` calls below are mid-command early-outs that cannot
+ * be reached by falling through, and they print one `error:` line per issue. Those small
+ * writes survive `| cat`, because a reader that drains continuously keeps the pipe buffer
+ * empty and every write completes in the try-write — but measured against a reader that
+ * is merely busy for a moment (`2>&1 >/dev/null | (sleep 2; cat)`), a 146,180-byte error
+ * list arrived as 65,508 bytes and stopped at rule 631 of 1399. Exit 1, so the user knows
+ * it failed; they just fix 632 of 1400 problems and the truncation point moves with
+ * machine load. A fix that only removed `process.exit(0)` from the four success paths
+ * would leave that in place.
+ */
+const writeFd = (fd: number, text: string): void => {
+  try { writeFileSync(fd, text) }
+  catch (e) {
+    // `jevc ... | head -1`: the reader closed the pipe and there is nobody left to tell.
+    // Letting EPIPE escape would print a Node stack trace and crash banner, which is
+    // strictly worse than the silence `process.stdout.write` produced here before.
+    if ((e as NodeJS.ErrnoException).code !== 'EPIPE') throw e
+  }
+}
+const toStdout = (text: string) => writeFd(1, text)
+const toStderr = (text: string) => writeFd(2, text)
+
 const flag = (name: string): string | undefined => {
   // Single-char flags are documented in short form (-o); accept the long form too.
   const forms = name.length === 1 ? [`--${name}`, `-${name}`] : [`--${name}`]
@@ -69,7 +112,7 @@ const positional = (): string | undefined => {
   return undefined
 }
 
-const die = (msg: string): never => { process.stderr.write(`${msg}\n`); process.exit(1) }
+const die = (msg: string): never => { toStderr(`${msg}\n`); process.exit(1) }
 
 /**
  * The options each subcommand accepts. Nothing walked argv looking for an option it did not
@@ -89,6 +132,7 @@ const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
 }
 const knownFlags = KNOWN_FLAGS[cmd]
 if (knownFlags) {
+  const seen = new Set<string>()
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i]
     if (!a.startsWith('-') || a === '-') continue
@@ -100,6 +144,28 @@ if (knownFlags) {
       const spelled = [...knownFlags].map(n => (n.length === 1 ? `-${n}` : `--${n}`)).join(', ')
       die(`Unknown option "${a}" for jevc ${cmd}. Known: ${spelled}.`)
     }
+    // A REPEATED option is the same defect as an unrecognised one, one step further in:
+    // the name is known, so nothing above objects, and `flag()` returns on its first
+    // match. Measured on this tree, all at exit 0 and all silent:
+    //   compile s.json --emit json --emit sdk   -> a wire request, not the module
+    //   emit-policy --for bouncer --for toolgate -> a bouncer policy for a toolgate gate
+    //   compile s.json -o a.ts -o b.ts          -> a.ts written, b.ts NEVER CREATED
+    // The last is the worst: b.ts keeps whatever it held, so the stale artifact stays
+    // live while the operator believes they just replaced it. A `$(EXTRA_FLAGS)` appended
+    // to a Makefile line that already carries `--emit`, or an edited history line, is all
+    // it takes. Refusing is this file's house style for an ambiguous argv (see the
+    // unknown-option note above) and the only answer that cannot ship the wrong artifact.
+    //
+    // The same value twice (`--emit json --emit json`) is refused too. It is not
+    // ambiguous about the OUTCOME, but it is the identical typo shape, "which one wins"
+    // is a question a reader of the command line should never have to ask, and a rule
+    // with an exception for value-equality is a rule nobody can apply by eye. The cost is
+    // one clear error on a command line that was already redundant.
+    if (seen.has(name)) {
+      const spelled = name.length === 1 ? `-${name}` : `--${name}`
+      die(`Option "${spelled}" was given more than once for jevc ${cmd}. Pass it exactly once — jevc will not choose between them.`)
+    }
+    seen.add(name)
     // Skip the value so a value that looks like a flag is not reported as one. `flag()`
     // refuses a flag-shaped value separately, so nothing is let through here.
     if (!a.includes('=') && VALUED.has(name)) i++
@@ -204,7 +270,7 @@ const read = (p: string) => {
 const write = (p: string, text: string): void => {
   try { writeFileSync(p, text) }
   catch (e) { die(`Cannot write ${p}: ${(e as Error).message}`) }
-  process.stderr.write(`wrote ${p}\n`)
+  toStderr(`wrote ${p}\n`)
 }
 const fixtures = (dir: string) => {
   try { return loadFixtures(dir) }
@@ -216,12 +282,56 @@ if (cmd === 'compile') {
   const text = read(path)
 
   if (has('lift')) {
+    const where = path === '-' ? 'stdin' : path
+
+    // `--emit` is one of compile's known flags, so the unknown-option gate above waves it
+    // through, and this branch then returned before anything read it: `jevc compile
+    // AGENTS.md --lift --emit json` printed the lift request at exit 0 and never mentioned
+    // the emitter that was asked for and did not run. That is the same unread-but-known
+    // flag as `-o` below. There is no honouring it — `--lift` produces the lowering
+    // REQUEST an agent answers, and the emitter runs on the Program that comes back, one
+    // command later — so the answer is to refuse the combination rather than pick one.
+    if (flag('emit') !== undefined) {
+      die('--emit has no meaning with `jevc compile --lift`: --lift prints the lowering request an agent answers, not an emitted artifact. Lift first, then run jevc on the Program the agent returns.')
+    }
+
+    // An empty instruction file is not "a document that happens to contain no rules", it
+    // is a mistake — a shell redirection that produced nothing, or the wrong path — and
+    // the prompt built from it is a complete 4 KB lowering request with an empty document
+    // section. Measured, not assumed: from-prompt.ts normalises every candidate quote and
+    // the document alike with `/\s+/g -> ' '` and then `.trim()`, and requires the quote
+    // to be at least MIN_QUOTE_LENGTH (12) characters. A document with no non-whitespace
+    // content normalises to the empty string, so NO citation can ever verify against it:
+    // every decision the agent returns is either rejected as unprovenanced or invented.
+    // That is why whitespace-only counts as empty here.
+    //
+    // Comments do NOT count. jevc strips nothing from an instruction document —
+    // buildLiftRequest embeds `source` verbatim between the fences — so `<!-- ... -->` and
+    // `# ...` are quotable text like any other line, and a decision citing one is
+    // perfectly verifiable. Treating them as empty would enforce a comment syntax the tool
+    // does not have, and it would have to guess which of markdown/HTML/shell it is reading.
+    //
+    // Same contract as `canEmit`'s `no_decisions` ("Nothing to emit: ...") at the far end
+    // of the pipeline, which round 3 put on the non-lift path for the same reason: one
+    // `dropped:` line at exit 0 reads as success.
+    if (text.trim() === '') {
+      die(`Nothing to lift: ${where} ${text.length === 0 ? 'is empty' : 'contains only whitespace'}. A lift request over an empty document asks an agent to lower nothing, and no decision it returns could be verified — a provenance quote must appear in the document, and there is no text in this one.`)
+    }
+
     // The label on the fence is the name `parseLiftResponse` checks every `source.file`
     // against, and it compares against the path IT is handed — the same one the user typed
     // here. Labelling the fence with `basename(path)` told the lifter the file was
     // "AGENTS.md" while the caller verifies against "docs/AGENTS.md", so every decision
     // came back `provenance_file_unknown`. The label has to be the path as given.
-    process.stdout.write(buildLiftRequest(text, path === '-' ? 'stdin' : path))
+    const request = buildLiftRequest(text, where)
+
+    // `-o` was accepted and never read on this path alone, so `--lift -o request.txt`
+    // exited 0, printed 4 KB to the terminal and left request.txt holding the PREVIOUS
+    // run's prompt — a pipeline that writes it and then reads it lifts the wrong document.
+    // Every other output path in this file honours `-o`; this is the same three lines.
+    const dest = flag('o')
+    if (dest) write(dest, request)
+    else toStdout(request)
     process.exit(0)
   }
 
@@ -233,10 +343,10 @@ if (cmd === 'compile') {
   }
 
   const issues = [...validateProgram(program!), ...lintProgram(program!)]
-  for (const i of issues) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+  for (const i of issues) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
   if (issues.some(i => i.severity === 'error')) process.exit(1)
 
-  if (program!.residual) process.stderr.write(`\nresidual:\n${program!.residual}\n`)
+  if (program!.residual) toStderr(`\nresidual:\n${program!.residual}\n`)
 
   // `dropped` carries two categorically different reports and only one of them is this
   // tool working as designed. `unsupported` — "this construct has no Jev equivalent" — is
@@ -256,7 +366,7 @@ if (cmd === 'compile') {
   // the prose changes whenever the message improves.
   const collided = program!.dropped.filter(d => d.kind === 'collision')
   for (const d of program!.dropped) {
-    process.stderr.write(`${d.kind === 'collision' ? 'error' : 'dropped'}: ${d.reason}\n`)
+    toStderr(`${d.kind === 'collision' ? 'error' : 'dropped'}: ${d.reason}\n`)
   }
 
   // ai-sdk and langchain existed as emitters with no way to reach them: the only route to
@@ -288,7 +398,7 @@ if (cmd === 'compile') {
     ...canEmit(program!, emit),
     ...validateRequest(req).filter(i => !STATE_DEPENDENT.includes(i.code)),
   ]
-  for (const i of gate) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+  for (const i of gate) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
   // The collisions were reported above rather than re-printed here, but they exit with the
   // gate so a run that has both kinds of problem reports both: a gate that reveals its
   // objections one at a time turns a single fix into a guessing game.
@@ -302,7 +412,7 @@ if (cmd === 'compile') {
 
   const dest = flag('o')
   if (dest) write(dest, out)
-  else process.stdout.write(out)
+  else toStdout(out)
   process.exit(0)
 }
 
@@ -321,11 +431,11 @@ if (cmd === 'check') {
     for (const row of report.rows) {
       if (row.status === 'stable') continue
       const delta = row.delta === null ? '' : ` delta=${row.delta.toFixed(3)}`
-      process.stdout.write(
+      toStdout(
         `${row.status.toUpperCase()} ${row.id}  recorded=${JSON.stringify(row.recorded)} live=${JSON.stringify(row.live)}${delta}\n`,
       )
     }
-    process.stdout.write(
+    toStdout(
       `${report.rows.length} rows checked live against ${report.model}: ${report.drifted} drifted, ${report.broken} broken\n`,
     )
     process.exit(report.broken > 0 ? 1 : 0)
@@ -334,9 +444,9 @@ if (cmd === 'check') {
   let failed = 0
   for (const f of corpus) {
     const fails = assertExpectation(f.expect, f.measured.answers)
-    if (fails.length) { failed++; process.stdout.write(`FAIL ${f.id}\n  ${fails.join('\n  ')}\n`) }
+    if (fails.length) { failed++; toStdout(`FAIL ${f.id}\n  ${fails.join('\n  ')}\n`) }
   }
-  process.stdout.write(`${corpus.length} fixtures, ${corpus.length - failed} passing, ${failed} failing\n`)
+  toStdout(`${corpus.length} fixtures, ${corpus.length - failed} passing, ${failed} failing\n`)
   process.exit(failed ? 1 : 0)
 }
 
@@ -348,12 +458,12 @@ if (cmd === 'explain') {
   if (!hits.length) die(`No decision "${id}" found.`)
   for (const f of hits) {
     const q = f.questions[id]
-    process.stdout.write(`${id}  (${f.domain}/${f.id})\n`)
-    process.stdout.write(`  type:         ${q.type}\n`)
-    process.stdout.write(`  instructions: ${renderEntry(q.instructions)}\n`)
-    process.stdout.write(`  provenance:   ${f.provenance}\n`)
-    process.stdout.write(`  measured:     ${JSON.stringify(f.measured.answers[id])}\n`)
-    process.stdout.write(`  replaces:     ${f.llm_prompt.slice(0, 120)}...\n\n`)
+    toStdout(`${id}  (${f.domain}/${f.id})\n`)
+    toStdout(`  type:         ${q.type}\n`)
+    toStdout(`  instructions: ${renderEntry(q.instructions)}\n`)
+    toStdout(`  provenance:   ${f.provenance}\n`)
+    toStdout(`  measured:     ${JSON.stringify(f.measured.answers[id])}\n`)
+    toStdout(`  replaces:     ${f.llm_prompt.slice(0, 120)}...\n\n`)
   }
   process.exit(0)
 }
@@ -375,7 +485,7 @@ if (cmd === 'emit-policy') {
   // jevc's internals instead of "that file is not a jevc program".
   const shape = checkProgramShape(parsed, path)
   if (shape.length) {
-    for (const i of shape) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+    for (const i of shape) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
     die(`${path} is not a jevc program. Expected { decisions, reduce, residual, dropped } — the shape \`jevc compile <file> --lift\` asks the agent to produce.`)
   }
   const program = parsed as Program
@@ -386,7 +496,7 @@ if (cmd === 'emit-policy') {
   // canEmit checks what the TARGET can express; validateProgram checks that the Program
   // is coherent at all, and neither substitutes for the other.
   const issues = [...validateProgram(program!), ...lintProgram(program!)]
-  for (const i of issues) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+  for (const i of issues) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
   if (issues.some(i => i.severity === 'error')) process.exit(1)
 
   const { emitBouncerPolicy } = await import('./emit/policy/bouncer.js')
@@ -404,7 +514,7 @@ if (cmd === 'emit-policy') {
 
   const dest = flag('o')
   if (dest) write(dest, out!)
-  else process.stdout.write(out!)
+  else toStdout(out!)
   process.exit(0)
 }
 
