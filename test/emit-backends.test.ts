@@ -138,6 +138,13 @@ describe('emitAiSdk', () => {
     expect(emitAiSdk(p)).not.toMatch(/=== 1/)
   })
 
+  // The two backends disagree on the name: this one reads TYPESAFE_AI_API_KEY, the
+  // langchain one (and jevc's own .env.example) reads TYPESAFE_API_KEY. Emitting only
+  // the first throws AI_LoadAPIKeyError for anyone whose environment came from jevc.
+  it('falls back to the name the rest of the toolchain uses for the key', () => {
+    expect(emitAiSdk(p)).toContain('process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY')
+  })
+
   // EntryType is `string | object | array | null`; String() on the object form renders
   // "[object Object]" silently. Fourth site of the same bug across this codebase.
   it('renders object-form criteria as JSON, not [object Object]', () => {
@@ -190,6 +197,16 @@ describe('emitLangchain', () => {
     expect(src).toContain('{"label": "low", "strict": True}')
     expect(src).toContain('None')
     expect(src).not.toMatch(/\btrue\b|\bnull\b/)
+  })
+
+  // Infinity and NaN are JS globals and Python NameErrors; nothing in the IR rejects a
+  // non-finite threshold, and JSON.parse can produce one via 1e999. py() already maps
+  // them to None everywhere else in this emitter — thresholds were the one site that
+  // interpolated the raw number.
+  it('never interpolates a non-finite threshold as a bare JS global', () => {
+    const inf: Program = { ...p, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_urgent', op: 'gte', value: Infinity }], then: 'never' }], otherwise: 'queue' } }
+    expect(emitLangchain(inf)).not.toMatch(/\bInfinity\b|\bNaN\b/)
   })
 
   it('emits a missing noul criteria side as None rather than an empty string', () => {

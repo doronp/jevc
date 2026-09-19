@@ -141,7 +141,10 @@ ${rules}
   return ${JSON.stringify(p.reduce.otherwise)}
 }
 
-export const model = createTypeSafeAi({ apiKey: process.env.TYPESAFE_AI_API_KEY })
+// This backend reads TYPESAFE_AI_API_KEY; langchain-typesafe and jevc's own .env read
+// TYPESAFE_API_KEY. Accept either, or an environment set up for jevc throws
+// AI_LoadAPIKeyError here.
+export const model = createTypeSafeAi({ apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY })
   .evaluationModel('jev-latest')
 ${p.residual ? `\n${['Still requires a generative model:', ...p.residual.split(LINE)]
     .map(l => `// ${l}`).join('\n')}\n` : ''}`
