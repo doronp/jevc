@@ -149,8 +149,19 @@ export function validateProgram(p: Program): ValidationIssue[] {
         const n = Object.keys(d.criteria).length
         for (const opt of Object.keys(d.criteria)) {
           if (RESERVED_KEYS.has(opt)) {
+            // The DIAGNOSIS, not the rule, is what changed in the cleanup round. This message
+            // used to say the option was lost on the wire and that `is` could never match it.
+            // Measured on this tree over all 13 names in RESERVED_KEYS, both are false:
+            // emitJson's Object.fromEntries gives the option an own key, it survives the
+            // JSON round trip, native/ai-sdk quote or compute the key (emit/native.ts:17),
+            // and runReducer's `is` is a string comparison against `ans.choice`, which
+            // matches. A message naming a mechanism the reader can check and find absent is
+            // how a correct rule gets deleted by the next person.
+            // What IS real is the mirror-image failure — an absent option reading as PRESENT.
+            // `check.ts:151` is the one plain-object read by option name left in src/, and
+            // 12 of the 13 names turn it into a silent pass.
             err('reserved_option', `decisions.${d.id}.criteria`,
-              `Choice "${d.id}" has an option named "${opt}", a property every plain JavaScript object already has. The option map and the returned probability map are both plain objects keyed by the option name, so the option is silently lost rather than refused, and \`is\` against it can never match. Rename it.`)
+              `Choice "${d.id}" has an option named "${opt}", a name every plain JavaScript object already resolves through its prototype. The option itself is not lost — measured on this tree, it reaches the wire as an own key and the reducer's \`is\` matches it. What breaks is reading a probability map by a name the map does not carry: the lookup returns Object.prototype's member instead of undefined, so an absent option reads as present. That read exists today in \`prob_lte\` (check.ts): against an answer carrying no "constructor" probability, \`assertExpectation({${JSON.stringify(d.id)}: {prob_lte: {constructor: 0.01}}}, …)\` returns no failures — a bound reported as held having compared nothing — while the same clause on an ordinary option name correctly fails. Rename it.`)
           }
         }
         if (n < 2) {
