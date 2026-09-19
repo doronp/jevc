@@ -1,85 +1,30 @@
 import { stringify } from 'yaml'
 import type { EntryType } from '../../contract.js'
 import type { Program } from '../../ir.js'
-import { canEmit } from '../capability.js'
-
-/** Dropped when no task context exists (engine.ts:63), so a custom one would vanish. */
-const RESERVED = 'off_task'
+import { canEmit, toolgateThresholds } from '../capability.js'
 
 const asString = (v: EntryType | undefined): string =>
   v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v)
 
-/**
- * toolgate's reducer is not per-question thresholds. It takes the MAX probability over
- * every question, then `>= deny` => deny, `>= ask` => ask, else allow — two scalars, and
- * that is the entire tunable surface. Emitting a per-question threshold map produces YAML
- * toolgate accepts and ignores, leaving deny/ask at their 0.85/0.55 defaults: a policy
- * that loads cleanly and means something else. So the reducer is lowered only when it is
- * genuinely max-then-two-thresholds shaped, and refused otherwise.
- */
-function refuse(why: string): never {
-  throw new Error(
-    `Cannot emit a toolgate policy: ${why}\n` +
-    `  toolgate reduces by max(probability) over all questions, then two scalars ` +
-    `(deny, ask). Express the reducer as one shared deny threshold and one shared ask ` +
-    `threshold over every question, or emit to a code target.`)
-}
-
-function thresholdsFor(p: Program): { deny: number; ask: number } {
-  if (p.reduce.otherwise !== 'allow') refuse(`the fallthrough is "${p.reduce.otherwise}"; toolgate's is always allow.`)
-
-  const byVerdict = new Map<string, Set<number>>()
-  const covered = new Map<string, Set<string>>()   // verdict -> question ids
-  let sawAsk = false
-  for (const r of p.reduce.rules) {
-    if (r.then !== 'deny' && r.then !== 'ask') refuse(`rule verdict "${r.then}" is not deny or ask.`)
-    // jevc's reducer is first-match-wins over an ORDERED list; toolgate always tests
-    // `>= deny` before `>= ask`. A deny rule sitting after an ask rule therefore means
-    // something the policy cannot: with ask 0.55 listed first and deny 0.85 second, the
-    // Program answers `ask` at p=0.9 and the emitted policy answers `deny`. Every
-    // threshold is legal and every question covered, so nothing else here catches it.
-    if (r.then === 'ask') sawAsk = true
-    else if (sawAsk) refuse(`a deny rule comes after an ask rule; toolgate always tests deny first, so the order cannot be preserved. List every deny rule before every ask rule.`)
-    for (const c of r.when) {
-      if (c.op !== 'gte') refuse(`condition op "${c.op}" on "${c.id}"; only >= maps to a threshold.`)
-      byVerdict.set(r.then, (byVerdict.get(r.then) ?? new Set()).add(c.value))
-      covered.set(r.then, (covered.get(r.then) ?? new Set()).add(c.id))
-    }
-  }
-
-  for (const verdict of ['deny', 'ask']) {
-    const vals = byVerdict.get(verdict)
-    if (!vals) refuse(`no ${verdict} rule; toolgate always applies both thresholds.`)
-    if (vals!.size > 1) refuse(`${verdict} uses ${vals!.size} different thresholds (${[...vals!].join(', ')}); max-over-questions can only apply one.`)
-    const ids = covered.get(verdict)!
-    const missing = p.decisions.filter(d => !ids.has(d.id)).map(d => d.id)
-    // Max-over-questions means an uncovered question still feeds the same threshold —
-    // stricter than the Program says. Silent tightening is still silent divergence.
-    if (missing.length) refuse(`questions ${missing.join(', ')} have no ${verdict} rule, but max-over-questions applies the ${verdict} threshold to them anyway.`)
-  }
-
-  const deny = [...byVerdict.get('deny')!][0]
-  const ask = [...byVerdict.get('ask')!][0]
-  // validatePolicy enforces 0 <= ask <= deny <= 1, but ask == deny is a policy whose ask
-  // branch can never run: toolgate tests `>= deny` first, so every probability that the
-  // Program would ask about is denied instead. Two distinct verdicts in the Program have
-  // to stay two distinct verdicts, so this is strict where validatePolicy is not.
-  if (!(ask < deny)) refuse(`ask (${ask}) is not below deny (${deny}); toolgate tests deny first, so the ask threshold would never be reached.`)
-  return { deny, ask }
-}
-
 export function emitToolgatePolicy(p: Program): string {
+  // Every refusal — the reserved off_task id, the threshold algebra, all of it — lives in
+  // canEmit now. While toolgateThresholds sat here, canEmit returned [] for a dozen
+  // programs this function then threw on, and canEmit is the gate a consumer branches on.
   const issues = canEmit(p, 'toolgate').filter(i => i.severity === 'error')
   if (issues.length) {
     throw new Error(`Cannot emit a toolgate policy:\n${issues.map(i => `  ${i.path}: ${i.message}`).join('\n')}`)
   }
-  for (const d of p.decisions) {
-    if (d.id === RESERVED) {
-      throw new Error(`"${RESERVED}" is dropped by toolgate when there is no task context; pick another id.`)
-    }
-  }
+  // canEmit reported this function's issues, so the thresholds are here. Checked anyway:
+  // `thresholds: null` in the file loads fine and runs at toolgate's own 0.85/0.55.
+  const { thresholds } = toolgateThresholds(p)
+  if (!thresholds) throw new Error('Cannot emit a toolgate policy: the reducer has no deny/ask thresholds.')
 
-  const questions: Record<string, unknown> = {}
+  // Null-prototype: `questions['__proto__'] = ...` on a plain object literal hits
+  // Object.prototype's setter and re-parents the map instead of adding a key. The policy
+  // still loads — max() simply runs over one question fewer — so the gate weakens with
+  // nothing to show for it. The id is live input: from-schema.ts uses the JSON Schema
+  // property name verbatim.
+  const questions: Record<string, unknown> = Object.create(null)
   for (const d of p.decisions) {
     const c = d.criteria && !Array.isArray(d.criteria)
       ? (d.criteria as { true?: EntryType; false?: EntryType }) : undefined
@@ -94,6 +39,13 @@ export function emitToolgatePolicy(p: Program): string {
     questions[d.id] = Object.keys(criteria).length
       ? { type: 'boolean', instructions: asString(d.instructions), criteria }
       : { type: 'boolean', instructions: asString(d.instructions) }
+  }
+
+  // The belt to the null-prototype brace: a question that never reaches the file is
+  // invisible by construction here, because max() over the survivors still answers.
+  const lost = p.decisions.filter(d => !Object.hasOwn(questions, d.id)).map(d => d.id)
+  if (lost.length) {
+    throw new Error(`Refusing to emit a toolgate policy missing question(s) ${lost.join(', ')}: the policy would load and return verdicts from the questions that survived.`)
   }
 
   // Split on every line ending, not just \n: YAML ends a comment at a lone CR too, so a
@@ -116,5 +68,5 @@ export function emitToolgatePolicy(p: Program): string {
 # against the two thresholds below. Every question is therefore implicitly OR'd
 # at the same severity: adding one can only make the gate stricter.
 ${residual}
-${stringify({ questions, thresholds: thresholdsFor(p) })}`
+${stringify({ questions, thresholds })}`
 }

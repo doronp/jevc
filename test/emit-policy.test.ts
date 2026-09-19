@@ -29,6 +29,14 @@ describe('emitBouncerPolicy', () => {
   it('defaults to observe mode so a generated policy cannot block on day one', () => {
     expect(doc().mode).toBe('observe')
   })
+  // The banner is the only thing a human skims before installing the file. Under
+  // mode: guard the old text still read "it logs and emits nothing", which is false in
+  // exactly the direction that gets someone hurt.
+  it.each(['guard', 'full'] as const)('does not claim to emit nothing in mode %s', mode => {
+    const y = emitBouncerPolicy(p, { mode })
+    expect(y).not.toMatch(/emits nothing/)
+    expect(y).toMatch(new RegExp(`# Mode ${mode}: this policy BLOCKS`))
+  })
   it('emits each decision under gate.questions with true/false criteria', () => {
     const q = doc().gate.questions
     expect(Object.keys(q)).toEqual(['deletes_tracked_files', 'outside_repo'])
@@ -73,8 +81,14 @@ describe('emitBouncerPolicy', () => {
       { id: 'radius', kind: 'score', instructions: 'How wide?', criteria: ['file', 'repo'] }] }
     expect(() => emitBouncerPolicy(score)).toThrow(/noul/)
   })
+  // The reducer is respelled against `x` as well: a rule naming a decision the program
+  // does not declare is now a canEmit error (it emitted a rule referencing a question
+  // that was not in gate.questions, which bouncer refuses to load).
+  const onlyX = { kind: 'rules' as const, rules: [
+    { when: [{ id: 'x', op: 'gte' as const, value: 0.8 }], then: 'deny' }], otherwise: 'allow' }
+
   it('renders object-form criteria as JSON, since bouncer reads criteria as strings', () => {
-    const obj: Program = { ...p, decisions: [
+    const obj: Program = { ...p, reduce: onlyX, decisions: [
       { id: 'x', kind: 'noul', instructions: 'Yes?', criteria: { true: { note: 'yes' }, false: null } }] }
     const q = parse(emitBouncerPolicy(obj)).gate.questions.x
     expect(q.criteria.true).toBe('{"note":"yes"}')
@@ -85,7 +99,7 @@ describe('emitBouncerPolicy', () => {
   })
 
   it('omits criteria entirely when the decision describes neither side', () => {
-    const none: Program = { ...p, decisions: [
+    const none: Program = { ...p, reduce: onlyX, decisions: [
       { id: 'x', kind: 'noul', instructions: 'Yes?', criteria: {} }] }
     expect('criteria' in parse(emitBouncerPolicy(none)).gate.questions.x).toBe(false)
   })
@@ -209,5 +223,235 @@ describe('emitToolgatePolicy', () => {
   })
   it('points at TOOLGATE_POLICY rather than the global file, since there is no project discovery', () => {
     expect(emitToolgatePolicy(flat)).toMatch(/TOOLGATE_POLICY/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Transcriptions of the two consumers, from target-bouncer.md:62-69 and
+// target-toolgate.md:66. Comparing emitted SHAPES is not comparing BEHAVIOUR:
+// every historical bug here produced a file that parsed and meant something else.
+
+/** bouncer's `p` grammar (target-bouncer.md:55-57). `LOW..HIGH` is inclusive BOTH ends. */
+const pMatches = (p: string, x: number): boolean => {
+  const cmp = /^(>=|>|<=|<)\s*(\d*\.?\d+)$/.exec(p.trim())
+  if (cmp) {
+    const n = Number(cmp[2])
+    return cmp[1] === '>=' ? x >= n : cmp[1] === '>' ? x > n : cmp[1] === '<=' ? x <= n : x < n
+  }
+  const range = /^(\d*\.?\d+)\.\.(\d*\.?\d+)$/.exec(p.trim())
+  if (!range) throw new Error(`p "${p}" does not match bouncer's grammar`)
+  return x >= Number(range[1]) && x <= Number(range[2])
+}
+
+/** First match wins; a question with no answer is skipped; `any` matches on any answer. */
+const bouncerVerdict = (doc: any, answers: Record<string, number>): string => {
+  for (const r of doc.gate.rules) {
+    if ('default' in r) return r.default
+    const [name] = Object.keys(r.when)
+    const cond = r.when[name].p
+    if (name === 'any') {
+      if (Object.values(answers).some(v => pMatches(cond, v))) return r.then
+      continue
+    }
+    // A rule naming a question that is not in gate.questions is a hard load error;
+    // asserted separately. Here it would simply never fire.
+    if (!Object.hasOwn(answers, name)) continue
+    if (pMatches(cond, answers[name])) return r.then
+  }
+  throw new Error('no rule matched and there was no default')
+}
+
+/** max over EVERY merged question, built-ins included, then deny before ask. */
+const toolgateVerdict = (doc: any, answers: Record<string, number>): string => {
+  const ids = ['destructive', 'exfiltration', 'privilege', ...Object.keys(doc.questions)]
+  const m = Math.max(...ids.map(id => answers[id] ?? 0))
+  return m >= doc.thresholds.deny ? 'deny' : m >= doc.thresholds.ask ? 'ask' : 'allow'
+}
+
+const noul = (id: string, extra: object = {}) =>
+  ({ id, kind: 'noul' as const, instructions: `Is ${id}?`, ...extra })
+
+/** Every threshold and band edge in the program, a tick either side, plus 0 and 1. */
+const gridFor = (prog: Program): number[] => {
+  const s = new Set([0, 1])
+  const add = (v: number) => { for (const x of [v - 1e-9, v, v + 1e-9]) if (x >= 0 && x <= 1) s.add(x) }
+  for (const r of prog.reduce.rules) for (const c of r.when) if ('value' in c && typeof c.value === 'number') add(c.value)
+  for (const d of prog.decisions) if (d.uncertain && 'band' in d.uncertain) { add(d.uncertain.band[0]); add(d.uncertain.band[1]) }
+  return [...s].sort((a, b) => a - b)
+}
+
+const gridAgrees = (prog: Program, emit: (p: Program) => string, verdict: (doc: any, a: Record<string, number>) => string) => {
+  const doc = parse(emit(prog))
+  const ids = prog.decisions.map(d => d.id)
+  let points = 0
+  const walk = (i: number, row: Record<string, number>) => {
+    if (i === ids.length) {
+      points++
+      const answers = Object.fromEntries(ids.map(id => [id, { type: 'noul' as const, noul: row[id] }]))
+      // The row travels into the assertion so a failure names the probabilities.
+      expect([row, runReducer(prog, answers)]).toEqual([row, verdict(doc, row)])
+      return
+    }
+    for (const v of gridFor(prog)) walk(i + 1, { ...row, [ids[i]]: v })
+  }
+  walk(0, {})
+  expect(points).toBeGreaterThan(3)   // a grid that silently collapsed proves nothing
+}
+
+describe('policy targets agree with their consumer over a probability grid', () => {
+  const ladder = (ids: string[]): Program => ({
+    decisions: ids.map(id => noul(id)),
+    reduce: { kind: 'rules', rules: [
+      ...ids.map(id => ({ when: [{ id, op: 'gte' as const, value: 0.85 }], then: 'deny' })),
+      ...ids.map(id => ({ when: [{ id, op: 'gte' as const, value: 0.55 }], then: 'ask' })),
+    ], otherwise: 'allow' },
+    residual: '', dropped: [],
+  })
+
+  it('bouncer: two questions, deny 0.85 / ask 0.55', () => {
+    gridAgrees(ladder(['secrets', 'outside']), emitBouncerPolicy, bouncerVerdict)
+  })
+  it('toolgate: two questions, deny 0.85 / ask 0.55', () => {
+    gridAgrees(ladder(['secrets', 'outside']), emitToolgatePolicy, toolgateVerdict)
+  })
+  it('bouncer: an lte rule, which inverts the comparison', () => {
+    gridAgrees({ decisions: [noul('safe')], residual: '', dropped: [],
+      reduce: { kind: 'rules', rules: [
+        { when: [{ id: 'safe', op: 'lte', value: 0.2 }], then: 'allow' }], otherwise: 'deny' } },
+      emitBouncerPolicy, bouncerVerdict)
+  })
+
+  // The id is a live input: from-schema.ts uses the JSON Schema property name verbatim.
+  // `questions[d.id] = ...` on a plain object literal hits Object.prototype's __proto__
+  // SETTER, which re-parents the map instead of adding a key, and the question vanishes.
+  // On toolgate the result still loads — max() just runs over one fewer question — so the
+  // gate silently weakens. On bouncer the surviving rule references a question that is no
+  // longer declared, which is a load error, and a policy bouncer cannot load stops policy
+  // resolution and routes to on_error: passthrough. Either way, exit 0.
+  describe('a question named __proto__', () => {
+    const poisoned = ladder(['__proto__', 'secrets'])
+
+    it('survives into bouncer gate.questions as an own key', () => {
+      const q = parse(emitBouncerPolicy(poisoned)).gate.questions
+      expect(Object.keys(q).sort()).toEqual(['__proto__', 'secrets'])
+      expect(q.__proto__.instructions).toBe('Is __proto__?')
+    })
+    it('survives into toolgate questions as an own key', () => {
+      const q = parse(emitToolgatePolicy(poisoned)).questions
+      expect(Object.keys(q).sort()).toEqual(['__proto__', 'secrets'])
+      expect(q.__proto__.type).toBe('boolean')
+    })
+    it('leaves every bouncer rule naming a declared question', () => {
+      const gate = parse(emitBouncerPolicy(poisoned)).gate
+      for (const r of gate.rules) {
+        if ('default' in r) continue
+        expect(Object.hasOwn(gate.questions, Object.keys(r.when)[0])).toBe(true)
+      }
+    })
+    it('agrees with both consumers on the grid, which losing it does not', () => {
+      gridAgrees(poisoned, emitBouncerPolicy, bouncerVerdict)
+      gridAgrees(poisoned, emitToolgatePolicy, toolgateVerdict)
+    })
+  })
+})
+
+describe('emitBouncerPolicy provenance is inert', () => {
+  // The quote was scrubbed of line endings; `file`, `line` and `id` were not. A rule file
+  // named "RULES.md\nskip_permission_modes: [\"default\"]\n#" ends the comment and writes a
+  // REAL top-level key: the policy still loads, and bouncer then skips the classifier
+  // entirely in the default permission mode. Valid YAML, wrong policy, exit 0.
+  const withSource = (source: object): Program => ({
+    decisions: [{ ...noul('secrets'), source } as any], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'secrets', op: 'gte', value: 0.5 }], then: 'deny' }], otherwise: 'allow' },
+  })
+
+  it('does not let a newline in source.file inject a top-level key', () => {
+    const doc = parse(emitBouncerPolicy(withSource(
+      { file: 'RULES.md\nskip_permission_modes: ["default"]\n#', line: 3, quote: 'q' })))
+    expect(doc.skip_permission_modes).toBeUndefined()
+    expect(Object.keys(doc).sort()).toEqual(['backend', 'gate', 'mode', 'on_error', 'timeout_ms', 'version'])
+  })
+
+  it('does not let a non-numeric source.line break the document', () => {
+    const doc = parse(emitBouncerPolicy(withSource({ file: 'f', line: '1\nmode: bogus', quote: 'q' })))
+    expect(doc.mode).toBe('observe')
+  })
+
+  it('does not let a newline in the decision id break the document', () => {
+    const p2: Program = { decisions: [{ ...noul('k\nversion: 2'), source: { file: 'f', line: 1, quote: 'q' } }],
+      residual: '', dropped: [],
+      reduce: { kind: 'rules', rules: [
+        { when: [{ id: 'k\nversion: 2', op: 'gte', value: 0.5 }], then: 'deny' }], otherwise: 'allow' } }
+    const doc = parse(emitBouncerPolicy(p2))
+    expect(doc.version).toBe(1)
+    expect(Object.keys(doc.gate.questions)).toEqual(['k\nversion: 2'])
+  })
+})
+
+describe('emitBouncerPolicy options are checked against the schema', () => {
+  const simple: Program = { decisions: [noul('secrets')], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'secrets', op: 'gte', value: 0.5 }], then: 'deny' }], otherwise: 'allow' } }
+
+  // target-bouncer.md:27-28. mode outside observe/guard/full and timeout_ms outside
+  // 50..30000 are LOAD errors, and a policy bouncer cannot load disables the gate.
+  it('refuses a mode bouncer does not know', () => {
+    expect(() => emitBouncerPolicy(simple, { mode: 'enforce' as any })).toThrow(/enforce.*observe|observe.*enforce/s)
+  })
+  it.each([0, 30, 49, 30001, 60000, NaN, Infinity])('refuses timeout_ms %s', ms => {
+    expect(() => emitBouncerPolicy(simple, { timeoutMs: ms })).toThrow(/timeout/i)
+  })
+  it.each([50, 800, 30000])('accepts timeout_ms %s', ms => {
+    expect(parse(emitBouncerPolicy(simple, { timeoutMs: ms })).timeout_ms).toBe(ms)
+  })
+})
+
+describe('emitBouncerPolicy lowers an uncertainty band', () => {
+  // "Uncertainty band → `p: \"0.40..0.60\"`" is listed under what maps cleanly
+  // (target-bouncer.md). jevc's band is EXCLUSIVE (runtime.ts isUncertain) and bouncer's
+  // range is INCLUSIVE, so the endpoints have to be stepped inwards by one double or the
+  // two disagree at exactly p = 0.4 and p = 0.6.
+  const banded: Program = {
+    decisions: [noul('risky', { uncertain: { band: [0.4, 0.6] } })], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'risky', op: 'gte', value: 0.9 }], then: 'deny' },
+      { when: [{ id: 'risky', op: 'uncertain' }], then: 'ask' },
+    ], otherwise: 'allow' },
+  }
+
+  it('emits a range rule rather than refusing', () => {
+    const rule = parse(emitBouncerPolicy(banded)).gate.rules[1]
+    expect(rule.then).toBe('ask')
+    expect(rule.when.risky.p).toMatch(/^0\.4\d*\.\.0\.5\d*$|^0\.4\d*\.\.0\.6$|^0\.4\d*\.\.0\.59*\d*$/)
+  })
+  it('agrees with bouncer on the band edges, where inclusive and exclusive differ', () => {
+    gridAgrees(banded, emitBouncerPolicy, bouncerVerdict)
+  })
+  it('still refuses an uncertainty rule on toolgate, which has no range', () => {
+    expect(() => emitToolgatePolicy(banded)).toThrow(/uncertain/)
+  })
+})
+
+describe('emitToolgatePolicy with only deny rules', () => {
+  // toolgate applies both thresholds always, but ask == deny makes the ask band empty,
+  // which is exactly what "deny at 0.85, otherwise allow" means. Refusing it was wrong:
+  // "deny if X" is the commonest rule shape there is.
+  const denyOnly: Program = { decisions: [noul('secrets')], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'secrets', op: 'gte', value: 0.85 }], then: 'deny' }], otherwise: 'allow' } }
+
+  it('collapses ask onto deny instead of refusing', () => {
+    expect(parse(emitToolgatePolicy(denyOnly)).thresholds).toEqual({ deny: 0.85, ask: 0.85 })
+  })
+  it('agrees with toolgate on the grid', () => {
+    gridAgrees(denyOnly, emitToolgatePolicy, toolgateVerdict)
+  })
+  // The mirror image is NOT expressible: the largest legal deny threshold is 1, and
+  // p = 1 then denies where the Program asks. Refused, with that as the reason.
+  it('still refuses ask-only, where no deny threshold is faithful', () => {
+    const askOnly: Program = { ...denyOnly, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'secrets', op: 'gte', value: 0.55 }], then: 'ask' }], otherwise: 'allow' } }
+    expect(() => emitToolgatePolicy(askOnly)).toThrow(/deny/)
   })
 })
