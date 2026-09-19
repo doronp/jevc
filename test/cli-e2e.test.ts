@@ -419,7 +419,7 @@ describe('LIVE BUG: stdout is truncated at 64 KiB when it is a pipe', () => {
       (_, i) => `- Rule ${i}: never do the thing numbered ${i} without asking.`).join('\n'))
   })
 
-  it.fails('compile --emit sdk through a pipe delivers the whole module', () => {
+  it('compile --emit sdk through a pipe delivers the whole module', () => {
     const r = bothWays(['compile', bigSchema, '--emit', 'sdk'], 'big-sdk')
     expect(r.fileStatus).toBe(0)
     expect(r.pipeStatus).toBe(0)
@@ -428,7 +428,7 @@ describe('LIVE BUG: stdout is truncated at 64 KiB when it is a pipe', () => {
     expect(r.pipe).toBe(r.file)
   })
 
-  it.fails('compile --emit json through a pipe delivers a parseable request', () => {
+  it('compile --emit json through a pipe delivers a parseable request', () => {
     const r = bothWays(['compile', bigSchema, '--emit', 'json'], 'big-json')
     expect(r.pipeStatus).toBe(0)
     expect(() => JSON.parse(r.pipe)).not.toThrow()
@@ -436,7 +436,7 @@ describe('LIVE BUG: stdout is truncated at 64 KiB when it is a pipe', () => {
     expect(Object.keys(JSON.parse(r.pipe).questions)).toHaveLength(800)
   })
 
-  it.fails('emit-policy --for bouncer through a pipe delivers every rule, not the first 43', () => {
+  it('emit-policy --for bouncer through a pipe delivers every rule, not the first 43', () => {
     const r = bothWays(['emit-policy', '--for', 'bouncer', bigProgram], 'big-bouncer')
     expect(r.pipeStatus, 'a truncated gate must not be delivered at exit 0').toBe(0)
     expect(r.pipe.length, `the piped policy is ${r.file.length - r.pipe.length} bytes short`)
@@ -455,7 +455,7 @@ describe('LIVE BUG: stdout is truncated at 64 KiB when it is a pipe', () => {
     expect(rulesOf(r.pipe)!.at(-1)).toEqual({ default: 'allow' })
   })
 
-  it.fails('compile --lift through a pipe delivers a prompt that still has its fence and its instruction', () => {
+  it('compile --lift through a pipe delivers a prompt that still has its fence and its instruction', () => {
     const r = bothWays(['compile', bigProse, '--lift'], 'big-lift')
     expect(r.pipeStatus).toBe(0)
     // buildLiftRequest widens the fence until the run of dashes does not occur in the
@@ -465,6 +465,63 @@ describe('LIVE BUG: stdout is truncated at 64 KiB when it is a pipe', () => {
     expect(r.pipe, 'the piped lift request lost its terminating fence').toContain('--- end ---')
     expect(r.pipe, 'the piped lift request lost its final instruction').toContain('Return only the JSON object.')
     expect(r.pipe).toBe(r.file)
+  })
+
+  /**
+   * The same truncation on STDERR, which the four cases above cannot see.
+   *
+   * The diagnostics are written one `error:` line at a time, and small writes survive
+   * `| cat` — a reader that drains continuously keeps the pipe buffer empty, so every
+   * write completes immediately and nothing is left queued when `process.exit(1)` runs.
+   * A reader that is busy for a moment is enough to break it: measured against the tree
+   * at 96043e8, `2>&1 >/dev/null | (sleep 2; cat)` delivered 65,508 of 146,180 bytes and
+   * stopped at rule 631 of 1399, at exit 1.
+   *
+   * Exit 1 means the user knows the command failed, so this is a tier below a truncated
+   * artifact — but they then fix 632 of 1400 problems and re-run, and the cut moves with
+   * machine load, so it is not even reproducible from their side. The `sleep` is the
+   * whole point of the test and is not a timing hack: it makes the reader's behaviour
+   * deterministic rather than depending on how fast `cat` happens to be scheduled.
+   */
+  it('stderr through a pipe whose reader is briefly busy keeps every diagnostic line', () => {
+    const decisions: unknown[] = []
+    const rules: unknown[] = []
+    for (let i = 0; i < 1400; i++) {
+      decisions.push({ id: `risk_${i}`, kind: 'noul', instructions: `Does the command do dangerous thing number ${i}?` })
+      rules.push({ when: [{ id: `ghost_that_does_not_exist_anywhere_${i}`, op: 'gte', value: 0.8 }], then: 'deny' })
+    }
+    const ghosts = putJson('ghost-program.json', {
+      decisions, reduce: { kind: 'rules', rules, otherwise: 'allow' }, residual: '', dropped: [],
+    })
+    const args = quoted(['emit-policy', '--for', 'bouncer', ghosts])
+    const viaFile = p('ghost.err.file')
+    const viaPipe = p('ghost.err.pipe')
+    const a = sh(`${args} 2> ${JSON.stringify(viaFile)} > /dev/null < /dev/null`)
+    const b = sh(`${args} 2>&1 > /dev/null < /dev/null | (sleep 2; cat) > ${JSON.stringify(viaPipe)}`)
+    const file = readFileSync(viaFile, 'utf8')
+    const pipe = readFileSync(viaPipe, 'utf8')
+
+    expect(a.status, 'a program whose every rule names a ghost decision must be refused').toBe(1)
+    expect(b.status).toBe(0) // the subshell's status; the jevc status is asserted above
+    expect(file.split('\n').filter(Boolean), 'one error line per unknown decision').toHaveLength(1400)
+    expect(pipe.length, `the piped diagnosis is ${file.length - pipe.length} bytes short`).toBe(file.length)
+    expect(pipe, 'the last problem was never reported').toContain('ghost_that_does_not_exist_anywhere_1399')
+  })
+
+  /**
+   * The failure mode the fix could have introduced. Writing the file descriptor
+   * synchronously makes a closed reader an EPIPE thrown at the write site, and an
+   * uncaught one prints a `node:fs` stack frame and the Node crash banner — the two
+   * things `assertNoCrashLeak` exists to forbid, on the most ordinary pipeline there is.
+   * `head` exits after ten bytes of a 185 KB policy, so the writer is guaranteed to hit
+   * the closed pipe rather than racing it.
+   */
+  it('a reader that closes early is silence, not a crash', () => {
+    const errFile = p('head.err')
+    const r = sh(`${quoted(['emit-policy', '--for', 'bouncer', bigProgram])} 2> ${JSON.stringify(errFile)} < /dev/null | head -c 10 > /dev/null`)
+    const stderr = readFileSync(errFile, 'utf8')
+    expect(r.status, 'the pipeline reports head\'s status, which is success').toBe(0)
+    expect(stderr, 'EPIPE escaped as an unhandled throw').toBe('')
   })
 })
 
@@ -680,7 +737,7 @@ describe('flag forms', () => {
    * that comment calls out as the reason unknown flags are now rejected. `-o` on `--lift`
    * is the case the rejection cannot catch, because the flag is known — it is just unread.
    */
-  it.fails('LIVE BUG: compile --lift honours -o instead of silently printing to stdout', () => {
+  it('LIVE BUG: compile --lift honours -o instead of silently printing to stdout', () => {
     const dest = p('lift-request.txt')
     writeFileSync(dest, 'STALE REQUEST FROM THE PREVIOUS RUN\n')
     const r = jevc(['compile', PROSE_FILE, '--lift', '-o', dest])
@@ -688,6 +745,25 @@ describe('flag forms', () => {
     expect(readFileSync(dest, 'utf8'), '--lift ignored -o and left the stale file in place')
       .not.toBe('STALE REQUEST FROM THE PREVIOUS RUN\n')
     expect(readFileSync(dest, 'utf8')).toContain('Never push to main.')
+  })
+
+  /**
+   * `-o` was not the only known-but-unread flag on the lift path. `--emit` is in
+   * compile's KNOWN_FLAGS too, so `compile AGENTS.md --lift --emit json` passed the
+   * unknown-option gate and then printed the lift request at exit 0, saying nothing about
+   * the emitter that was asked for and never ran.
+   *
+   * Unlike `-o` there is nothing to honour: `--lift` produces the lowering REQUEST an
+   * agent answers, and an emitter runs on the Program that comes back, one command later.
+   * So the combination is refused, and the message has to name both halves — a user who
+   * typed it believes one command does both.
+   */
+  it('compile --lift --emit is refused rather than running neither', () => {
+    const r = jevc(['compile', PROSE_FILE, '--lift', '--emit', 'json'])
+    expect(r.status, 'the emitter was asked for, did not run, and nothing said so').not.toBe(0)
+    expect(r.stdout, 'no lift request may be printed for a command that was refused').toBe('')
+    expect(r.stderr).toContain('--emit')
+    expect(r.stderr).toContain('--lift')
   })
 
   /**
@@ -704,13 +780,13 @@ describe('flag forms', () => {
    * should be changed to assert the LAST value took effect — but first-wins-in-silence
    * must not stand.
    */
-  it.fails('LIVE BUG: a repeated --emit is refused rather than silently resolved to the first', () => {
+  it('LIVE BUG: a repeated --emit is refused rather than silently resolved to the first', () => {
     const r = jevc(['compile', SCHEMA_FILE, '--emit', 'json', '--emit', 'sdk'])
     expect(r.status,
       'a wire request was emitted at exit 0 for a command whose last --emit said sdk').not.toBe(0)
   })
 
-  it.fails('LIVE BUG: a repeated --for is refused rather than silently resolved to the first', () => {
+  it('LIVE BUG: a repeated --for is refused rather than silently resolved to the first', () => {
     // bouncer and toolgate are different engines with different schemas, so this is not a
     // near miss: the file written is one the named target cannot load at all.
     const r = jevc(['emit-policy', '--for', 'bouncer', '--for', 'toolgate', PROGRAM_FILE])
@@ -718,13 +794,59 @@ describe('flag forms', () => {
       'a bouncer policy was emitted at exit 0 for a command whose last --for said toolgate').not.toBe(0)
   })
 
-  it.fails('LIVE BUG: a repeated -o is refused rather than leaving the named file absent', () => {
+  it('LIVE BUG: a repeated -o is refused rather than leaving the named file absent', () => {
     const first = p('repeat-a.ts')
     const second = p('repeat-b.ts')
     const r = jevc(['compile', SCHEMA_FILE, '-o', first, '-o', second])
     // Under every convention one of these two files is the one the user meant. Under the
     // current behaviour the second is simply never created, and exit 0 says it was fine.
     expect(r.status, `exit 0, wrote ${first}, and never created ${second}`).not.toBe(0)
+  })
+
+  /**
+   * The judgement call the three cases above leave open, recorded so it cannot drift:
+   * the SAME value twice is refused as well.
+   *
+   * It is not ambiguous about the outcome — both occurrences say `json` — but it is the
+   * identical typo shape (a `$(EXTRA_FLAGS)` appended to a line that already carries the
+   * flag), "which occurrence wins" is a question a reader of the command line should
+   * never have to ask, and a rule with an exception for value-equality is one nobody can
+   * apply by eye. The cost is a clear error on a command line that was already redundant.
+   * The message names the flag, because that is the remedy.
+   */
+  it('a repeated flag is refused even when both occurrences carry the same value', () => {
+    const r = jevc(['compile', SCHEMA_FILE, '--emit', 'json', '--emit', 'json'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout, 'no artifact may be emitted from an argv jevc refused').toBe('')
+    expect(r.stderr).toContain('"--emit"')
+    expect(r.stderr).toContain('more than once')
+  })
+
+  /** Mixed spellings are the same repeat: `flag()` matches both forms, so both count. */
+  it('a repeat spelled --emit=value the second time is refused too', () => {
+    const r = jevc(['compile', SCHEMA_FILE, '--emit', 'json', '--emit=sdk'])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('"--emit"')
+  })
+
+  /** `-o` and `--o` are one option, and `flag('o')` accepts either, so a repeat across
+   *  the two spellings is the case that would otherwise slip through a naive check. */
+  it('a repeat spelled -o once and --o once is refused', () => {
+    const first = p('mixed-a.ts')
+    const second = p('mixed-b.ts')
+    const r = jevc(['compile', SCHEMA_FILE, '-o', first, '--o', second])
+    expect(r.status).not.toBe(0)
+    expect(existsSync(first), 'the first destination was written before the argv was judged').toBe(false)
+    expect(existsSync(second)).toBe(false)
+  })
+
+  /** A flag given once in each of its two spellings is still a repeat, but a flag given
+   *  once is not: the guard must not fire on an ordinary command line. */
+  it('each known flag used once is accepted', () => {
+    const dest = p('once.json')
+    const r = jevc(['compile', SCHEMA_FILE, '--emit', 'json', '-o', dest])
+    expect(r.status).toBe(0)
+    expect(JSON.parse(readFileSync(dest, 'utf8')).questions).toHaveProperty('is_urgent')
   })
 
   /**
@@ -736,10 +858,52 @@ describe('flag forms', () => {
    * agent that receives it has nothing to lower and will either return an empty Program or
    * invent one — the "compiled nothing, reported success" failure the tool exists to refuse.
    */
-  it.fails('LIVE BUG: compile --lift on an empty document exits non-zero', () => {
+  it('LIVE BUG: compile --lift on an empty document exits non-zero', () => {
     const blank = put('blank.md', '')
     const r = jevc(['compile', blank, '--lift'])
     expect(r.status, 'a lift request over an empty document is not a success').not.toBe(0)
+    expect(r.stdout, 'no prompt may be printed for a document there is nothing to lift from').toBe('')
+  })
+
+  /**
+   * Where the line between "empty" and "a document" is drawn, and why, pinned so the
+   * refusal above cannot quietly widen or narrow.
+   *
+   * Whitespace-only is EMPTY. from-prompt.ts normalises the document and every candidate
+   * quote alike with `/\s+/g -> ' '` and then trims, and requires a quote of at least 12
+   * characters; a document with no non-whitespace content normalises to the empty string,
+   * so no citation can ever verify against it. Every decision an agent returned from that
+   * prompt would be rejected as unprovenanced or, worse, invented.
+   *
+   * Comments-only is NOT empty. jevc strips nothing from an instruction document —
+   * buildLiftRequest embeds the source verbatim between the fences — so `<!-- ... -->` is
+   * quotable text like any other line and a decision citing it is verifiable. Refusing it
+   * would enforce a comment syntax the tool does not have, and it would have to guess
+   * whether it was reading markdown, HTML or shell.
+   *
+   * Stdin gets the same rule, and it is the case that actually bites: `jevc compile -
+   * --lift` at the end of a pipeline whose producer emitted nothing.
+   */
+  it('compile --lift refuses a whitespace-only document and says which it was', () => {
+    const r = jevc(['compile', put('whitespace.md', '   \n\t\n \n'), '--lift'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr, 'the message must distinguish whitespace from a 0-byte file')
+      .toContain('contains only whitespace')
+  })
+
+  it('compile --lift accepts a comments-only document, which jevc has no way to read as empty', () => {
+    const r = jevc(['compile', put('comments.md', '<!-- the only line in this file -->\n'), '--lift'])
+    expect(r.status).toBe(0)
+    expect(r.stdout, 'the comment is part of the document the agent is given')
+      .toContain('<!-- the only line in this file -->')
+  })
+
+  it('compile - --lift on empty stdin is refused and names stdin, not "-"', () => {
+    const r = jevc(['compile', '-', '--lift'], '')
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('Nothing to lift: stdin')
   })
 })
 

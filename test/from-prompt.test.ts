@@ -53,6 +53,18 @@ describe('buildLiftRequest', () => {
     expect(req).toMatch(/`line` must be the 1-based line/)
     expect(req).toMatch(/at least 12 characters/)
   })
+
+  // The prompt has to state the real price of a bad citation, and the price changed:
+  // one failed citation now empties the whole Program, not just its decision. A model
+  // told the cost is one decision has no reason to prefer `dropped` over a guess, and
+  // the guess costs it everything — so understating it makes bad output more likely,
+  // not less. The prompt is also the only place the lifter can learn that `dropped` is
+  // the escape hatch for a rule it cannot cite.
+  it('tells the lifter that one bad citation rejects the whole response', () => {
+    const req = buildLiftRequest(AGENTS, 'AGENTS.md')
+    expect(req).toMatch(/rejects the\s+WHOLE response/)
+    expect(req).toMatch(/`dropped`/)
+  })
 })
 
 describe('parseLiftResponse', () => {
@@ -281,4 +293,75 @@ describe('parseLiftResponse never throws on plausible malformed model output', (
       expect(result!.issues.every(i => i.severity === 'error')).toBe(true)
     })
   }
+})
+
+// The shape guard's scope was "whatever `validateProgram`/`lintProgram`/the provenance
+// loop dereference". That is the wrong boundary, because the thing a caller does with a
+// Program is EMIT it, and the emitters dereference fields none of those three touch. On
+// the deterministic path the gap cannot open — `fromJsonSchema` builds a well-typed
+// Program by construction — so every case below is reachable only from a model response,
+// which is exactly where it is least controlled.
+//
+// Each was measured before being pinned. `criteria: "anything"` is the one that matters
+// most: it produced ZERO issues and a clean-compiling TypeScript artifact asking the
+// model to choose between `{"0":"a","1":"n","2":"y","3":"t","4":"h","5":"i","6":"n","7":"g"}`
+// — a well-formed artifact with a meaning nobody wrote, which is the whole defect class.
+//
+// This is a TYPE boundary only. Whether a band lies inside 0..1, whether a threshold is
+// a sensible number, whether a target can express a verdict — those are the validator's
+// and the emit gate's, and they stay there.
+describe('the shape guard covers what the emitters dereference, not just the validator', () => {
+  const lift = (decision: Record<string, unknown>, rest: Record<string, unknown> = {}) =>
+    parseLiftResponse(JSON.stringify({
+      decisions: [{ id: 'x', kind: 'noul', instructions: 'Does it delete tracked source?',
+        source: { file: 'AGENTS.md', line: 2, quote: 'Never commit unless the user explicitly asks.' },
+        ...decision }],
+      reduce: { kind: 'rules', rules: [{ when: [{ id: 'x', op: 'gte', value: 0.8 }], then: 'ask' }],
+        otherwise: 'allow' },
+      residual: '', dropped: [], ...rest,
+    }), AGENTS, 'AGENTS.md')
+
+  it.each([
+    ['a choice whose criteria is a string, not an option map', { kind: 'choice', criteria: 'anything' }, {}],
+    ['a score whose criteria is a number, not a level array', { kind: 'score', criteria: 42 }, {}],
+    ['instructions that are the empty string', { instructions: '' }, {}],
+    ['dependsOn as a bare string, not an array', { dependsOn: 'other' }, {}],
+    ['dependsOn holding something that is not an id', { dependsOn: [7] }, {}],
+    ['uncertain as a string', { uncertain: 'quite' }, {}],
+    ['an uncertain band of strings', { uncertain: { band: ['lo', 'hi'] } }, {}],
+    ['an uncertain band of the wrong length', { uncertain: { band: [0.3] } }, {}],
+    ['belowConfidence that is not a number', { uncertain: { belowConfidence: 'high' } }, {}],
+    ['residual as an object', {}, { residual: { note: 'summarise' } }],
+    ['dropped as a string', {}, { dropped: 'none' }],
+  ])('reports %s instead of handing back a Program', (_label, decision, rest) => {
+    const { program, issues } = lift(decision, rest)
+    expect(issues.some(i => i.severity === 'error')).toBe(true)
+    // And the error takes the Program with it, like every other error on this path.
+    expect(program.decisions).toEqual([])
+  })
+
+  // The other half, and the one that makes the guard a type check rather than a
+  // tightening: every well-formed shape the lift prompt asks the model for still passes.
+  // A guard that rejected these would reject correct model output.
+  it.each([
+    ['a choice with a real option map', { kind: 'choice', criteria: { yes: 'it does', no: 'it does not' } }],
+    ['a score with an ordered level array', { kind: 'score', criteria: ['none', 'some', 'a lot'] }],
+    ['a noul with a band inside 0..1', { uncertain: { band: [0.35, 0.65] } }],
+    ['a choice with belowConfidence', { kind: 'choice', criteria: { yes: 'y', no: 'n' }, uncertain: { belowConfidence: 0.6 } }],
+    ['a declared dependency', { dependsOn: ['other_question'] }],
+    ['no optional fields at all', {}],
+  ])('still accepts %s', (_label, decision) => {
+    expect(lift(decision).issues.filter(i => i.severity === 'error')).toEqual([])
+  })
+
+  // `residual` and `dropped` are required by the `Program` type but a model that has
+  // nothing to put in them plausibly omits them, and every emitter already handles that.
+  // Absent is not malformed; the wrong TYPE is, because that is what gets dereferenced.
+  it('accepts a response that simply omits residual and dropped', () => {
+    const { program, issues } = parseLiftResponse(JSON.stringify({
+      decisions: [], reduce: { kind: 'rules', rules: [], otherwise: 'ask' },
+    }), AGENTS, 'AGENTS.md')
+    expect(issues.filter(i => i.severity === 'error')).toEqual([])
+    expect(program.decisions).toEqual([])
+  })
 })

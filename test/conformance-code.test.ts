@@ -261,22 +261,35 @@ const REF_ABSENT = ABSENT.map(({ have: h }) => {
 
 describe('a missing answer', () => {
   /**
-   * LIVE BUG. `runReducer` and the `sdk` artifact throw; the `ai-sdk` and `langchain`
-   * artifacts skip the rule and fall through to `otherwise`. On this Program `otherwise`
-   * is `allow`, so on the same Program and the same incomplete answer map two of the four
-   * evaluators refuse to decide and two return the most permissive verdict in the list.
+   * FIXED (was a live bug). `runReducer` and the `sdk` artifact threw; the `ai-sdk` and
+   * `langchain` artifacts skipped the rule and fell through to `otherwise`. On this Program
+   * `otherwise` is `allow`, so on the same Program and the same incomplete answer map two of
+   * the four evaluators refused to decide and two returned the most permissive verdict in
+   * the list.
    *
    * Cause, in the emitters' own code:
-   *   - src/emit/ai-sdk.ts:`compare()` returns `false` when the answer is absent, and
-   *     `uncertain()` returns `false` when `!rule || !ans`.
-   *   - src/emit/langchain.ts:`_value()` returns `None` and `_compare()`/`_uncertain()`
-   *     return `False` rather than raising.
+   *   - src/emit/ai-sdk.ts:`compare()` returned `false` when the answer was absent, and
+   *     `uncertain()` returned `false` when `!rule || !ans`.
+   *   - src/emit/langchain.ts:`_value()` returned `None` and `_compare()`/`_uncertain()`
+   *     returned `False` rather than raising.
+   *
+   * Both were documented as deliberate, citing bouncer's skip-on-missing rule. The ruling
+   * was that the citation does not bind: bouncer is a YAML policy document with no
+   * exceptions, and three of the four CODE targets emit a language that has them. So the
+   * code targets now refuse, as `runReducer` does, rather than the reference being relaxed
+   * to match them — a deny rule that quietly does not fire is the defect class this suite
+   * exists for. The emitted throw names the decision AND the rule (`rule 2 -> review`),
+   * because a stack frame inside a generated module names neither.
+   *
+   * The two controls are load-bearing in the other direction: `is` against an unanswered
+   * question is still silently false in all four (`choiceOf` never throws), and a complete
+   * answer map still returns a verdict. A fix that made everything throw would fail them.
    *
    * Either policy is arguable on its own. Four evaluators of one Program disagreeing is
    * not: `jevc compile --emit sdk` and `jevc compile --emit ai-sdk` are documented as two
-   * lowerings of the same semantics, and here they answer differently.
+   * lowerings of the same semantics, and here they answered differently.
    */
-  it.fails('LIVE BUG: sdk and runReducer refuse to decide, ai-sdk and langchain return `allow`', () => {
+  it('all four evaluators refuse to decide on a missing answer, and agree on which', () => {
     const sdk = runTs(emitNative(gate), [
       `import type { JevAnswer } from 'jevc'`,
       `import { reduce } from './mod.ts'`,
@@ -647,14 +660,20 @@ describe('identifiers and keys', () => {
   }, SLOW)
 
   /**
-   * LIVE BUG. `__proto__` is guarded in the KEY position only. src/emit/native.ts:`idKey`
-   * and src/emit/ai-sdk.ts:`idKey` emit a computed key `['__proto__']` so a DECISION named
-   * `__proto__` survives, but the VALUES beside it are spliced in as `JSON.stringify(v)`
-   * (src/emit/native.ts:86-90). An `instructions` or a criteria description that is an
-   * object with its own `__proto__` key therefore lands in the artifact as an object
+   * FIXED (was a live bug). `__proto__` used to be guarded in the KEY position only.
+   * src/emit/native.ts:`idKey` and src/emit/ai-sdk.ts:`idKey` emit a computed key
+   * `['__proto__']` so a DECISION named `__proto__` survives, but the VALUES beside it were
+   * spliced in as `JSON.stringify(v)`. An `instructions` or a criteria description that is
+   * an object with its own `__proto__` key therefore landed in the artifact as an object
    * LITERAL, where `"__proto__":` is the prototype setter and not a key — so the emitted
-   * module re-parents the object and drops the entry, and the question the consumer sends
-   * is missing text the Program declared.
+   * module re-parented the object and dropped the entry, and the question the consumer
+   * sends was missing text the Program declared.
+   *
+   * Closed by `tsValue` in src/emit/ts-lowering.ts, which renders a JSON value as a
+   * TypeScript expression with the computed-key form at every `__proto__` and JSON's own
+   * quoting everywhere else, applied at all four value splices in native.ts and all five in
+   * ai-sdk.ts — the fifth being the LEGEND map, a second copy of every score level that no
+   * earlier round reached.
    *
    * Reachable without malice: `Decision.instructions` is typed `string` but is not one
    * (src/ir.ts:274-279 says so, and lintProgram exists because 2 of 60 fixtures carry an
@@ -678,7 +697,7 @@ describe('identifiers and keys', () => {
     residual: '', dropped: [],
   }
 
-  it.fails('LIVE BUG: a nested `__proto__` key inside instructions or a criteria value is dropped by sdk and ai-sdk', () => {
+  it('a nested `__proto__` key inside instructions or a criteria value survives in every target', () => {
     const wire = toQuestion(nestedProto.decisions[0])
     const want = JSON.stringify({ instructions: wire.instructions, criteria: wire.criteria })
     expect(want).toContain('__proto__')  // the wire really does carry it; otherwise vacuous

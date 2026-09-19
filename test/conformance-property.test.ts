@@ -878,7 +878,7 @@ describe('the property, on the targets whose consumer runs in-process', () => {
    */
   const signature = (v: Violation) => `${v.klass} ${v.target} ${v.code}`
 
-  it.fails('LIVE BUG: the property does not hold for json, bouncer and toolgate over the sweep', () => {
+  it('LIVE BUG: the property does not hold for json, bouncer and toolgate over the sweep', () => {
     const bySignature = new Map<string, string>()
     for (const c of sweep) {
       for (const v of checkInProcess(c.p)) {
@@ -1036,7 +1036,7 @@ describe('the corpus is a property source: 60 measured fixtures', () => {
    * a gate that THROWS has no branch (1) and no branch (2). A caller who wrote the documented
    * `if (canEmit(p, t).length) ...` gets an exception from the check itself.
    */
-  it.fails('LIVE BUG: canEmit answers rather than throws, for every fixture on every target', () => {
+  it('LIVE BUG: canEmit answers rather than throws, for every fixture on every target', () => {
     const threw: string[] = []
     for (const c of corpus) {
       for (const t of ['sdk', 'json', 'ai-sdk', 'langchain', 'bouncer', 'toolgate'] as const) {
@@ -1113,7 +1113,7 @@ describe('json: a decision id the wire contract will not carry', () => {
     expect(errorsOf(validateProgram(empty))).toEqual([])
   })
 
-  it.fails('LIVE BUG: canEmit clears a Program the wire contract rejects', () => {
+  it('LIVE BUG: canEmit clears a Program the wire contract rejects', () => {
     // The promise under test is one implication, not a location: WHATEVER canEmit clears
     // for json, validateRequest must accept. If the fix lands anywhere upstream — ir.ts,
     // capability.ts — canEmit stops clearing this Program, the body returns without
@@ -1182,7 +1182,7 @@ describe('bouncer: an uncertainty band the p grammar cannot express', () => {
     expect(bouncerVerdict(doc, { a: 0.65 })).toBe('allow')
   })
 
-  it.fails('LIVE BUG: a band outside 0..1 is emitted as a `p` bouncer refuses to load', () => {
+  it('LIVE BUG: a band outside 0..1 is emitted as a `p` bouncer refuses to load', () => {
     const escaped: string[] = []
     for (const band of OUT_OF_RANGE) {
       const p = prog([noul('a', { uncertain: { band } })],
@@ -1198,7 +1198,7 @@ describe('bouncer: an uncertainty band the p grammar cannot express', () => {
     expect(escaped).toEqual([])
   })
 
-  it.fails('LIVE BUG: the same band, seen as the consumer sees it — the whole gate stops resolving', () => {
+  it('LIVE BUG: the same band, seen as the consumer sees it — the whole gate stops resolving', () => {
     const p = prog([noul('a', { uncertain: { band: [0.5, 1.5] } })],
       [{ when: [{ id: 'a', op: 'uncertain' } as Condition], then: 'ask' }])
     const doc = parse(emitBouncerPolicy(p, { mode: 'full' }))

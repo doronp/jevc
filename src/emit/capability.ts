@@ -41,6 +41,13 @@ export type TargetCapability = {
    * an inclusive `LOW..HIGH`; toolgate has two scalars and no range at all.
    */
   rangeCondition?: boolean
+  /**
+   * The emitted artifact builds a Jev API request keyed by `Decision.id`, so the wire
+   * contract's id rules (contract.ts `validateRequest`) are part of "can this target
+   * express it". True for the four code targets; bouncer and toolgate key their own YAML
+   * by the id instead and their loaders accept names the wire will not.
+   */
+  idsOnTheWire?: boolean
   carriesConfidence: boolean
   carriesLegend: boolean
   note?: string
@@ -51,13 +58,13 @@ const PLAIN_DECIMAL = /^\d*\.?\d+$/
 
 export const TARGETS: Record<string, TargetCapability> = {
   sdk:       { name: 'sdk', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
   json:      { name: 'json', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
   langchain: { name: 'langchain', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
   'ai-sdk':  { name: 'ai-sdk', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               carriesConfidence: false, carriesLegend: false,
+               idsOnTheWire: true, carriesConfidence: false, carriesLegend: false,
                note: 'EvaluationModelV4 drops legend and moves confidence into providerMetadata, where it may be absent.' },
   bouncer:   { name: 'bouncer', kinds: ['noul'], reducer: 'single-condition',
                thresholdRange: [0, 1], thresholdPattern: PLAIN_DECIMAL,
@@ -108,23 +115,68 @@ function step(x: number, up: boolean): number {
 }
 
 /**
+ * A band endpoint as the author wrote it. `JSON.stringify` renders every non-finite number
+ * as `null`, so the old message told an author who wrote `[NaN, 0.6]` that their band was
+ * `[null,0.6]` — a value they cannot find in their file.
+ */
+const showBand = (band: readonly unknown[]): string =>
+  `[${band.map(x => typeof x === 'number' ? String(x) : JSON.stringify(x)).join(',')}]`
+
+/**
  * The `p` string for `op: 'uncertain'` on a range target, or why it cannot be written.
  * Exported so the emitter writes the same string canEmit promised was writable.
+ *
+ * THE DOMAIN IS PART OF THE LOWERING. A noul answer is a probability, so the answers a band
+ * can ever select are the doubles in [0,1] with `lo < p < hi` (runtime.ts isUncertain). The
+ * one-ULP step below converts jevc's EXCLUSIVE end to bouncer's INCLUSIVE one, and that
+ * conversion only applies where the excluded end is itself a reachable probability: below 0
+ * and above 1 the nearest reachable answer is 0 and 1 themselves, unstepped.
+ *
+ * Reading the band as unbounded was a silent-gate bug, not a rounding nicety. `step()`
+ * returns NaN for x < 0, so `[-0.1, 0.6]` fell into the empty-band branch and was refused
+ * with a message saying it was empty — it is not; it holds every probability under 0.6. And
+ * `[0.5, 1.5]` stepped to `1.4999999999999998`, which is outside the `p` grammar's 0..1:
+ * bouncer refuses the whole POLICY FILE, which is a LOAD error, which stops policy
+ * resolution and routes to `on_error: passthrough` (target-bouncer.md:9). The gate was gone
+ * and canEmit had returned no issues, at exit 0.
+ *
+ * Intersecting with [0,1] is not a clamp in the sense that loses information: `[0.5, 1.5]`
+ * and `[0.5, 1]` select exactly the same set of probabilities, so the emitted range agrees
+ * with `runReducer` on every answer that can arrive. What is genuinely unwritable — a band
+ * holding no probability at all, or an endpoint that is not a number — is refused here, and
+ * `canEmit` reports it. `band_out_of_range` (a WARN, beside this call) is what tells the
+ * author their endpoint left the domain.
  */
-export function rangeFor(d: Decision): { p?: string; why?: string } {
+export function rangeFor(d: Decision): { p?: string; why?: string; outOfDomain?: boolean } {
   const u = uncertaintyOf(d)
   if (!('band' in u)) {
     return { why: `"${d.id}" is uncertain below a confidence, and a bouncer answer carries a probability and no confidence.` }
   }
   const [lo, hi] = u.band
-  const a = step(lo, true), b = step(hi, false)
+  const shown = showBand(u.band)
+  // The band is a cast of parsed JSON like everything else here, so an endpoint that is not
+  // a number is live input. NaN cannot be intersected with anything, and Infinity can:
+  // `[0.5, Infinity]` selects exactly the probabilities above 0.5.
+  if (!(typeof lo === 'number' && typeof hi === 'number') || Number.isNaN(lo) || Number.isNaN(hi)) {
+    return { why: `the band ${shown} on "${d.id}" has an endpoint that is not a number, so there is no probability range to write. A band is [low, high], both numbers in 0..1.` }
+  }
+  // No probability satisfies `lo < p < hi`, whatever the stepping does — distinct from the
+  // inverted/adjacent band below, where the ends are probabilities and the interval between
+  // them is empty. Reported apart because the remedy is different: this one says the
+  // endpoints are not probabilities at all.
+  if (!(lo < 1 && hi > 0)) {
+    return { why: `the band ${shown} on "${d.id}" contains no probability: a noul answer lies in 0..1 and this band excludes all of it, so the question could never be uncertain. Put both ends inside 0..1.` }
+  }
+  const outOfDomain = lo < 0 || hi > 1
+  const a = lo < 0 ? 0 : step(lo, true)
+  const b = hi > 1 ? 1 : step(hi, false)
   if (!(a <= b)) {
-    return { why: `the band ${JSON.stringify(u.band)} on "${d.id}" is empty once its exclusive ends are stepped inside an inclusive range.` }
+    return { why: `the band ${shown} on "${d.id}" is empty once its exclusive ends are stepped inside an inclusive range.` }
   }
   if (!PLAIN_DECIMAL.test(String(a)) || !PLAIN_DECIMAL.test(String(b))) {
-    return { why: `the band ${JSON.stringify(u.band)} on "${d.id}" serialises to "${a}..${b}", and the p grammar has no exponent.` }
+    return { why: `the band ${shown} on "${d.id}" serialises to "${a}..${b}", and the p grammar has no exponent.` }
   }
-  return { p: `${a}..${b}` }
+  return { p: `${a}..${b}`, outOfDomain }
 }
 
 /**
@@ -221,6 +273,23 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
   const declared = new Set(p.decisions.map(d => d.id))
 
   for (const d of p.decisions) {
+    // The id the artifact will send to the Jev API as a question key. `validateRequest`
+    // (contract.ts) refuses an empty one with `id_empty` — "Question id cannot be empty" —
+    // so every code target clears canEmit and is then rejected by the server. The CLI
+    // backstops itself by running validateRequest beside canEmit (cli.ts), but canEmit is
+    // the ONLY gate a library consumer has, and the documented pattern is
+    // `if (canEmit(p, t).length) refuse()` followed by a POST.
+    //
+    // Scoped to the targets that actually key the WIRE by this id. bouncer and toolgate key
+    // their own YAML by it and their loaders accept `""` (target-*.md; the policy targets
+    // carry the empty key through rather than dropping it, which is pinned separately), so
+    // refusing it there would refuse a policy that loads and works. Same reason this is not
+    // in `validateProgram`: the empty id is legal in the IR and the code targets carry it
+    // intact — what it is not is legal on the wire.
+    if (cap.idsOnTheWire && (typeof d.id !== 'string' || d.id === '')) {
+      out.push(issue('id_empty', `decisions.${String(d.id)}`,
+        `Target "${target}" sends every question to the Jev API keyed by its decision id, and the wire contract refuses ${typeof d.id !== 'string' ? `an id that is not a string (got ${typeof d.id})` : 'an empty id'} (validateRequest: id_empty, "Question id cannot be empty"). The artifact would be written at exit 0 and rejected by the API at request time. Give the decision a name.`))
+    }
     // hasOwn, not a bare lookup: `reservedIds['__proto__']` inherits Object.prototype and
     // would report every __proto__ question as reserved by a target that never named it.
     const reserved = cap.reservedIds && Object.hasOwn(cap.reservedIds, d.id) ? cap.reservedIds[d.id] : undefined
@@ -233,9 +302,28 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       out.push({ code: 'kind_unsupported', path: `decisions.${d.id}`, severity: 'error',
         message: `Target "${target}" accepts only ${cap.kinds.join('/')} questions; "${d.id}" is a ${d.kind}. ${cap.note ?? ''}`.trim() })
     }
-    if (cap.requiresInstructions && !d.instructions.trim()) {
-      out.push({ code: 'instructions_empty', path: `decisions.${d.id}`, severity: 'error',
-        message: `Target "${target}" requires non-empty instructions on every question; "${d.id}" has none. It would refuse to load the policy, and a policy it cannot load stops policy resolution entirely.` })
+    if (cap.requiresInstructions) {
+      // `Decision.instructions` is TYPED `string` and is not one at runtime: the wire
+      // contract allows the structured `EntryType` form, `check.ts`'s buildProgram passes it
+      // through with `as never`, and 10 decisions across 2 fixtures in this repo's own
+      // corpus use it (see ir.ts's `lintableText`). `!d.instructions.trim()` therefore threw
+      // `TypeError: d.instructions.trim is not a function` out of THE GATE — canEmit's whole
+      // contract is that it returns issues, because `canEmit(p, t).length === 0` is the
+      // branch the README tells a library consumer to write, and a throw has no branch. It
+      // reached `emitBouncerPolicy` too, which calls canEmit first, so the actionable
+      // refusal was replaced by a stack trace naming jevc internals.
+      //
+      // A DISTINCT CODE, not a reuse of instructions_empty: the object form is not empty and
+      // an author told "this question has no instructions" about a question that visibly has
+      // some will go looking in the wrong place. The remedy differs too — one is "write the
+      // text", the other is "flatten it to a string for this target".
+      if (typeof d.instructions !== 'string') {
+        out.push({ code: 'instructions_not_string', path: `decisions.${d.id}`, severity: 'error',
+          message: `Target "${target}" requires string instructions on every question; "${d.id}" carries ${d.instructions === null ? 'null' : Array.isArray(d.instructions) ? 'an array' : typeof d.instructions}. The wire contract allows the structured entry form, but this target's loader reads instructions as text and would refuse the policy — and a policy it cannot load stops policy resolution entirely. Flatten it to a single string for this target.` })
+      } else if (!d.instructions.trim()) {
+        out.push({ code: 'instructions_empty', path: `decisions.${d.id}`, severity: 'error',
+          message: `Target "${target}" requires non-empty instructions on every question; "${d.id}" has none. It would refuse to load the policy, and a policy it cannot load stops policy resolution entirely.` })
+      }
     }
     // Only worth saying about a question the target will actually emit: a score on a
     // noul-only target is already refused above, and "the legend will be dropped" reads
@@ -325,6 +413,30 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       }
       for (const c of when) {
         if (c.op === 'gte' || c.op === 'lte') {
+          // `Condition.value` is TYPED `number` and is not one at runtime: `emit-policy`
+          // JSON.parses a file README:225 calls "the shape `--lift` asks the agent to
+          // produce" — model output — and casts it. Every other check on this value in jevc
+          // is a RELATIONAL comparison, and those COERCE: `"0.8" >= 0 && "0.8" <= 1` is true,
+          // `null >= 0 && null <= 1` is true, and `!(ask < deny)` compares two STRINGS
+          // lexically. So the check has to be the type itself, before any comparison.
+          //
+          // toolgate is where this lands in a deployed file: it has no thresholdPattern, and
+          // its emitter copies `c.value` straight into `stringify({ thresholds })`, where
+          // target-toolgate.md:27-28 declares a number. Measured on this tree at exit 0:
+          // `deny: "0.8"`, `deny: true`, `deny: ""` and `deny: null` all emitted. `null` is
+          // the severe one — it satisfies toolgate's own `0 <= ask <= deny <= 1` by the same
+          // coercion and then denies EVERY gated tool call. README:381 already documents
+          // these thresholds as "0..1, plain decimal"; this makes the code true.
+          //
+          // NOT a `continue`: bouncer's thresholdPattern catches five of the six by their
+          // serialisation and reports `threshold_unrepresentable`, which is a different
+          // sentence about the same value, and a caller reading one issue at a time is owed
+          // both. The one it does not catch is `"0.8"`, which `cmp()` renders byte-identically
+          // to the number — harmless on bouncer, which is why the type check is what closes it.
+          if (typeof c.value !== 'number' || !Number.isFinite(c.value)) {
+            out.push({ code: 'threshold_not_a_number', path: `reduce.rules[${i}]`, severity: 'error',
+              message: `Target "${target}" writes this threshold into the policy file as a number; "${c.id}" has ${JSON.stringify(c.value) ?? String(c.value)} (${typeof c.value}). Every range check in jevc is a relational comparison and those coerce, so a value that is not a finite number passes them all and lands in the artifact unchanged — where the consumer either refuses to load the file or reads it as a bound nobody wrote. Write a plain number in 0..1.` })
+          }
           if (cap.thresholdRange) {
             const [lo, hi] = cap.thresholdRange
             if (c.value < lo || c.value > hi) {
@@ -348,12 +460,20 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
           // comparison expresses it exactly — but only if the endpoints survive
           // serialisation. rangeFor is what the emitter will write; ask it, do not guess.
           const d = p.decisions.find(x => x.id === c.id)
+          const range = cap.rangeCondition && d ? rangeFor(d) : undefined
           const why = !cap.rangeCondition
             ? `it has no range comparison, only ${cap.reducer === 'thresholds' ? 'two scalar thresholds' : 'a single threshold'}.`
-            : d ? rangeFor(d).why : undefined
+            : range?.why
           if (why) {
             out.push(issue('uncertain_unsupported', `reduce.rules[${i}]`,
               `Target "${target}" cannot express the uncertainty condition on "${c.id}": ${why}`))
+          } else if (range?.outOfDomain) {
+            // The lowering is exact — see rangeFor — so this is not a refusal. It is still
+            // worth saying: an endpoint outside 0..1 is almost always a typo or a lifted
+            // model's invention, and the author cannot see from the emitted `p` that the
+            // number they wrote was not the number the gate uses.
+            out.push({ code: 'band_out_of_range', path: `decisions.${c.id}.uncertain`, severity: 'warn',
+              message: `The band ${showBand((uncertaintyOf(d!) as { band: [number, number] }).band)} on "${c.id}" has an endpoint outside 0..1. A noul answer IS a probability, so the emitted range is the part of the band a probability can reach (${range.p}) — the same answers, but not the numbers you wrote. Put both ends inside 0..1 to say it directly.` })
           }
         }
       }

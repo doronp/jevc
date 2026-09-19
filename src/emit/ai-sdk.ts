@@ -6,29 +6,38 @@ import type { Decision, Program } from '../ir.js'
 // module is named for the TYPESCRIPT targets — its ECMAScript terminator set is
 // deliberately NOT the one bouncer.ts, toolgate.ts and langchain.ts use, and the header
 // of ts-lowering.ts says why all three must stay separate.
-import { tsIdKey as idKey, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
+import { tsIdKey as idKey, tsValue, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
 
+// `tsValue`, never a bare `JSON.stringify`, at every VALUE splice here and in the LEGEND
+// map below — five sites, all of them in expression position, where a nested `__proto__`
+// key is the prototype setter and the entry disappears from the emitted object. See
+// ts-lowering.ts; native.ts has the same four, and LEGEND is this emitter's fifth.
 function question(d: Decision): string {
   if (d.kind === 'noul') {
     // EvaluationModelV4 renames noul -> boolean; the answer field becomes `probability`.
-    const c = d.criteria && !Array.isArray(d.criteria) ? `, criteria: ${JSON.stringify(d.criteria)}` : ''
-    return `  ${idKey(d.id)}: { type: 'boolean', instructions: ${JSON.stringify(d.instructions)}${c} },`
+    const c = d.criteria && !Array.isArray(d.criteria) ? `, criteria: ${tsValue(d.criteria)}` : ''
+    return `  ${idKey(d.id)}: { type: 'boolean', instructions: ${tsValue(d.instructions)}${c} },`
   }
   if (d.kind === 'score') {
-    const lv = (d.criteria as readonly EntryType[]).map(c => JSON.stringify(c)).join(', ')
+    const lv = (d.criteria as readonly EntryType[]).map(c => tsValue(c)).join(', ')
     // `as const` is load-bearing: without it the level type degrades to `number`.
-    return `  ${idKey(d.id)}: { type: 'score', instructions: ${JSON.stringify(d.instructions)}, criteria: [${lv}] as const },`
+    return `  ${idKey(d.id)}: { type: 'score', instructions: ${tsValue(d.instructions)}, criteria: [${lv}] as const },`
   }
   const opts = Object.entries(d.criteria as Record<string, EntryType>)
-    .map(([k, v]) => `${idKey(k)}: ${JSON.stringify(v)}`).join(', ')
-  return `  ${idKey(d.id)}: { type: 'choice', instructions: ${JSON.stringify(d.instructions)}, criteria: { ${opts} } as const },`
+    .map(([k, v]) => `${idKey(k)}: ${tsValue(v)}`).join(', ')
+  return `  ${idKey(d.id)}: { type: 'choice', instructions: ${tsValue(d.instructions)}, criteria: { ${opts} } as const },`
 }
 
 export function emitAiSdk(p: Program, name = 'program'): string {
+  // The fifth `__proto__` value site, and the one no previous round reached: LEGEND is a
+  // SECOND copy of every score level, so a level description carrying its own `__proto__`
+  // key was dropped here as well as from the questions map — leaving the legend and the
+  // wire disagreeing about what level 0 means. The keys are "0", "1", ... and can never be
+  // `__proto__`, so only the value needs `tsValue`.
   const legends = p.decisions
     .filter(d => d.kind === 'score')
     .map(d => `  ${idKey(d.id)}: { ${(d.criteria as readonly EntryType[])
-      .map((c, i) => `${JSON.stringify(String(i))}: ${JSON.stringify(c)}`).join(', ')} },`)
+      .map((c, i) => `${JSON.stringify(String(i))}: ${tsValue(c)}`).join(', ')} },`)
     .join('\n')
 
   // Each decision's uncertainty rule, RESOLVED from the Program (uncertaintyOf supplies
@@ -43,12 +52,18 @@ export function emitAiSdk(p: Program, name = 'program'): string {
     return `  ${idKey(d.id)}: ${body},`
   }).join('\n')
 
-  const rules = p.reduce.rules.map(r => {
+  const rules = p.reduce.rules.map((r, i) => {
+    // Which rule could not be evaluated, carried into the call. The evidence helpers below
+    // THROW on an unanswered question, and a throw out of a generated module is worthless
+    // without it: the stack names `compare`, the Program names `rule 3`, and nothing in the
+    // artifact connects the two. First-match-wins makes the index meaningful on its own, and
+    // the verdict makes it readable without counting lines.
+    const where = JSON.stringify(`rule ${i} -> ${r.then}`)
     const conds = r.when.map(c => {
       const at = `a[${JSON.stringify(c.id)}]`
       if (c.op === 'is') return `${at}?.choice === ${JSON.stringify(c.value)}`
-      if (c.op === 'uncertain') return `uncertain(a, ${JSON.stringify(c.id)}, confidence)`
-      return `compare(a, ${JSON.stringify(c.id)}, confidence, ${c.op === 'gte' ? '">="' : '"<="'}, ${c.value})`
+      if (c.op === 'uncertain') return `uncertain(a, ${JSON.stringify(c.id)}, confidence, ${where})`
+      return `compare(a, ${JSON.stringify(c.id)}, confidence, ${c.op === 'gte' ? '">="' : '"<="'}, ${c.value}, ${where})`
     }).join(' && ')
     // `when: []` is an empty conjunction and `[].every(...)` is true, so the rule fires
     // unconditionally — `true` is what that means here, and joining nothing produced the
@@ -111,26 +126,61 @@ function valueOf(a: Record<string, any>, id: string, confidence: Record<string, 
   return ans.probability ?? ans.score ?? confidenceFrom(ans, confidence[id])
 }
 
-/** A rule whose question was not answered does not fire, in either direction: absence of
- *  evidence is not evidence, and it is bouncer's rule for the same situation. An
- *  unanswered question read as 0 satisfies every upper bound, which turns "we never
- *  asked" into a confident no. */
+/**
+ * A rule whose question was not answered REFUSES TO PRODUCE A VERDICT — the same answer
+ * jevc's own reducer gives (\`value\`/\`isUncertain\` in src/runtime.ts both throw), and
+ * therefore the same answer the \`sdk\` target gives, since that one calls straight into it.
+ *
+ * This used to return \`false\` — "the rule does not fire" — citing bouncer, which skips a
+ * question it has no answer for. That reasoning is sound FOR BOUNCER and unsound here.
+ * Bouncer is a YAML policy document: it has no exceptions, so skipping is the only thing
+ * left to it, and target-bouncer.md says so. TypeScript has exceptions. The citation was to
+ * a constraint that does not bind this target, and what it bought was a fail-open: \`false\`
+ * on a DENY rule is the deny quietly not firing, so an incomplete answer map falls through
+ * to \`otherwise\`, which in every gate anyone writes is the permissive verdict. Measured,
+ * on one Program with the \`gte\` question unanswered: runReducer \`THROW\`, sdk \`THROW\`,
+ * ai-sdk \`allow\`, langchain \`allow\`. Two of the four evaluators of one Program returned
+ * the most permissive verdict in the list and two refused. That disagreement is the bug,
+ * and this is the direction that keeps the one implementation that was already right.
+ *
+ * \`is\` is the exception, in every target: \`choiceOf\` returns undefined for an unanswered
+ * question and never throws (src/runtime.ts), so \`a[id]?.choice === "x"\` is correctly
+ * false. "Nobody answered" and "the answer was not that option" are the same fact for \`is\`
+ * and different facts for a threshold.
+ *
+ * KNOWN TARGET LIMITATION, stated here so it is not rediscovered: \`--emit bouncer\` and
+ * \`--emit toolgate\` still skip, and cannot do otherwise. A consumer who needs the four
+ * code targets' refusal semantics out of a policy target has to check the answer set is
+ * complete before the gate runs; the policy document itself cannot.
+ */
+const noAnswer = (id: string, rule: string): Error =>
+  new Error(\`No answer for decision "\${id}", read by \${rule}. Refusing to compute a verdict: an unanswered question treated as "the condition did not hold" makes a deny rule silently not fire and the reducer fall through to "otherwise". jevc's own runReducer throws here too.\`)
+
 function compare(a: Record<string, any>, id: string, confidence: Record<string, number>,
-                 op: '>=' | '<=', threshold: number): boolean {
+                 op: '>=' | '<=', threshold: number, rule: string): boolean {
   const v = valueOf(a, id, confidence)
-  if (v === undefined) return false
+  if (v === undefined) throw noAnswer(id, rule)
   return op === '>=' ? v >= threshold : v <= threshold
 }
 
 /** Uncertainty per UNCERTAINTY above, not a fixed 0.5. A boolean's band is tested on its
- *  probability; everything else against its confidence. An absent answer is not uncertain:
- *  there is no measurement to be uncertain about. */
-function uncertain(a: Record<string, any>, id: string, confidence: Record<string, number>): boolean {
-  const rule = UNCERTAINTY[id]
+ *  probability; everything else against its confidence. An absent answer is not certain
+ *  either — see \`noAnswer\`: there is no measurement, so there is no verdict. */
+function uncertain(a: Record<string, any>, id: string, confidence: Record<string, number>, rule: string): boolean {
   const ans = a[id]
-  if (!rule || !ans) return false
-  if (rule.band) return ans.probability > rule.band[0] && ans.probability < rule.band[1]
-  return confidenceFrom(ans, confidence[id]) < rule.belowConfidence!
+  if (!ans) throw noAnswer(id, rule)
+  // Object.hasOwn, not a bare \`UNCERTAINTY[id]\` truthiness test. A plain object answers
+  // \`constructor\`, \`toString\` and the rest of Object.prototype with a truthy value, so the
+  // old \`if (!rule)\` guard passed for an id the program never declared and the comparison
+  // ran against \`undefined\` — false, silently, which switched the escalate-to-human rule
+  // off. runReducer looks the decision up with \`p.decisions.find\`, which has no prototype
+  // chain to fall through; this is how a map says the same thing.
+  if (!Object.hasOwn(UNCERTAINTY, id)) {
+    throw new Error(\`No decision "\${id}" in this program, but \${rule} asks whether it is uncertain. Refusing to compute a verdict from a rule whose question does not exist.\`)
+  }
+  const u = UNCERTAINTY[id]
+  if (u.band) return ans.probability > u.band[0] && ans.probability < u.band[1]
+  return confidenceFrom(ans, confidence[id]) < u.belowConfidence!
 }
 
 /**
