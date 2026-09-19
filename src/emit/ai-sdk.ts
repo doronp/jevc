@@ -7,6 +7,7 @@ import type { Decision, Program } from '../ir.js'
 // deliberately NOT the one bouncer.ts, toolgate.ts and langchain.ts use, and the header
 // of ts-lowering.ts says why all three must stay separate.
 import { tsIdKey as idKey, tsValue, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
+import { cannotLower, refusal } from './capability.js'
 
 // `tsValue`, never a bare `JSON.stringify`, at every VALUE splice here and in the LEGEND
 // map below — five sites, all of them in expression position, where a nested `__proto__`
@@ -29,6 +30,13 @@ function question(d: Decision): string {
 }
 
 export function emitAiSdk(p: Program, name = 'program'): string {
+  // The house pattern, from emitBouncerPolicy (src/emit/policy/bouncer.ts:31); native.ts says
+  // why the code emitters need it too and capability.ts's `cannotLower` says why it is not
+  // the whole of canEmit. The narrowing matters most on this target: it carries neither
+  // legend nor inline confidence, so `legend_dropped` and `confidence_derived` are the two
+  // issues canEmit raises most often here — both WARNINGS, about artifacts that are correct.
+  const issues = cannotLower(p, 'ai-sdk')
+  if (issues.length) throw refusal('an ai-sdk module', issues)
   // The fifth `__proto__` value site, and the one no previous round reached: LEGEND is a
   // SECOND copy of every score level, so a level description carrying its own `__proto__`
   // key was dropped here as well as from the questions map — leaving the legend and the

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { readdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { readdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadFixtures, assertExpectation, buildProgram, diffFixture } from '../src/check.js'
@@ -7,6 +7,18 @@ import type { Fixture, Expectation } from '../src/check.js'
 import type { JevAnswer } from '../src/contract.js'
 
 const fixtures = loadFixtures('fixtures')
+
+/** Scratch dir for the one test below that needs a directory on disk. afterAll rather
+ *  than try/finally so it is removed even if that test throws before its own cleanup. */
+const tmpDirs: string[] = []
+const mkTmp = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jevc-fixtures-'))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
+})
 
 /** A minimally valid Fixture carrying only the fields buildProgram/diffFixture read. */
 function fixture(id: string, answers: Record<string, JevAnswer>): Fixture {
@@ -79,7 +91,7 @@ describe('fixture corpus', () => {
   })
 
   it('loadFixtures names the offending file when a domain file has no top-level fixtures array', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-fixtures-'))
+    const dir = mkTmp()
     writeFileSync(join(dir, 'broken.json'), JSON.stringify({ domain: 'broken' }))
     expect(() => loadFixtures(dir)).toThrow(/broken\.json/)
   })

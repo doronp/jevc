@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emitAiSdk } from '../src/emit/ai-sdk.js'
@@ -17,7 +17,19 @@ import type { Program } from '../src/ir.js'
 // target-ai-sdk-and-langchain.md verified the real ones to be.
 // ---------------------------------------------------------------------------
 
-const tmp = (tag: string) => mkdtempSync(join(tmpdir(), `jevc-${tag}-`))
+/** Each harness below writes a module into a fresh dir, compiles it and runs it, all
+ *  within the one call — nothing here outlives the harness that made it. Removal is
+ *  deferred to afterAll so a dir is reclaimed even when tsc/tsx/python3 throws partway
+ *  through, and so no cleanup can run between a write and the assertion on its output. */
+const tmpDirs: string[] = []
+const tmp = (tag: string) => {
+  const dir = mkdtempSync(join(tmpdir(), `jevc-${tag}-`))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
+})
 
 /** @ai-sdk/typesafe-ai is the CONSUMER's dependency, not jevc's, so the provider import
  *  and the `model` export cannot resolve here. Neither is part of the reducer under test;
