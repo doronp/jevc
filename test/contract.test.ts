@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { validateRequest, estimateTokens, redactErrorBody } from '../src/contract.js'
+import { validateRequest, validateResponse, estimateTokens, redactErrorBody } from '../src/contract.js'
+import { loadFixtures, buildProgram } from '../src/check.js'
+import type { Program } from '../src/ir.js'
 
 const base = { model: 'jev-latest' as const, state: 'hello' }
 
@@ -62,13 +64,33 @@ describe('validateRequest', () => {
       .toEqual(['choice_too_few_options', 'score_too_few_levels'])
   })
 
-  it('flags a backtick path that does not resolve in state', () => {
+  it('flags a backtick path that does not resolve in a structured state', () => {
     const issues = validateRequest({
       model: 'jev-latest',
       state: { ticket: { messages: [{ text: 'hi' }] } },
       questions: { a: { type: 'noul', instructions: 'Is `ticket.nope.field` angry?' } },
     })
     expect(issues[0].code).toBe('path_unresolved')
+    // Still an error: against an object state the path is provably absent.
+    expect(issues[0].severity).toBe('error')
+  })
+
+  // Fix round 2, F8: backticks are prose markup that also quote option names, literal values
+  // and class names, and against a *string* state a dotted token can never resolve at all —
+  // so erroring rejected the corpus's core use case (state = source code, question = "does it
+  // use `sys.exit`?") for a condition the message itself says the API answers anyway.
+  it('does not reject a backticked dotted token against a string state', () => {
+    const issues = validateRequest({
+      model: 'jev-latest',
+      state: 'import sys; sys.exit(0)',
+      questions: { q1: { type: 'noul', instructions: 'Does it use `sys.exit`?' } },
+    })
+    expect(issues.filter(i => i.severity === 'error')).toEqual([])
+    // Demoted, not deleted: the CLI still prints it, and evaluate() filters on severity.
+    expect(issues).toEqual([{
+      code: 'path_unresolved', path: 'questions.q1', severity: 'warn',
+      message: expect.stringContaining('sys.exit'),
+    }])
   })
 
   it('accepts a backtick path that does resolve', () => {
@@ -136,6 +158,182 @@ describe('validateRequest', () => {
     const issues = validateRequest({ ...base, questions: {
       c: { type: 'choice', instructions: 'x', criteria } } })
     expect(issues.map(i => i.code)).toContain('choice_too_many_options')
+  })
+})
+
+// Fix round 2, F9: the response was a bare cast (`res.answers as Record<string, JevAnswer>`)
+// on the far side of a paid call, so a malformed one was either silently believed or blamed
+// on the program. Every case below was measured against the old code and is noted with what
+// it did then. validateResponse is deliberately not wired into evaluate() yet.
+describe('validateResponse', () => {
+  const p: Program = {
+    decisions: [
+      { id: 'destructive', kind: 'noul', instructions: 'Deletes data?' },
+      { id: 'radius', kind: 'score', instructions: 'How wide?',
+        criteria: ['one file', 'one dir', 'whole repo'] },
+      { id: 'target', kind: 'choice', instructions: 'Target?',
+        criteria: { source: null, build: null } },
+    ],
+    reduce: { kind: 'rules', rules: [], otherwise: 'ask' },
+    residual: '', dropped: [],
+  }
+
+  const res = (over: Record<string, unknown> = {}): unknown => ({
+    model: 'jev-1.13.0',
+    answers: {
+      destructive: { type: 'noul', noul: 0.95 },
+      radius: { type: 'score', score: 1.99, legend: { '0': 'one file', '1': 'one dir', '2': 'whole repo' },
+        probabilities: { '0': 0, '1': 0.99, '2': 0.01 }, confidence: 0.99 },
+      target: { type: 'choice', choice: 'build', probabilities: { source: 0.1, build: 0.9 }, confidence: 0.8 },
+    },
+    usage: { input_tokens: 10, output_tokens: 5 },
+    ...over,
+  })
+
+  const answers = (over: Record<string, unknown>): unknown =>
+    res({ answers: { ...(res() as { answers: Record<string, unknown> }).answers, ...over } })
+
+  it('accepts a well-formed response', () => {
+    expect(validateResponse(p, res())).toEqual([])
+  })
+
+  // Old behaviour: raw `TypeError: Cannot read properties of null (reading 'destructive')`
+  // thrown out of runReducer — a node stack trace pointing at jevc, not at the response.
+  it('reports a null answers map instead of dying on a TypeError', () => {
+    const issues = validateResponse(p, res({ answers: null }))
+    expect(issues.map(i => i.code)).toEqual(['answers_missing'])
+    expect(issues[0].severity).toBe('error')
+    expect(issues[0].message).toContain('null')
+  })
+
+  // Old behaviour: the same raw TypeError, one property earlier.
+  it('reports an absent answers map', () => {
+    const issues = validateResponse(p, { model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } })
+    expect(issues.map(i => i.code)).toEqual(['answers_missing'])
+  })
+
+  it('reports a response that is not an object at all', () => {
+    expect(validateResponse(p, null).map(i => i.code)).toEqual(['response_malformed'])
+    expect(validateResponse(p, 'nope').map(i => i.code)).toEqual(['response_malformed'])
+    expect(validateResponse(p, []).map(i => i.code)).toEqual(['response_malformed'])
+  })
+
+  // The sharp one. Old behaviour: isUncertain threw `Decision "destructive" needs
+  // belowConfidence` — a complaint about the *program's* uncertainty declaration for a
+  // defect that is entirely in the response, sending the user to edit the wrong file.
+  it('blames the response, not the program, for an answer of the wrong kind', () => {
+    const issues = validateResponse(p, answers({
+      destructive: { type: 'choice', choice: 'x', probabilities: { x: 1 }, confidence: 0.9 },
+    }))
+    expect(issues).toHaveLength(1)
+    expect(issues[0].code).toBe('answer_type_mismatch')
+    expect(issues[0].path).toBe('answers.destructive')
+    expect(issues[0].message).toMatch(/asked as a noul but answered as "choice"/)
+    expect(issues[0].message).not.toMatch(/belowConfidence/)
+  })
+
+  it('reports a decision the response did not answer', () => {
+    const { radius: _dropped, ...rest } = (res() as { answers: Record<string, unknown> }).answers
+    const issues = validateResponse(p, res({ answers: rest }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['answer_missing', 'answers.radius']])
+  })
+
+  it('reports a null answer for an asked decision', () => {
+    const issues = validateResponse(p, answers({ destructive: null }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['answer_type_mismatch', 'answers.destructive']])
+  })
+
+  // Old behaviour: verdict computed with no complaint — a noul above 1 is outside the band
+  // space entirely, so it reads as certain.
+  it('reports a noul outside 0..1', () => {
+    const issues = validateResponse(p, answers({ destructive: { type: 'noul', noul: 1.7 } }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['noul_out_of_range', 'answers.destructive.noul']])
+  })
+
+  // Old behaviour: verdict computed with no complaint — "0.95" coerces in a >= comparison.
+  it('reports a numeric field that arrived as a string', () => {
+    const issues = validateResponse(p, answers({ destructive: { type: 'noul', noul: '0.95' } }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['answer_not_a_number', 'answers.destructive.noul']])
+    expect(issues[0].message).toContain('"0.95"')
+  })
+
+  it('reports a required numeric field the response omitted entirely', () => {
+    const issues = validateResponse(p, answers({
+      radius: { type: 'score', score: 1.99, legend: {}, probabilities: {} },
+    }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['answer_not_a_number', 'answers.radius.confidence']])
+    expect(issues[0].message).toContain('undefined')
+  })
+
+  it('reports a confidence outside 0..1', () => {
+    const issues = validateResponse(p, answers({
+      target: { type: 'choice', choice: 'build', probabilities: { build: 1 }, confidence: 1.4 },
+    }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['confidence_out_of_range', 'answers.target.confidence']])
+  })
+
+  it('reports a score outside level-index space', () => {
+    const issues = validateResponse(p, answers({
+      radius: { type: 'score', score: 3, legend: {}, probabilities: {}, confidence: 0.9 },
+    }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['score_out_of_range', 'answers.radius.score']])
+    expect(issues[0].message).toContain('0..2')
+  })
+
+  // Guard, not a defect test: a score answer is the probability-weighted expectation over
+  // level indices, not the index itself — 23 of the 26 measured score answers in fixtures/
+  // are fractional. An integrality check here would reject almost every real response.
+  it('accepts a fractional score, which is the normal case', () => {
+    expect(validateResponse(p, answers({
+      radius: { type: 'score', score: 0.57, legend: {}, probabilities: {}, confidence: 0.43 },
+    }))).toEqual([])
+  })
+
+  // Old behaviour: silently falls through every `is` rule to `otherwise` — a wrong verdict
+  // with nothing to read afterwards that says why.
+  it('reports a choice the program never declared', () => {
+    const issues = validateResponse(p, answers({
+      target: { type: 'choice', choice: 'quarantine', probabilities: {}, confidence: 0.8 },
+    }))
+    expect(issues.map(i => [i.code, i.path])).toEqual([['choice_unknown_option', 'answers.target.choice']])
+    expect(issues[0].message).toContain('source, build')
+  })
+
+  // Decided: warn. An id the program never asked cannot move the verdict (the reducer only
+  // reads declared ids), so rejecting the response over it would repeat the F8 mistake —
+  // but it is the first visible sign that a moving alias stopped answering what we asked.
+  it('warns about an unasked extra answer without rejecting the response', () => {
+    const issues = validateResponse(p, answers({ surprise: { type: 'noul', noul: 0.2 } }))
+    expect(issues).toEqual([{
+      code: 'answer_unasked', path: 'answers.surprise', severity: 'warn',
+      message: expect.stringContaining('surprise'),
+    }])
+    expect(issues.filter(i => i.severity === 'error')).toEqual([])
+  })
+
+  // Decided: warn. The verdict is fully computed without usage, so a model that omits it
+  // must not have its answers thrown away — but Verdict types `usage` non-optional and
+  // hands back `undefined` behind that type, so the omission cannot go unreported either.
+  it('warns about missing or malformed usage without rejecting the response', () => {
+    const absent = validateResponse(p, res({ usage: undefined }))
+    expect(absent.map(i => [i.code, i.severity])).toEqual([['usage_missing', 'warn']])
+    const partial = validateResponse(p, res({ usage: { input_tokens: 10 } }))
+    expect(partial.map(i => [i.code, i.severity])).toEqual([['usage_missing', 'warn']])
+  })
+
+  // The no-false-rejection guard, the response-side twin of "every fixture request passes
+  // the contract validator": 60 responses the live API actually returned must all pass.
+  it('accepts every measured response in the fixture corpus', () => {
+    const fixtures = loadFixtures('fixtures')
+    expect(fixtures.length).toBeGreaterThan(0)
+    for (const f of fixtures) {
+      const issues = validateResponse(buildProgram(f), {
+        model: f.measured.model,
+        answers: f.measured.answers,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      expect(issues, `${f.id}: ${issues.map(i => `${i.path}: ${i.message}`).join('; ')}`).toEqual([])
+    }
   })
 })
 

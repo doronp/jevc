@@ -1,3 +1,8 @@
+// Type-only, so it is erased at compile time and the contract <-> ir cycle never exists at
+// runtime: ir.ts imports ValidationIssue from here, and validateResponse needs the program
+// it is checking the response against (kinds, option names, level counts).
+import type { Program } from './ir.js'
+
 // Mirrors the SDK's JsonValue/EntryType shape (see test/contract.sdk-compat.test-d.ts):
 // `unknown` isn't assignable to the SDK's JSON-only value type, so the wire
 // contract has to be expressed in JSON-safe values too.
@@ -153,8 +158,19 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
 
     for (const path of backtickPaths(q)) {
       if (resolvePath(req.state, path) === undefined) {
-        err('path_unresolved', at,
-          `Backtick path \`${path}\` does not resolve in state. The API never reports this — it silently answers from the whole state instead.`)
+        // Backticks here are ordinary prose markup — they also quote criteria option names,
+        // literal values, class names and fields of the question's own structured
+        // `instructions` object — so a dotted backticked token is only *sometimes* a state
+        // path. Against a string state it can never resolve at all (resolvePath bails on a
+        // non-object root), which made this an outright rejection of the corpus's core use
+        // case: state = a source file, question = "Does it use `sys.exit`?". The message
+        // itself concedes the API answers the request anyway, so for a string state this is
+        // a lint signal, not a contract violation. Only a structured state makes the path
+        // *provably* absent, and that stays an error. Measured: all 10 backtick paths in
+        // fixtures/ sit on object states and all 10 resolve, so neither branch fires there.
+        const structured = typeof req.state === 'object' && req.state !== null
+        out.push({ code: 'path_unresolved', path: at, severity: structured ? 'error' : 'warn',
+          message: `Backtick path \`${path}\` does not resolve in state. The API never reports this — it silently answers from the whole state instead.` })
       }
     }
 
@@ -169,6 +185,149 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
   if (total > TOKEN_BUDGET_TOTAL) {
     err('token_budget_exceeded', 'request',
       `Request is ~${total} tokens; the limit is ${TOKEN_BUDGET_TOTAL}.`)
+  }
+
+  return out
+}
+
+/** The other half of the wire contract. `res` is `unknown` on purpose: it crosses the same
+ * trust boundary as the request but in the opposite direction, from a remote service on a
+ * model alias that moves (`jev-latest` resolved to jev-1.13.0 today), and runtime.ts takes it
+ * with a bare `as Record<string, JevAnswer>` — the type asserts a shape nobody checked.
+ * Same conventions as validateRequest: every violation reported at once, `error` means the
+ * verdict would be wrong or would throw, `warn` means the verdict still stands. Not wired
+ * into evaluate() here — that call site belongs to runtime.ts. */
+export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
+  const out: ValidationIssue[] = []
+  const err = (code: string, path: string, message: string) =>
+    out.push({ code, path, message, severity: 'error' })
+  // Every branch below exists because the wire disagreed with the declared type, so naming
+  // what actually arrived ("null", "an array", "string") is most of the diagnosis.
+  const shape = (v: unknown): string =>
+    v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v
+  // Present-but-not-a-number is the quiet failure: `"0.95"` as a string, or a null, reaches
+  // the reducer's >=/<= comparisons and coerces (or goes NaN) into a verdict nobody flags.
+  const num = (v: unknown, path: string, what: string): number | undefined => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v
+    err('answer_not_a_number', path, `${what} is ${JSON.stringify(v) ?? shape(v)}, not a number.`)
+    return undefined
+  }
+
+  if (res === null || typeof res !== 'object' || Array.isArray(res)) {
+    err('response_malformed', 'response',
+      `Response is ${shape(res)}, not an object. Nothing in it can be read.`)
+    return out
+  }
+  const body = res as Record<string, unknown>
+
+  // A null or absent `answers` currently dies as a bare node TypeError ("Cannot read
+  // properties of null") thrown from jevc's own internals, pointing the user at jevc rather
+  // than at the response. Nothing further is checkable without it, so this is the one early
+  // return — reporting 20 answer_missing issues for a response that simply has no answers
+  // buries the actual fault.
+  const answers = body.answers
+  if (answers === null || typeof answers !== 'object' || Array.isArray(answers)) {
+    err('answers_missing', 'answers',
+      `Response carries no answers object (got ${shape(answers)}); no decision was answered.`)
+    return out
+  }
+  const byId = answers as Record<string, unknown>
+
+  for (const d of p.decisions) {
+    const at = `answers.${d.id}`
+    const a = byId[d.id]
+    if (a === undefined) {
+      err('answer_missing', at,
+        `No answer for decision "${d.id}". The reducer needs every asked decision; a batch is scored independently, so a dropped id is silent until the verdict is computed.`)
+      continue
+    }
+    if (a === null || typeof a !== 'object' || Array.isArray(a)) {
+      err('answer_type_mismatch', at, `Answer for "${d.id}" is ${shape(a)}, not a ${d.kind} answer.`)
+      continue
+    }
+    const ans = a as Record<string, unknown>
+    if (ans.type !== d.kind) {
+      // The sharp one. Today a choice-shaped answer to a noul question surfaces out of
+      // isUncertain as `Decision "x" needs belowConfidence`, which reads as a defect in the
+      // program's own uncertainty declaration and sends the user to edit the wrong file.
+      // The program is fine; the response answered a different question than the one asked.
+      err('answer_type_mismatch', at,
+        `"${d.id}" was asked as a ${d.kind} but answered as ${JSON.stringify(ans.type) ?? shape(ans.type)}. The response does not match the request — the program's uncertainty declaration is not at fault.`)
+      continue
+    }
+
+    if (d.kind === 'noul') {
+      const n = num(ans.noul, `${at}.noul`, `"${d.id}".noul`)
+      if (n !== undefined && (n < 0 || n > 1)) {
+        err('noul_out_of_range', `${at}.noul`,
+          `Noul ${n} is outside 0..1. A noul is a probability and the band that decides uncertainty lives in that space, so an out-of-range value reads as certain at both ends.`)
+      }
+      // Deliberately no check that a noul carries no `confidence`: the field is meaningless
+      // for a noul (the probability is the answer) but nothing reads it, so it cannot move
+      // a verdict — see `answer_unasked` below for the same reasoning.
+    } else {
+      const c = num(ans.confidence, `${at}.confidence`, `"${d.id}".confidence`)
+      if (c !== undefined && (c < 0 || c > 1)) {
+        err('confidence_out_of_range', `${at}.confidence`,
+          `Confidence ${c} is outside 0..1; belowConfidence thresholds compare against that range.`)
+      }
+    }
+
+    if (d.kind === 'score') {
+      // A score answer is the probability-weighted expectation over the level indices, not
+      // the index itself: 23 of the 26 measured score answers in fixtures/ are fractional
+      // (1.99, 2.98, 0.57, 3.09 over five levels), which is exactly why reducer thresholds
+      // read 2.5. So range is checkable and integrality is NOT — requiring an integer here
+      // would reject almost every real response.
+      const s = num(ans.score, `${at}.score`, `"${d.id}".score`)
+      // Levels unknown means the program declared no criteria for a score, which is
+      // validateProgram's `criteria_missing` — don't blame the response for it twice.
+      const levels = Array.isArray(d.criteria) ? d.criteria.length : 0
+      if (s !== undefined && levels > 0 && (s < 0 || s > levels - 1)) {
+        err('score_out_of_range', `${at}.score`,
+          `Score ${s} is outside level-index space for "${d.id}" (${levels} levels => 0..${levels - 1}). Score is not a 0..1 value.`)
+      }
+    }
+
+    if (d.kind === 'choice') {
+      // The reducer matches `is` conditions by exact option name, so an option the program
+      // never declared silently matches nothing and falls through to `otherwise` — a wrong
+      // verdict with no complaint. Mirrors validateProgram's `reduce_unknown_option` from
+      // the other direction.
+      const opts = d.criteria && !Array.isArray(d.criteria) ? Object.keys(d.criteria) : []
+      const picked = ans.choice
+      if (typeof picked !== 'string' || (opts.length > 0 && !opts.includes(picked))) {
+        err('choice_unknown_option', `${at}.choice`,
+          `"${d.id}" was answered ${JSON.stringify(picked) ?? shape(picked)}, which is not one of its declared options (${opts.join(', ') || 'none declared'}).`)
+      }
+    }
+  }
+
+  // An answer nobody asked for cannot change a verdict — the reducer only ever reads ids the
+  // program declares — so rejecting an otherwise-correct response over it would be the same
+  // false-rejection mistake as erroring on an unresolved backtick path. It is still worth
+  // printing: on a moving alias it is the first visible sign the response has stopped
+  // corresponding to the request, and a renamed id shows up here paired with an
+  // `answer_missing` for the id we actually asked.
+  const asked = new Set(p.decisions.map(d => d.id))
+  for (const id of Object.keys(byId)) {
+    if (!asked.has(id)) {
+      out.push({ code: 'answer_unasked', path: `answers.${id}`, severity: 'warn',
+        message: `Response answered "${id}", which this program never asked. The reducer ignores it.` })
+    }
+  }
+
+  // Usage is billing telemetry, not evidence: the verdict is fully computed without it, so a
+  // model that omits it must not have its answers thrown away. Not silent either — Verdict
+  // declares `usage` non-optional, so an absent one is handed back as `undefined` behind a
+  // type that promises numbers, and the crash lands in whatever sums the tokens.
+  const usage = body.usage
+  const counts = usage !== null && typeof usage === 'object' && !Array.isArray(usage)
+    ? (usage as Record<string, unknown>)
+    : undefined
+  if (typeof counts?.input_tokens !== 'number' || typeof counts.output_tokens !== 'number') {
+    out.push({ code: 'usage_missing', path: 'usage', severity: 'warn',
+      message: `Response carries no usable token counts (got ${shape(usage)}); Verdict.usage will not hold the numbers its type promises.` })
   }
 
   return out
