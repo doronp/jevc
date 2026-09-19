@@ -120,5 +120,9 @@ def reduce(answers) -> str:
     """The verdict is computed here, in code — never asked of the model."""
 ${rules}
     return ${py(p.reduce.otherwise)}
-${p.residual ? `\n# Still requires a generative model:\n${p.residual.split('\n').map(l => `# ${l}`).join('\n')}\n` : ''}`
+${p.residual ? `\n# Still requires a generative model:\n${
+  // Python's tokenizer ends a line at a lone \r as readily as at \n, so splitting on '\n'
+  // alone leaves everything after a CR uncommented — and executed at import. Residual is
+  // prose lifted from a human document and arrives with that document's line endings.
+  p.residual.split(/\r\n|\r|\n/g).map(l => `# ${l}`).join('\n')}\n` : ''}`
 }
