@@ -75,10 +75,14 @@ are checked, not just the quote:
   phrase, not a word. A shorter quote is rejected even when it does occur in the text,
   because a fragment that short occurs in any document and proves nothing.
   \`file\` must be exactly "${path}", the name on the fence below. It is the only
-  document you have been given; citing any other name is a rejected decision.
+  document you have been given; citing any other name is a rejected citation.
   \`line\` must be the 1-based line of the document where the quote begins. It is the
   line a human opens when reviewing the rule, so it is verified against the text.
-A decision you cannot trace to a line does not belong.
+A decision you cannot trace to a line does not belong. One failed citation rejects the
+WHOLE response, not just its decision — so a decision you cannot cite is never worth
+including: put it in \`dropped\` with the reason, or return fewer decisions. A citation is
+how a human checks a rule against the sentence that justified it; an invented one is
+worse than none, because it turns "I should verify this" into "someone already did."
 
 Anything requiring generated text goes in \`residual\`. An empty \`decisions\` array is a
 valid answer: it means this file contains no System One decisions.
@@ -104,8 +108,17 @@ Return only the JSON object.`
  * is a string instead of an object, a missing `reduce.rules`, ...). Each of
  * those would otherwise throw partway through validation instead of producing
  * a reportable issue. This function is a defensive boundary, not a full schema
- * validator: it checks only what `validateProgram`/`lintProgram`/the provenance
- * loop below actually dereference.
+ * validator.
+ *
+ * What it must cover is every field something downstream DEREFERENCES — which is
+ * not the same set as the fields `validateProgram`/`lintProgram` inspect, and
+ * scoping it to those was a bug. What a caller does with a Program is emit it,
+ * and the emitters read `criteria`, `uncertain.band`, `dependsOn` and `residual`,
+ * none of which the validator's type rules reach on a value that arrived as the
+ * wrong type. So the rule here is: if a consumer will index it, call a method on
+ * it or iterate it, its type is checked here. Ranges, vocabularies and
+ * per-target capability are NOT — those are `validateProgram`'s and the emit
+ * gate's, and duplicating them here would put the same judgement in two places.
  */
 function checkLiftedShape(parsed: unknown, path: string): ValidationIssue[] {
   const issues: ValidationIssue[] = []
@@ -137,8 +150,37 @@ function checkLiftedShape(parsed: unknown, path: string): ValidationIssue[] {
       if (d.kind !== 'noul' && d.kind !== 'choice' && d.kind !== 'score') {
         err(`${at}.kind`, `Decision "${label}" has kind "${String(d.kind)}"; expected noul, choice, or score.`)
       }
-      if (typeof d.instructions !== 'string') {
-        err(`${at}.instructions`, `Decision "${label}" is missing string \`instructions\`.`)
+      if (typeof d.instructions !== 'string' || d.instructions === '') {
+        // Empty is as malformed as absent: the instructions ARE the question, and an
+        // empty one emits `{ type: 'noul', instructions: "" }` into the artifact — a
+        // question with no text that the reducer still gates a verdict on.
+        err(`${at}.instructions`, `Decision "${label}" is missing non-empty string \`instructions\`. The instructions are the question; there is nothing to ask without them.`)
+      }
+      // `criteria`, `uncertain` and `dependsOn` are read by the EMITTERS, which are what
+      // a caller does with the Program and which `validateProgram`/`lintProgram` do not
+      // stand in for. Measured: a `choice` citing `criteria: "anything"` returned zero
+      // issues and emitted a TypeScript artifact offering the options
+      // {"0":"a","1":"n","2":"y",...} — well-formed, exit 0, and not the question anyone
+      // wrote. These are TYPE checks only; whether a band is inside 0..1 or a threshold
+      // is sensible belongs to the validator and the per-target emit gate, and stays there.
+      if (d.criteria !== undefined && (d.criteria === null || typeof d.criteria !== 'object')) {
+        err(`${at}.criteria`, `Decision "${label}" has \`criteria\` of type ${typeof d.criteria}; it must be an option map (choice) or an ordered array of level descriptions (score). A string is indexed character by character by the emitters.`)
+      }
+      // `validateProgram` already rejects an `uncertain` that is not an object, and a
+      // `belowConfidence` that is not a number; what reaches the emitters unchecked is
+      // the band's element types.
+      if (d.uncertain !== null && typeof d.uncertain === 'object' && !Array.isArray(d.uncertain)
+          && 'band' in (d.uncertain as Record<string, unknown>)) {
+        const band = (d.uncertain as Record<string, unknown>).band
+        if (!Array.isArray(band) || band.length !== 2 || !band.every(n => typeof n === 'number' && Number.isFinite(n))) {
+          err(`${at}.uncertain`, `Decision "${label}" has an \`uncertain.band\` that is not a pair of finite numbers. The band is the range the emitters write as the "cannot tell" window.`)
+        }
+      }
+      if (d.dependsOn !== undefined
+          && !(Array.isArray(d.dependsOn) && d.dependsOn.every(x => typeof x === 'string'))) {
+        // A bare string is iterable, so `dependsOn: "other"` linted as five separate
+        // dependencies on "o", "t", "h", "e" and "r" — a diagnostic about nothing.
+        err(`${at}.dependsOn`, `Decision "${label}" has a \`dependsOn\` that is not an array of decision ids.`)
       }
       if (d.source !== undefined) {
         if (d.source === null || typeof d.source !== 'object' || Array.isArray(d.source)) {
@@ -160,6 +202,20 @@ function checkLiftedShape(parsed: unknown, path: string): ValidationIssue[] {
         }
       }
     })
+  }
+
+  // Both are required by `Program`, but a model with nothing to put in them plausibly
+  // omits them and every emitter already handles absent — so absent is forgiven and the
+  // wrong TYPE is not, because the type is what gets dereferenced. Measured: a
+  // `residual: {note: "..."}` produced zero issues and then a bare
+  // `TypeError: p.residual.split is not a function` out of `emitNative`.
+  if (p.residual !== undefined && typeof p.residual !== 'string') {
+    err(path, `\`residual\` must be a string (the prose this program could not compile), got ${
+      p.residual === null ? 'null' : Array.isArray(p.residual) ? 'an array' : typeof p.residual}.`)
+  }
+  if (p.dropped !== undefined && !Array.isArray(p.dropped)) {
+    err(path, `\`dropped\` must be an array of {reason, quote}, got ${
+      p.dropped === null ? 'null' : typeof p.dropped}.`)
   }
 
   if (p.reduce === null || typeof p.reduce !== 'object' || Array.isArray(p.reduce)) {
@@ -227,6 +283,28 @@ function quoteSpans(quote: string, text: string, lineOf: number[]): Array<[numbe
   return spans
 }
 
+/**
+ * Parse a lifter's response into a `Program`, verifying every citation against the
+ * document that was lifted.
+ *
+ * **One failure mode, not two.** If any issue is error-severity — unparseable JSON, a
+ * malformed shape, a quote that is not in the document, a file that was never supplied,
+ * a quote too short to be evidence, an invented line, or anything `validateProgram`
+ * rejects — the returned `program` is the empty stand-in and the issues say why. A
+ * populated `Program` therefore means every check passed, so a caller who writes
+ * `const { program } = parseLiftResponse(...)` and ignores `issues` cannot end up
+ * holding an unverified rule: the worst they can do is ship nothing, and both CLI
+ * commands that take a Program refuse the empty one at exit 1.
+ *
+ * Warn-severity issues do not empty it. A quote that IS in the document cited to the
+ * wrong line is a real rule with a repairable pointer, and the issue names the true
+ * line; the lint warnings are judgement calls for a human. Those come back with the
+ * Program intact, which is the whole distinction between `warn` and `error` here.
+ *
+ * Because an error takes the Program away, the error messages carry the entire claimed
+ * citation — decision id, file, line, quote — so the caller can still report exactly
+ * what the model asserted without a Program to read it out of.
+ */
 export function parseLiftResponse(
   json: string,
   source: string,
@@ -262,6 +340,13 @@ export function parseLiftResponse(
   // litigate a trailing newline.
   const totalLines = source.split('\n').length
   const bare = (p: string) => p.trim().replace(/^\.\//, '')
+  // An error takes the whole Program away (see the doc comment), so these messages are
+  // the caller's only surviving record of what the response claimed. Each one states the
+  // citation in full — the file and line the decision named and the quote it attributed
+  // to them — so "which rule, pointing where, quoting what" is answerable from the issue
+  // alone, with no Program to read it back out of.
+  const cited = (s: { file: string; line: number; quote: string }) =>
+    `${s.file}:${s.line} — "${s.quote}"`
   for (const d of program.decisions) {
     const at = `decisions.${d.id}`
     if (!d.source) {
@@ -272,7 +357,7 @@ export function parseLiftResponse(
     const quote = d.source.quote.replace(/\s+/g, ' ').trim()
     if (quote.length < MIN_QUOTE_LENGTH) {
       issues.push({ code: 'provenance_too_short', path: at, severity: 'error',
-        message: `"${d.id}" cites a quote too short to verify ("${d.source.quote}"). A quote under ${MIN_QUOTE_LENGTH} characters cannot rule out a coincidental match and does not count as provenance.` })
+        message: `"${d.id}" cites ${cited(d.source)}, a quote too short to verify. A quote under ${MIN_QUOTE_LENGTH} characters cannot rule out a coincidental match and does not count as provenance.` })
       continue
     }
     // `${path}` is the one document the lifter was shown (it is the label on the
@@ -282,12 +367,12 @@ export function parseLiftResponse(
     // to a file that has nothing to do with this rule. Leading "./" is the same path.
     if (bare(d.source.file) !== bare(path)) {
       issues.push({ code: 'provenance_file_unknown', path: at, severity: 'error',
-        message: `"${d.id}" cites file "${d.source.file}", which was not supplied; the only document lifted was ${path}.` })
+        message: `"${d.id}" cites ${cited(d.source)} — a file which was not supplied; the only document lifted was ${path}.` })
       continue
     }
     if (!haystack.includes(quote)) {
       issues.push({ code: 'provenance_not_found', path: at, severity: 'error',
-        message: `"${d.id}" cites "${d.source.quote}", which does not appear in ${path}.` })
+        message: `"${d.id}" cites ${cited(d.source)}, but that quote does not appear anywhere in the document it names.` })
       continue
     }
     // The quote is real, so the rule is real; what is left is whether the location
@@ -299,10 +384,10 @@ export function parseLiftResponse(
     const line = d.source.line
     if (!Number.isInteger(line) || line < 1 || line > totalLines) {
       issues.push({ code: 'provenance_line_out_of_range', path: at, severity: 'error',
-        message: `"${d.id}" cites ${path}:${line}, which is not a line in a ${totalLines}-line file. The quote appears on line ${spans[0][0]}.` })
+        message: `"${d.id}" cites ${cited(d.source)}, which is not a line in a ${totalLines}-line file. The quote appears on line ${spans[0][0]}.` })
     } else if (!spans.some(([from, to]) => line >= from && line <= to)) {
       issues.push({ code: 'provenance_line_mismatch', path: at, severity: 'warn',
-        message: `"${d.id}" cites ${path}:${line}, but its quote is on ${
+        message: `"${d.id}" cites ${cited(d.source)}, but its quote is on ${
           spans.length === 1 ? `line ${spans[0][0]}` : `lines ${spans.map(s => s[0]).join(', ')}`}.` })
     }
   }
@@ -316,6 +401,22 @@ export function parseLiftResponse(
   } catch (e) {
     issues.push({ code: 'lift_malformed', path, severity: 'error',
       message: `Lifted output passed shape checks but crashed validation: ${(e as Error).message}` })
+  }
+
+  // The same answer the parse and shape failures above already give, for the failures
+  // that are worse than malformed: a response that parses cleanly and cites a rule that
+  // is not in the document. Returning the fully-parsed Program alongside those errors
+  // made the verdict optional — the caller had to know to read `issues`, and the one
+  // thing they get without knowing anything is the Program. So a fabricated citation
+  // reached `emit-policy` at exit 0 and was written into the generated policy as an
+  // audit comment pointing at a line that says something else, which is the failure the
+  // provenance check exists to prevent, wearing the check's own output as proof.
+  //
+  // Emptying it costs nothing a caller wanted: a Program whose citations did not verify
+  // is not a Program anyone should deploy, and the issues (above) carry the full claim
+  // for diagnosis. Warns are untouched — see the doc comment.
+  if (issues.some(i => i.severity === 'error')) {
+    return { program: empty, issues }
   }
 
   return { program, issues }

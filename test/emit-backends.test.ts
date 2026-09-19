@@ -331,23 +331,43 @@ const lower: Program = {
   residual: '', dropped: [],
 }
 
+/** Whatever the emitted module wrote to stderr as it died. execFileSync copies it onto
+ *  the thrown error AND echoes it to our own stderr, so a refusal is readable both ways. */
+function stderrOf(run: () => unknown): string {
+  try { run() } catch (e) { return String((e as { stderr?: string }).stderr ?? (e as Error).message) }
+  throw new Error('expected the emitted module to refuse, but it returned a verdict')
+}
+
 describe('a missing answer', () => {
-  // runReducer throws here, so there is no oracle to compare against; the target's own
-  // rule decides. bouncer skips a rule whose question was not answered
-  // (target-bouncer.md:65) — absence of evidence is not evidence — and the code targets
-  // follow it. Reading 0 turned a missing answer into a confident "no".
-  it('ai-sdk: skips the rule instead of reading zero', () => {
+  // UPDATED by the bug-4 ruling, and the two halves moved in opposite directions.
+  //
+  // Reading 0 is still wrong, and the answered case below still pins that: 0.2 <= 0.3
+  // fires the rule for the reason the model gave, not for the absence of one.
+  //
+  // What changed is the UNANSWERED case. This used to assert `handle` — the rule skipped,
+  // citing bouncer (target-bouncer.md:65), which skips because a YAML document has no
+  // other move. ai-sdk and langchain are TypeScript and Python and do, and skipping bought
+  // a fail-open: `handle` here is the `otherwise`, so a deny rule whose question nobody
+  // answered quietly does not fire. runReducer and the sdk target already threw, so the
+  // same Program under the same missing answer had two verdicts across four code targets.
+  // They now agree, and the assertion is stronger than the one it replaces: not just a
+  // refusal, but a message naming which decision and which rule could not be evaluated.
+  it('ai-sdk: refuses to decide rather than reading zero or skipping the rule', () => {
     expect(runAiSdk(emitAiSdk(lower), [
-      { answers: {} },
       { answers: { is_urgent: { type: 'boolean', probability: 0.2 } } },
-    ])).toEqual(['handle', 'ignore'])
+    ])).toEqual(['ignore'])
+    const err = stderrOf(() => runAiSdk(emitAiSdk(lower), [{ answers: {} }]))
+    expect(err).toContain('No answer for decision "is_urgent"')
+    expect(err).toContain('rule 0 -> ignore')
   }, 60_000)
 
-  it('langchain: skips the rule instead of reading zero', () => {
+  it('langchain: refuses to decide rather than reading zero or skipping the rule', () => {
     expect(runLangchain(emitLangchain(lower), [
-      {},
       { is_urgent: { kind: 'noul', noul: 0.2 } },
-    ])).toEqual(['handle', 'ignore'])
+    ])).toEqual(['ignore'])
+    const err = stderrOf(() => runLangchain(emitLangchain(lower), [{}]))
+    expect(err).toContain('No answer for decision "is_urgent"')
+    expect(err).toContain('rule 0 -> ignore')
   }, 60_000)
 })
 
@@ -379,20 +399,33 @@ describe('a rule with no conditions', () => {
 // I10 / M1 — residual text is lifted prose and cannot be trusted to be inert
 // ---------------------------------------------------------------------------
 
+/** `lower`'s single question, answered ABOVE its 0.3 upper bound, so the rule is
+ *  evaluated for real and does not fire: the verdict is the `otherwise`, `handle`.
+ *  These three tests are about the residual COMMENT, and reach reduce() only to prove the
+ *  module imports and runs. They used to pass `{}` and get `handle` by the rule skipping;
+ *  since the bug-4 ruling that is a refusal, which would mask the thing under test. The
+ *  answer restores the same verdict by the intended route, and the assertions are
+ *  unchanged. */
+const answered = 0.5
+
 describe('residual', () => {
   // The residual was wrapped in /* ... */. It is prose lifted from a human document, so
   // it can contain */ — a glob like /assets/*/icon.png does — and the comment then ends
   // early, leaving the rest of the sentence as code.
   it('ai-sdk: a */ in the residual does not end the comment early', () => {
     const r: Program = { ...lower, residual: 'Escalate anything under /assets/*/icon.png.' }
-    expect(runAiSdk(emitAiSdk(r), [{ answers: {} }])).toEqual(['handle'])
+    expect(runAiSdk(emitAiSdk(r), [
+      { answers: { is_urgent: { type: 'boolean', probability: answered } } },
+    ])).toEqual(['handle'])
   }, 60_000)
 
   // Python's tokenizer treats a lone \r as a line terminator, so splitting the residual
   // on '\n' only leaves everything after a CR uncommented — and executed at import.
   it('langchain: a lone CR in the residual stays inside the comment', () => {
     const r: Program = { ...lower, residual: 'Judge the tone.\rraise SystemExit(3)' }
-    expect(runLangchain(emitLangchain(r), [{}])).toEqual(['handle'])
+    expect(runLangchain(emitLangchain(r), [
+      { is_urgent: { kind: 'noul', noul: answered } },
+    ])).toEqual(['handle'])
   }, 60_000)
 })
 
@@ -665,7 +698,12 @@ describe('residual, continued', () => {
   // into the residual verbatim.
   it('langchain: a NUL byte in the residual does not make the module unimportable', () => {
     const r: Program = { ...lower, residual: 'One-line summary\u0000of the ticket' }
-    expect(runLangchain(emitLangchain(r), [{}])).toEqual(['handle'])
+    // `answered`, not `{}`: see the note above the `residual` block — the verdict is the
+    // same and by the same route, the empty map is now a refusal, and the subject here is
+    // whether the module imports at all.
+    expect(runLangchain(emitLangchain(r), [
+      { is_urgent: { kind: 'noul', noul: answered } },
+    ])).toEqual(['handle'])
   }, 60_000)
 })
 
