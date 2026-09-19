@@ -1,9 +1,15 @@
 # Examples
 
-Every example runs offline against the recorded corpus. No API key, no network:
+Every example runs offline against the recorded corpus. No API key, no network, and no
+build step — they import from `../src/` directly, so `npx tsx` is enough. `npm test` runs
+all four with `TYPESAFE_API_KEY` explicitly emptied, which is how the offline claim stays
+true.
 
 ```bash
 npx tsx examples/01-schema-to-jev.ts
+npx tsx examples/02-agents-md-guardrail.ts
+npx tsx examples/03-model-router.ts
+npx tsx examples/04-policy-emit.ts
 ```
 
 | Example | Demonstrates | Prints |

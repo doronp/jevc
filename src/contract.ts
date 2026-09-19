@@ -83,7 +83,7 @@ export type ValidationIssue = {
 // Measured: 29,464 tokens for 150,232 chars.
 const CHARS_PER_TOKEN = 5.1
 // The documentation says 64k total. The measurement says otherwise: "~45k tokens returns
-// `400 max_tokens_exceeded`" (docs/superpowers/specs/2026-09-18-jevc-design.md §3.3). The
+// `400 max_tokens_exceeded`" (docs/design.md §3.3). The
 // documented number is the one the API rejects requests under, so a pre-flight check set to
 // it passes requests the API refuses — the one outcome this check exists to prevent. Do NOT
 // round this back up to the documented figure without a new measurement to cite; the largest

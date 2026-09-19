@@ -1,3 +1,6 @@
+*Historical: the original task-by-task build plan for jevc 0.1.0, written before the code existed and kept unedited for provenance.*
+*It is not maintained and does not describe current behaviour — see [`../design.md`](../design.md) for the design and the README for what shipped.*
+
 # jevc Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
