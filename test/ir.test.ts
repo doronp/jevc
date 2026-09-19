@@ -434,6 +434,87 @@ describe('validateProgram — ids that a plain object already has', () => {
   })
 })
 
+// The rule is right and stays. Its DIAGNOSIS was a mechanism that does not occur: round 3
+// made every emitter define an own key (emit/json.ts's Object.fromEntries, native/ai-sdk's
+// computed `idKey`), so the option is not lost and `is` matches it. A message that names a
+// mechanism a reader can check and find absent is how a correct rule gets deleted by the next
+// person. The tests below measure both halves and hold the message to the measurement.
+const RESERVED = [...Object.getOwnPropertyNames(Object.prototype), 'prototype']
+
+describe('validateProgram — reserved_option diagnoses the read that actually breaks', () => {
+  const choiceOn = (opt: string): Program => {
+    const p = prog()
+    // As data, never an object literal: `{__proto__: v}` in source is the prototype setter.
+    p.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team owns this?',
+      criteria: JSON.parse(`{${JSON.stringify(opt)}:"payments","technical":"bugs"}`) })
+    p.reduce.rules.push({ when: [{ id: 'department', op: 'is', value: opt }], then: 'deny' })
+    return p
+  }
+  const messageOn = (opt: string) => {
+    const hit = validateProgram(choiceOn(opt)).find(i => i.code === 'reserved_option')
+    if (!hit) throw new Error(`validateProgram produced no reserved_option for "${opt}"`)
+    return hit.message
+  }
+
+  it('still refuses every one of them — only the diagnosis changes', () => {
+    for (const opt of RESERVED) {
+      expect(validateProgram(choiceOn(opt)).map(i => i.code), opt).toContain('reserved_option')
+    }
+  })
+
+  it('measures the refuted half: the option survives the wire and `is` matches it', async () => {
+    const { emitJson } = await import('../src/emit/json.js')
+    const { runReducer } = await import('../src/runtime.js')
+    for (const opt of RESERVED) {
+      const p = choiceOn(opt)
+      // Through JSON.stringify/parse, which is what the wire actually does to this map.
+      const wire = JSON.parse(JSON.stringify(emitJson(p, { tool: 'Bash' })))
+      expect(Object.getOwnPropertyNames(wire.questions.department.criteria), opt).toContain(opt)
+      expect(wire.questions.department.criteria[opt], opt).toBe('payments')
+      const answers = JSON.parse(JSON.stringify({
+        is_destructive: { type: 'noul', noul: 0.1 },
+        department: { type: 'choice', choice: opt, probabilities: { [opt]: 0.9 }, confidence: 0.9 },
+      }))
+      expect(runReducer(p, answers), opt).toBe('deny')
+    }
+  })
+
+  it('measures the real half: prob_lte on a reserved name asserts nothing and reports health', async () => {
+    const { assertExpectation } = await import('../src/check.js')
+    const answers = JSON.parse(JSON.stringify({
+      department: { type: 'choice', choice: 'technical', probabilities: { technical: 1 }, confidence: 0.9 },
+    }))
+    // "constructor" is absent from this probability map. The lookup returns Object.prototype's
+    // own member instead of undefined, the `p > max` comparison against a function is false,
+    // and a bound that compared nothing is reported as held.
+    expect(assertExpectation({ department: { prob_lte: { constructor: 0.01 } } }, answers)).toEqual([])
+    // The identical clause on an ordinary absent name is correctly a failure.
+    expect(assertExpectation({ department: { prob_lte: { engineering: 0.01 } } }, answers))
+      .toEqual(['department: no probability recorded for "engineering"'])
+    // 12 of the 13 names in the set do this; `prototype` is not an Object.prototype member and
+    // is in the set for the code emitters, which write option names into generated source.
+    const silent = RESERVED.filter(opt =>
+      assertExpectation({ department: { prob_lte: { [opt]: 0.01 } } }, answers).length === 0)
+    expect(silent).toHaveLength(12)
+    expect(RESERVED.filter(o => !silent.includes(o))).toEqual(['prototype'])
+  })
+
+  it('does not claim the option is lost, or that `is` cannot match it', () => {
+    for (const opt of RESERVED) {
+      const m = messageOn(opt)
+      expect(m, opt).not.toMatch(/silently lost/)
+      expect(m, opt).not.toMatch(/can never match/)
+    }
+  })
+
+  it('names the read that does break, concretely enough to check', () => {
+    const m = messageOn('constructor')
+    expect(m).toContain('prob_lte')
+    expect(m).toContain('check.ts')
+    expect(m).toContain('Rename it.')
+  })
+})
+
 // R1 put this whitelist on `validateRequest` only. The wire path runs that; the two paths
 // that WRITE A FILE somebody deploys — `jevc emit-policy`, and any library caller that emits
 // without asking — run `validateProgram` and nothing else. A typo'd outcome key is accepted
