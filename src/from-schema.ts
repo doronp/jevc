@@ -87,21 +87,50 @@ function flatten(s: JsonSchema): JsonSchema {
 
 /** The option name a member contributes to a choice, and the prose that defines it.
  *
- *  The key is the whole identity of the option: `criteria` is built from it with
+ *  The key is what the model and the reducer see: `criteria` is built from it with
  *  `Object.fromEntries`, the API sends it to the model as the thing to pick, and the
  *  reducer's `is` compares against it. `String()` is what shipped here, and it is the
  *  same collapse this repo has now hit five times — every object renders
  *  `"[object Object]"`, `[1,2]` and `"1,2"` render alike, `1` and `"1"` render alike —
  *  so an N-option choice is emitted as an (N-1)-option choice with two distinct schema
  *  values behind one key, and everything downstream validates clean. JSON is used for
- *  anything that is not already a string: stable, round-trippable, and distinct for
- *  distinct values. The collisions JSON cannot rule out (`{a,b}` vs `{b,a}` over-split
- *  rather than merge, and `NaN`/`Infinity` both render `null`) are caught by the
- *  identity check in `constOptions` and refused there. */
+ *  anything that is not already a string: stable, round-trippable, and legible.
+ *
+ *  It is NOT the identity of the option, and this comment used to say it was — it claimed
+ *  the two renderings JSON cannot keep apart were "caught by the identity check in
+ *  `constOptions` and refused there". Half of that was false and stopped anyone checking:
+ *  measured, `enum: [NaN, Infinity, 'z']` merged both non-finite members into one option
+ *  named `"null"` and reported an empty `dropped`. `identityOf` below is the check that
+ *  claim described; it now exists. What remains true: `{a,b}` vs `{b,a}` over-split into
+ *  two options rather than merging into one, which is visible rather than silent. */
 type Option = { key: string; description: EntryType }
 
 function optionKey(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v) ?? String(v)
+}
+
+/** A rendering that differs for every pair of distinct values that share an `optionKey`.
+ *  That is the equality test the collision guard in `constOptions` runs before it dedupes,
+ *  and it is only ever consulted between members `optionKey` has already put behind one
+ *  name — which is what makes the plain rendering below sufficient.
+ *
+ *  Bare `JSON.stringify` is not that rendering. It writes EVERY non-finite number as the
+ *  four characters `null`, at any depth, so `NaN`, `Infinity` and `-Infinity` all compared
+ *  equal and the guard deduped them as one repeated value: the silent deletion it exists
+ *  to refuse. Measured before this existed: `enum: [NaN, Infinity, 'z']` lowered to a
+ *  two-option choice `{null, z}` with an empty `dropped`, at exit 0.
+ *
+ *  Writing each non-finite as its own name cannot introduce a new merge in exchange. The
+ *  only other member that renders as the bare word NaN is the STRING "NaN", and a string's
+ *  `optionKey` is itself — "NaN", never "null" — so the two never reach this comparison.
+ *  Same one level down: `{x: NaN}` keys as `{"x":null}`, `{x: "NaN"}` as `{"x":"NaN"}`.
+ *
+ *  No JSON document reaches this: JSON has no `NaN`, `Infinity` or `-Infinity` literal. It
+ *  is for callers who build the schema object in process — from Zod, from Pydantic's
+ *  `model_json_schema`, from a hand-written literal. */
+function identityOf(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    typeof x === 'number' && !Number.isFinite(x) ? String(x) : x) ?? String(v)
 }
 
 type OptionSet = { options: Option[]; collision?: string }
@@ -134,7 +163,7 @@ function constOptions(s: JsonSchema): OptionSet | null {
   for (const m of members) {
     if (m.value === null || m.value === undefined) continue
     const key = optionKey(m.value)
-    const identity = JSON.stringify(m.value) ?? String(m.value)
+    const identity = identityOf(m.value)
     const claimed = claimedBy.get(key)
     if (claimed === undefined) {
       claimedBy.set(key, identity)
@@ -179,9 +208,28 @@ function forbiddenLevels(s: JsonSchema): string | null {
   return null
 }
 
-export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {}): Program {
+/**
+ * Which of the two things a `dropped` entry reports. They are not the same event and the
+ * caller must not have to read English to tell them apart.
+ *
+ * `unsupported` — the construct has no Jev equivalent. This mapper working as designed and
+ * saying so: the author still gets an artifact containing everything Jev can represent of
+ * what they wrote, and the entry explains the rest.
+ *
+ * `collision` — two things the author wrote claim one name, so BOTH were discarded and the
+ * artifact asks NEITHER. The intent is not unsupported, it is unrepresentable as written,
+ * and renaming one of them fixes it. `jevc compile` refuses on this regardless of how many
+ * other decisions survived: a collision that leaves one decision standing used to write a
+ * well-formed guard at exit 0 with the colliding questions silently absent.
+ */
+export type DropKind = 'collision' | 'unsupported'
+export type SchemaDrop = { reason: string; quote: string; kind: DropKind }
+/** What `fromJsonSchema` returns: a Program whose drops carry the discriminator above. */
+export type SchemaProgram = Omit<Program, 'dropped'> & { dropped: SchemaDrop[] }
+
+export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {}): SchemaProgram {
   const decisions: Decision[] = []
-  const dropped: Program['dropped'] = []
+  const dropped: SchemaDrop[] = []
   const residualParts: string[] = []
 
   const visit = (props: Record<string, JsonSchema>, prefix: string): void => {
@@ -212,6 +260,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
       if (optionSet) {
         if (optionSet.collision) {
           dropped.push({
+            kind: 'collision',
             reason: `"${id}" has enum members that do not survive as distinct option names: ${optionSet.collision}. A choice is its option names — they are the criteria keys, they are what the model picks, and they are what the reducer's \`is\` compares — so two members behind one name is an option silently deleted from the set. Give the members distinct values.`,
             quote: id,
           })
@@ -219,7 +268,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         }
         const options = optionSet.options
         if (options.length < 2) {
-          dropped.push({ reason: `"${id}" has ${options.length} option(s); a choice needs at least 2.`, quote: id })
+          dropped.push({ kind: 'unsupported', reason: `"${id}" has ${options.length} option(s); a choice needs at least 2.`, quote: id })
           continue
         }
         const lower = options.map(o => o.key.toLowerCase())
@@ -241,6 +290,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
       // a score lives in with the 0..1 probability space a noul answer lives in.
       if (type === 'number' && typeof s.minimum === 'number' && typeof s.maximum === 'number') {
         dropped.push({
+          kind: 'unsupported',
           reason: `"${id}" is a continuous range with no discrete-level equivalent for a score. Bucket it into described levels, or — if it is a 0..1 probability — model it as a noul, whose answer is itself a 0..1 probability.`,
           quote: id,
         })
@@ -251,16 +301,16 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
       if (bounds) {
         const holes = forbiddenLevels(s)
         if (holes) {
-          dropped.push({ reason: `"${id}" ${holes}.`, quote: id })
+          dropped.push({ kind: 'unsupported', reason: `"${id}" ${holes}.`, quote: id })
           continue
         }
         const n = bounds.hi - bounds.lo + 1
         if (n < 2) {
-          dropped.push({ reason: `"${id}" spans ${n} value(s); a score needs at least 2 levels.`, quote: id })
+          dropped.push({ kind: 'unsupported', reason: `"${id}" spans ${n} value(s); a score needs at least 2 levels.`, quote: id })
           continue
         }
         if (n > 10) {
-          dropped.push({ reason: `"${id}" spans ${n} values; a score takes at most 10 levels. Bucket it, or keep it in code.`, quote: id })
+          dropped.push({ kind: 'unsupported', reason: `"${id}" spans ${n} values; a score takes at most 10 levels. Bucket it, or keep it in code.`, quote: id })
           continue
         }
         // A score ANSWER is a level index 0..n-1; a schema value is minimum..maximum. At
@@ -277,6 +327,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         // ranges where value space IS index space, and name the re-base in the reason.
         if (bounds.lo !== 0) {
           dropped.push({
+            kind: 'unsupported',
             reason: `"${id}" is ${bounds.lo}..${bounds.hi}, but a score answer is a level index 0..${n - 1}: every threshold written in the schema's numbers would fire ${bounds.lo} level(s) early, and neither the level labels nor validateProgram record the offset. Re-base it to 0..${n - 1} — the one range where the two spaces coincide — or bucket it into described levels.`,
             quote: id,
           })
@@ -300,6 +351,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         const labelSet = constOptions(s.items)
         if (labelSet?.collision) {
           dropped.push({
+            kind: 'collision',
             reason: `"${id}" is an array whose member values do not survive as distinct labels: ${labelSet.collision}. Each label becomes its own noul id, so two values behind one label is a question silently deleted. Give the members distinct values.`,
             quote: id,
           })
@@ -322,6 +374,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
           ].filter(b => b !== undefined)
           if (bound.length) {
             dropped.push({
+              kind: 'unsupported',
               reason: `"${id}" is an array of ${labels.length} enum members with ${bound.join(' and ')}, but it lowers to one independent noul per label and nothing in a Program can hold the set of true labels to a count. Spell a single-select as a plain enum instead — a choice picks exactly one — or remove the bound and accept the multi-select.`,
               quote: id,
             })
@@ -351,7 +404,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
         continue
       }
 
-      dropped.push({ reason: `"${id}" (${String(s.type)}) has no System One equivalent.`, quote: id })
+      dropped.push({ kind: 'unsupported', reason: `"${id}" (${String(s.type)}) has no System One equivalent.`, quote: id })
     }
   }
 
@@ -367,10 +420,12 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
     const ref = typeof root.$ref === 'string' ? root.$ref : undefined
     dropped.push(ref
       ? {
+        kind: 'unsupported',
         quote: ref,
         reason: `The root schema is a "$ref" to "${ref}". This mapper resolves no references, so every property behind it is invisible here and nothing was lowered. Inline the referenced schema, or pass the already-resolved one.`,
       }
       : {
+        kind: 'unsupported',
         quote: '(root)',
         reason: `The root schema declares no properties to lower (its keys are: ${Object.keys(root).join(', ') || 'none'}), so this Program has zero decisions. That is not the same claim as "this schema needs no decisions" — wrap the value in an object with a named property, since every decision id comes from one.`,
       })
@@ -389,6 +444,7 @@ export function fromJsonSchema(schema: JsonSchema, opts: FromSchemaOptions = {})
   for (const [id, n] of uses) {
     if (n < 2) continue
     dropped.push({
+      kind: 'collision',
       quote: id,
       reason: `"${id}" is defined ${n} times: a property whose name contains a literal "." collides with the dotted id of a nested property or of an array label. The questions map is a JSON object, so only the last definition would reach the model, and a reducer condition on "${id}" cannot say which question it means. Rename one of them.`,
     })

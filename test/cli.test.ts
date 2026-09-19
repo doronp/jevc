@@ -188,6 +188,61 @@ describe('jevc compile', () => {
     expect(error.stderr).toMatch(/Nothing to emit/)
   })
 
+  // `no_decisions` above is only the TOTAL case of one contract: the artifact must ask
+  // everything the schema asked, or the tool must refuse. The partial case had no gate at
+  // all. A collision discards BOTH claimants, so a three-property schema where one property
+  // survives compiled to a well-formed one-question guard at exit 0 — the other two
+  // questions silently never asked, with `dropped:` on stderr reading as an informational
+  // note. That is this project's defect exactly: clean exit, wrong meaning, no crash. The
+  // test is on the ARTIFACT, not on the message: a guard that does not ask `a.b` is the
+  // failure, whatever stderr says about it.
+  for (const [label, schema, missing] of [
+    ['a dotted id two properties both claim', {
+      type: 'object', properties: {
+        'a.b': { type: 'boolean', description: 'The flat one.' },
+        a: { type: 'object', properties: { b: { type: 'boolean', description: 'The nested one.' } } },
+        keeper: { type: 'boolean', description: 'Unrelated, and it compiles fine.' },
+      } }, 'a.b'],
+    ['an enum whose members collapse to one option name', {
+      type: 'object', properties: {
+        code: { enum: [1, '1', 'other'], description: 'Which code?' },
+        keeper: { type: 'boolean', description: 'Unrelated, and it compiles fine.' },
+      } }, 'code'],
+    ['an array label that collides with a sibling property', {
+      type: 'object', properties: {
+        'tags.spam': { type: 'boolean' },
+        tags: { type: 'array', items: { type: 'string', enum: ['spam', 'abuse'] } },
+        keeper: { type: 'boolean', description: 'Unrelated, and it compiles fine.' },
+      } }, 'tags.spam'],
+  ] as const) {
+    it(`refuses ${label} instead of writing a guard that never asks it`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+      const out = join(dir, 'guard.json')
+      const error = runExpectingFailure(
+        ['compile', '-', '--emit', 'json', '-o', out], JSON.stringify(schema))
+      expect(error.status).not.toBe(0)
+      // Nothing deployable on disk, and nothing deployable on stdout either.
+      expect(existsSync(out)).toBe(false)
+      expect(error.stdout ?? '').not.toContain('keeper')
+      // The surviving question is exactly what made this exit 0 before: it is a real,
+      // well-formed artifact that is missing the question the author wrote.
+      expect(error.stderr).toContain(missing)
+    })
+  }
+
+  // The other half of the contract, and the reason it is not "any dropped entry fails":
+  // "this construct has no Jev equivalent" is the mapper working as designed and saying so.
+  // The author gets everything Jev can represent of what they wrote. Turning every drop
+  // into an error would make the ordinary prose-to-residual case unusable.
+  it('still exits 0 when a drop is an unsupported construct rather than a collision', () => {
+    const out = run(['compile', '-', '--emit', 'json'], JSON.stringify({
+      type: 'object', properties: {
+        keeper: { type: 'boolean', description: 'Urgent?' },
+        ratio: { type: 'number', minimum: 0, maximum: 1, description: 'How likely?' },
+      } }))
+    expect(Object.keys(JSON.parse(out).questions)).toEqual(['keeper'])
+  })
+
   // The wire constraints belong to the API every target's client eventually talks to, not to
   // the json emitter: validateRequest ran only inside the `--emit json` arm, so the same
   // request that was refused as json shipped as TypeScript at exit 0.

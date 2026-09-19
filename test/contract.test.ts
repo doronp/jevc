@@ -70,6 +70,30 @@ describe('validateRequest', () => {
     expect(issues[0].message).toContain('true, false')
   })
 
+  // Cleanup round, C4. The whitelist landed here and nowhere else, so the path that RETURNS
+  // an answer was gated and the path that WRITES A DEPLOYABLE FILE was not. It is one rule
+  // about one shape; it is now read from one exported constant by both validators, so the
+  // next person to add an outcome key cannot move only half the gate.
+  it('exports the key set validateProgram enforces, so the two cannot drift apart', async () => {
+    const { NOUL_CRITERIA_KEYS } = await import('../src/contract.js')
+    expect([...NOUL_CRITERIA_KEYS]).toEqual(['true', 'false'])
+    const { validateProgram } = await import('../src/ir.js')
+    const program: Program = {
+      decisions: [{ id: 'a', kind: 'noul', instructions: 'Is it urgent?',
+        criteria: { treu: 'the ticket is urgent', false: 'the ticket is routine' } as never }],
+      reduce: { kind: 'rules', rules: [{ when: [{ id: 'a', op: 'gte', value: 0.8 }], then: 'deny' }],
+        otherwise: 'allow' },
+      residual: '', dropped: [],
+    }
+    const onWire = validateRequest({ ...base, questions: {
+      a: { type: 'noul', instructions: 'Is it urgent?',
+        criteria: { treu: 'the ticket is urgent', false: 'the ticket is routine' } } } } as never)
+    const inProgram = validateProgram(program)
+    expect(inProgram.map(i => i.code)).toEqual(['unknown_field'])
+    expect(inProgram[0].path).toBe('decisions.a.criteria.treu')
+    expect(inProgram[0].message).toBe(onWire[0].message)
+  })
+
   it('accepts both real noul criteria sub-keys, and an empty criteria object', () => {
     // `criteria: {}` stays legal: emit-policy builds one, and an omitted description is a
     // different (already-reported) thing from a misspelled one.

@@ -1,4 +1,8 @@
+import { noulCriteriaIssues } from './contract.js'
 import type { EntryType, ValidationIssue } from './contract.js'
+// A value import, where every other edge to contract.ts is type-only. Safe because the
+// dependency is one-way at runtime: contract.ts's only import from ir.ts is `import type
+// { Program }`, which is erased (see the note at the top of that file), so there is no cycle.
 
 export type Uncertain = { belowConfidence: number } | { band: [number, number] }
 
@@ -121,6 +125,15 @@ export function validateProgram(p: Program): ValidationIssue[] {
       if (Array.isArray(d.criteria)) {
         err('criteria_shape', `decisions.${d.id}.criteria`,
           `"${d.id}" is a noul whose criteria is an array; a noul takes {true, false} descriptions. An array is not sent at all — the question reaches the model with neither side described.`)
+      } else {
+        // The same whitelist validateRequest enforces, from the same constant. It lived only
+        // there, which gated the path that gets an answer back and left the path that WRITES
+        // A DEPLOYABLE FILE open: measured on this tree, `emit-policy --for bouncer` on a
+        // noul with `criteria: {treu: "...", false: "..."}` exited 0 and wrote a policy whose
+        // question carries only the `false` description — the author's other outcome is gone
+        // from the artifact and from the request it makes. Costs the corpus nothing: its 252
+        // nouls use `true` and `false` and no other key.
+        out.push(...noulCriteriaIssues(d.criteria, d.id, `decisions.${d.id}`))
       }
     } else if (!d.criteria) {
       err('criteria_missing', `decisions.${d.id}`,
@@ -136,8 +149,19 @@ export function validateProgram(p: Program): ValidationIssue[] {
         const n = Object.keys(d.criteria).length
         for (const opt of Object.keys(d.criteria)) {
           if (RESERVED_KEYS.has(opt)) {
+            // The DIAGNOSIS, not the rule, is what changed in the cleanup round. This message
+            // used to say the option was lost on the wire and that `is` could never match it.
+            // Measured on this tree over all 13 names in RESERVED_KEYS, both are false:
+            // emitJson's Object.fromEntries gives the option an own key, it survives the
+            // JSON round trip, native/ai-sdk quote or compute the key (emit/native.ts:17),
+            // and runReducer's `is` is a string comparison against `ans.choice`, which
+            // matches. A message naming a mechanism the reader can check and find absent is
+            // how a correct rule gets deleted by the next person.
+            // What IS real is the mirror-image failure — an absent option reading as PRESENT.
+            // `check.ts:151` is the one plain-object read by option name left in src/, and
+            // 12 of the 13 names turn it into a silent pass.
             err('reserved_option', `decisions.${d.id}.criteria`,
-              `Choice "${d.id}" has an option named "${opt}", a property every plain JavaScript object already has. The option map and the returned probability map are both plain objects keyed by the option name, so the option is silently lost rather than refused, and \`is\` against it can never match. Rename it.`)
+              `Choice "${d.id}" has an option named "${opt}", a name every plain JavaScript object already resolves through its prototype. The option itself is not lost — measured on this tree, it reaches the wire as an own key and the reducer's \`is\` matches it. What breaks is reading a probability map by a name the map does not carry: the lookup returns Object.prototype's member instead of undefined, so an absent option reads as present. That read exists today in \`prob_lte\` (check.ts): against an answer carrying no "constructor" probability, \`assertExpectation({${JSON.stringify(d.id)}: {prob_lte: {constructor: 0.01}}}, …)\` returns no failures — a bound reported as held having compared nothing — while the same clause on an ordinary option name correctly fails. Rename it.`)
           }
         }
         if (n < 2) {
@@ -392,9 +416,18 @@ export function lintProgram(p: Program): ValidationIssue[] {
       const levels = d.criteria.map(c => (typeof c === 'string' ? c : c == null ? '' : JSON.stringify(c)))
       const indistinct = new Set(levels.map(l => l.replace(/\d+/g, '').trim())).size === 1
       if (levels.some(l => l.trim() === '') || indistinct) {
+        // The remedy, not the predicate, is what changed in the cleanup round. Measured: this
+        // fires on 100% of the scores `fromJsonSchema` produces, because its only score branch
+        // is the bounded integer and that branch always writes `${id} = ${i}`. The old remedy
+        // told the reader to "describe each level", which is unreachable from a JSON Schema —
+        // no keyword on that branch carries per-level prose, and the field's own `description`
+        // becomes `instructions`. A warning that is true, permanent and unactionable is one
+        // users learn to scroll past, which costs the times it matters. The rule keeps firing
+        // (an undescribed level really does decide the number) and now names steps that work:
+        // both routes below are measured in test/ir.test.ts to clear the warning end to end.
         out.push({
           code: 'score_levels_undescribed', path: `decisions.${d.id}.criteria`, severity: 'warn',
-          message: `Score "${d.id}" has level descriptions that do not describe the levels (${levels.map(l => JSON.stringify(l)).join(', ')}) — they differ only by a number, so the model is told the index and not what it means. A score answer is a probability-weighted index over exactly these labels. Describe each level, or ask a noul per level instead.`,
+          message: `Score "${d.id}" has level descriptions that do not describe the levels (${levels.map(l => JSON.stringify(l)).join(', ')}) — they differ only by a number, so the model is told the index and not what it means. A score answer is a probability-weighted index over exactly these labels. Writing the Program by hand, put real prose in \`criteria\`. Coming from \`jevc compile\` on a JSON Schema there is no per-level text to write — the bounded-integer branch always labels levels this way — so change the schema instead: \`oneOf: [{const: 0, description: "…"}, …]\` lowers to a choice whose options carry that prose (the reducer then matches it with \`is\` rather than a gte/lte threshold), and \`{type: "array", items: {enum: […]}}\` lowers to one noul per level.`,
         })
       }
     }
