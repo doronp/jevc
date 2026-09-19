@@ -738,6 +738,67 @@ describe('lintProgram — a score whose levels describe nothing', () => {
       codes(criteria as unknown[]).includes('score_levels_undescribed'))
     expect(fired.map(([fid, id]) => `${fid}.${id}`)).toEqual([])
   })
+
+  // It fires on 100% of the scores this tool's own primary path produces, and half its remedy
+  // ("describe each level") is a field a schema author cannot set. A warning that is true,
+  // permanent and unactionable is one users learn to scroll past, which costs the times it
+  // matters. The rule stays and the firing stays — what changes is that the remedy names a
+  // step the reader can actually take, and these tests execute those steps.
+  describe('its remedy is reachable from where it fires', () => {
+    const fromSchema = async (properties: Record<string, unknown>) => {
+      const { fromJsonSchema } = await import('../src/from-schema.js')
+      return fromJsonSchema({ type: 'object', properties } as never)
+    }
+    const m = () => messageFor('score_levels_undescribed', score(['severity = 0', 'severity = 1']))
+
+    it('fires on every score fromJsonSchema can produce — the bounded integer is its only score branch', async () => {
+      const program = await fromSchema({
+        blast: { type: 'integer', minimum: 0, maximum: 2, description: 'How wide is the impact?' },
+        severity: { type: 'integer', minimum: 0, maximum: 4 },
+      })
+      const scores = program.decisions.filter(d => d.kind === 'score')
+      expect(scores.flatMap(d => d.criteria as string[])).toEqual([
+        'blast = 0', 'blast = 1', 'blast = 2',
+        'severity = 0', 'severity = 1', 'severity = 2', 'severity = 3', 'severity = 4',
+      ])
+      expect(lintProgram(program).filter(i => i.code === 'score_levels_undescribed').map(i => i.path))
+        .toEqual(['decisions.blast.criteria', 'decisions.severity.criteria'])
+      expect(program.dropped).toEqual([])      // nothing else in the toolchain mentions it either
+    })
+
+    it('does not send a schema author to a keyword that does not exist', () => {
+      // `description` on the integer is the FIELD's prose and becomes `instructions`; there is
+      // no per-level text anywhere on that branch, so "describe each level" is unreachable here.
+      expect(m()).not.toMatch(/Describe each level/)
+    })
+
+    it('names the oneOf-of-described-consts route, and that route clears the warning', async () => {
+      expect(m()).toContain('oneOf')
+      expect(m()).toContain('const')
+      const described = await fromSchema({ blast: { oneOf: [
+        { const: 0, description: 'one file' },
+        { const: 1, description: 'one directory' },
+        { const: 2, description: 'the whole repo' },
+      ] } })
+      expect(lintProgram(described).map(i => i.code)).toEqual([])
+      expect(described.decisions[0].criteria)
+        .toEqual({ 0: 'one file', 1: 'one directory', 2: 'the whole repo' })
+      // And it is honest about the cost: the levels come back as a choice, which the reducer
+      // matches with `is`, not with the gte/lte thresholds a score takes.
+      expect(described.decisions[0].kind).toBe('choice')
+      expect(m()).toContain('`is`')
+    })
+
+    it('names the noul-per-level route, and that route clears the warning too', async () => {
+      expect(m()).toContain('noul')
+      const perLevel = await fromSchema({
+        blast: { type: 'array', items: { enum: ['one_file', 'one_directory', 'whole_repo'] } },
+      })
+      expect(perLevel.decisions.map(d => `${d.id}:${d.kind}`))
+        .toEqual(['blast.one_file:noul', 'blast.one_directory:noul', 'blast.whole_repo:noul'])
+      expect(lintProgram(perLevel).map(i => i.code)).toEqual([])
+    })
+  })
 })
 
 // This is the assertion the 60-fixture corpus leaves out. `jevc check` replays the fixtures

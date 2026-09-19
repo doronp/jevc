@@ -416,9 +416,18 @@ export function lintProgram(p: Program): ValidationIssue[] {
       const levels = d.criteria.map(c => (typeof c === 'string' ? c : c == null ? '' : JSON.stringify(c)))
       const indistinct = new Set(levels.map(l => l.replace(/\d+/g, '').trim())).size === 1
       if (levels.some(l => l.trim() === '') || indistinct) {
+        // The remedy, not the predicate, is what changed in the cleanup round. Measured: this
+        // fires on 100% of the scores `fromJsonSchema` produces, because its only score branch
+        // is the bounded integer and that branch always writes `${id} = ${i}`. The old remedy
+        // told the reader to "describe each level", which is unreachable from a JSON Schema —
+        // no keyword on that branch carries per-level prose, and the field's own `description`
+        // becomes `instructions`. A warning that is true, permanent and unactionable is one
+        // users learn to scroll past, which costs the times it matters. The rule keeps firing
+        // (an undescribed level really does decide the number) and now names steps that work:
+        // both routes below are measured in test/ir.test.ts to clear the warning end to end.
         out.push({
           code: 'score_levels_undescribed', path: `decisions.${d.id}.criteria`, severity: 'warn',
-          message: `Score "${d.id}" has level descriptions that do not describe the levels (${levels.map(l => JSON.stringify(l)).join(', ')}) — they differ only by a number, so the model is told the index and not what it means. A score answer is a probability-weighted index over exactly these labels. Describe each level, or ask a noul per level instead.`,
+          message: `Score "${d.id}" has level descriptions that do not describe the levels (${levels.map(l => JSON.stringify(l)).join(', ')}) — they differ only by a number, so the model is told the index and not what it means. A score answer is a probability-weighted index over exactly these labels. Writing the Program by hand, put real prose in \`criteria\`. Coming from \`jevc compile\` on a JSON Schema there is no per-level text to write — the bounded-integer branch always labels levels this way — so change the schema instead: \`oneOf: [{const: 0, description: "…"}, …]\` lowers to a choice whose options carry that prose (the reducer then matches it with \`is\` rather than a gte/lte threshold), and \`{type: "array", items: {enum: […]}}\` lowers to one noul per level.`,
         })
       }
     }
