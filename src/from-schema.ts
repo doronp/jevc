@@ -87,21 +87,50 @@ function flatten(s: JsonSchema): JsonSchema {
 
 /** The option name a member contributes to a choice, and the prose that defines it.
  *
- *  The key is the whole identity of the option: `criteria` is built from it with
+ *  The key is what the model and the reducer see: `criteria` is built from it with
  *  `Object.fromEntries`, the API sends it to the model as the thing to pick, and the
  *  reducer's `is` compares against it. `String()` is what shipped here, and it is the
  *  same collapse this repo has now hit five times — every object renders
  *  `"[object Object]"`, `[1,2]` and `"1,2"` render alike, `1` and `"1"` render alike —
  *  so an N-option choice is emitted as an (N-1)-option choice with two distinct schema
  *  values behind one key, and everything downstream validates clean. JSON is used for
- *  anything that is not already a string: stable, round-trippable, and distinct for
- *  distinct values. The collisions JSON cannot rule out (`{a,b}` vs `{b,a}` over-split
- *  rather than merge, and `NaN`/`Infinity` both render `null`) are caught by the
- *  identity check in `constOptions` and refused there. */
+ *  anything that is not already a string: stable, round-trippable, and legible.
+ *
+ *  It is NOT the identity of the option, and this comment used to say it was — it claimed
+ *  the two renderings JSON cannot keep apart were "caught by the identity check in
+ *  `constOptions` and refused there". Half of that was false and stopped anyone checking:
+ *  measured, `enum: [NaN, Infinity, 'z']` merged both non-finite members into one option
+ *  named `"null"` and reported an empty `dropped`. `identityOf` below is the check that
+ *  claim described; it now exists. What remains true: `{a,b}` vs `{b,a}` over-split into
+ *  two options rather than merging into one, which is visible rather than silent. */
 type Option = { key: string; description: EntryType }
 
 function optionKey(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v) ?? String(v)
+}
+
+/** A rendering that differs for every pair of distinct values that share an `optionKey`.
+ *  That is the equality test the collision guard in `constOptions` runs before it dedupes,
+ *  and it is only ever consulted between members `optionKey` has already put behind one
+ *  name — which is what makes the plain rendering below sufficient.
+ *
+ *  Bare `JSON.stringify` is not that rendering. It writes EVERY non-finite number as the
+ *  four characters `null`, at any depth, so `NaN`, `Infinity` and `-Infinity` all compared
+ *  equal and the guard deduped them as one repeated value: the silent deletion it exists
+ *  to refuse. Measured before this existed: `enum: [NaN, Infinity, 'z']` lowered to a
+ *  two-option choice `{null, z}` with an empty `dropped`, at exit 0.
+ *
+ *  Writing each non-finite as its own name cannot introduce a new merge in exchange. The
+ *  only other member that renders as the bare word NaN is the STRING "NaN", and a string's
+ *  `optionKey` is itself — "NaN", never "null" — so the two never reach this comparison.
+ *  Same one level down: `{x: NaN}` keys as `{"x":null}`, `{x: "NaN"}` as `{"x":"NaN"}`.
+ *
+ *  No JSON document reaches this: JSON has no `NaN`, `Infinity` or `-Infinity` literal. It
+ *  is for callers who build the schema object in process — from Zod, from Pydantic's
+ *  `model_json_schema`, from a hand-written literal. */
+function identityOf(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    typeof x === 'number' && !Number.isFinite(x) ? String(x) : x) ?? String(v)
 }
 
 type OptionSet = { options: Option[]; collision?: string }
@@ -134,7 +163,7 @@ function constOptions(s: JsonSchema): OptionSet | null {
   for (const m of members) {
     if (m.value === null || m.value === undefined) continue
     const key = optionKey(m.value)
-    const identity = JSON.stringify(m.value) ?? String(m.value)
+    const identity = identityOf(m.value)
     const claimed = claimedBy.get(key)
     if (claimed === undefined) {
       claimedBy.set(key, identity)
