@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
-import { basename } from 'node:path'
 import { fromJsonSchema } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
 import { emitAiSdk } from './emit/ai-sdk.js'
 import { emitLangchain } from './emit/langchain.js'
+import { canEmit } from './emit/capability.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
 import { assertExpectation, checkLive, loadFixtures } from './check.js'
-import { validateRequest } from './contract.js'
+import { validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -18,12 +18,30 @@ const flag = (name: string): string | undefined => {
   const forms = name.length === 1 ? [`--${name}`, `-${name}`] : [`--${name}`]
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (forms.includes(a)) return argv[i + 1]
+    if (forms.includes(a)) {
+      // A valued flag with nothing after it returned `undefined`, which `?? 'sdk'` cannot
+      // tell apart from "the flag was never given": `jevc compile s.json --emit` — a shell
+      // history edit, or `--emit $TARGET` with TARGET unset — ran the DEFAULT emitter at
+      // exit 0, and a trailing `-o` printed the artifact to stdout while the file the user
+      // named kept its stale contents. That is the same "wrong artifact at exit 0" the
+      // `--flag=value` note below describes, and the `=` half of this helper already
+      // rejected it (`--emit=` exits 1). `-` stays a legal value: it is the stdin/stdout
+      // spelling, not a flag.
+      const next = argv[i + 1]
+      if (next === undefined || next === '' || (next.startsWith('-') && next !== '-')) {
+        die(`${a} requires a value.`)
+      }
+      return next
+    }
     // `--name=value` is the other half of GNU flag syntax. Matching only the
     // space-separated form left `--emit=json` looking like an unknown argument, so the
     // value was ignored and the DEFAULT emitter ran: the wrong artifact at exit 0.
     const form = forms.find(f => a.startsWith(`${f}=`))
-    if (form) return a.slice(form.length + 1)
+    if (form) {
+      const v = a.slice(form.length + 1)
+      if (v === '') die(`${a} requires a value.`)
+      return v
+    }
   }
   return undefined
 }
@@ -52,6 +70,116 @@ const positional = (): string | undefined => {
 }
 
 const die = (msg: string): never => { process.stderr.write(`${msg}\n`); process.exit(1) }
+
+/**
+ * The options each subcommand accepts. Nothing walked argv looking for an option it did not
+ * recognise, so an unrecognised one was silently dropped and the command ran with its
+ * defaults: `compile --emmit json -o request.json` wrote TypeScript into request.json at
+ * exit 0, and `emit-policy --output policy.yaml` printed the policy to stdout and left a
+ * stale policy on disk — for bouncer, a gate nobody regenerated. Only the option's VALUE
+ * was ever checked, and that check cannot fire once the NAME has already been ignored.
+ * check.ts:78 applies the same rule to expectation clauses ("unrecognized clause key ... is
+ * a failure rather than silently ignored"); argv was the one surface exempt from it.
+ */
+const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
+  compile: new Set(['emit', 'o', 'lift']),
+  check: new Set(['fixtures', 'live']),
+  explain: new Set(['fixtures']),
+  'emit-policy': new Set(['for', 'o']),
+}
+const knownFlags = KNOWN_FLAGS[cmd]
+if (knownFlags) {
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i]
+    if (!a.startsWith('-') || a === '-') continue
+    // A single dash is the short form and only ever introduces a one-character name, so
+    // `-emit json` is not `--emit json`: `flag('emit')` never matches it and the default
+    // emitter ran. Accepting it here would report a token as known that nothing reads.
+    const name = a.replace(/^--?/, '').split('=')[0]
+    if (!knownFlags.has(name) || (!a.startsWith('--') && name.length !== 1)) {
+      const spelled = [...knownFlags].map(n => (n.length === 1 ? `-${n}` : `--${n}`)).join(', ')
+      die(`Unknown option "${a}" for jevc ${cmd}. Known: ${spelled}.`)
+    }
+    // Skip the value so a value that looks like a flag is not reported as one. `flag()`
+    // refuses a flag-shaped value separately, so nothing is let through here.
+    if (!a.includes('=') && VALUED.has(name)) i++
+  }
+}
+
+/**
+ * `validateProgram` and `lintProgram` assume a well-typed `Program`. On the `compile` path
+ * that holds by construction — `fromJsonSchema` builds one. `emit-policy` is the other
+ * path: it JSON.parses a file and casts. README:225 says that file is "the shape `--lift`
+ * asks the agent to produce", i.e. model output, and `jevc compile --emit json -o
+ * request.json` writes a JSON file that is NOT a Program. Both validators dereference
+ * `p.decisions`, `p.reduce.rules`, `rule.when`, `d.instructions`, `d.uncertain` (`in` on a
+ * string throws) and `d.dependsOn` with no guard, so a package.json, a schema, a bare
+ * `null` or a lifted response with one field wrong escaped as a raw TypeError naming
+ * dist/ir.js plus a Node version banner. Like `checkLiftedShape` in from-prompt.ts, this
+ * checks only what those functions actually dereference — it is a boundary, not a schema.
+ */
+const checkProgramShape = (parsed: unknown, at: string): ValidationIssue[] => {
+  const out: ValidationIssue[] = []
+  const err = (path: string, message: string) =>
+    out.push({ code: 'program_malformed', path, severity: 'error', message })
+  const nameOf = (v: unknown) =>
+    v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+
+  if (!isObject(parsed)) {
+    err(at, `A program must be a JSON object, got ${nameOf(parsed)}.`)
+    return out
+  }
+
+  if (!Array.isArray(parsed.decisions)) {
+    err('decisions', `\`decisions\` must be an array, got ${nameOf(parsed.decisions)}.`)
+  } else {
+    parsed.decisions.forEach((raw, i) => {
+      const where = `decisions[${i}]`
+      if (!isObject(raw)) {
+        err(where, `Decision ${i} must be an object, got ${nameOf(raw)}.`)
+        return
+      }
+      const label = typeof raw.id === 'string' && raw.id !== '' ? `"${raw.id}"` : `at index ${i}`
+      if (typeof raw.id !== 'string' || raw.id === '') {
+        err(`${where}.id`, `Decision ${label} needs a non-empty string \`id\`.`)
+      }
+      if (typeof raw.instructions !== 'string') {
+        err(`${where}.instructions`, `Decision ${label} needs string \`instructions\`; got ${nameOf(raw.instructions)}.`)
+      }
+      if (raw.uncertain !== undefined && !isObject(raw.uncertain)) {
+        err(`${where}.uncertain`, `Decision ${label} has an \`uncertain\` that is ${nameOf(raw.uncertain)}; it must be {band} or {belowConfidence}.`)
+      }
+      if (raw.dependsOn !== undefined && !Array.isArray(raw.dependsOn)) {
+        err(`${where}.dependsOn`, `Decision ${label} has a \`dependsOn\` that is ${nameOf(raw.dependsOn)}; it must be an array of ids.`)
+      }
+    })
+  }
+
+  if (!isObject(parsed.reduce)) {
+    err('reduce', `\`reduce\` must be an object, got ${nameOf(parsed.reduce)}. It is the verdict.`)
+  } else if (!Array.isArray(parsed.reduce.rules)) {
+    err('reduce.rules', `\`reduce.rules\` must be an array, got ${nameOf(parsed.reduce.rules)}.`)
+  } else {
+    parsed.reduce.rules.forEach((raw, i) => {
+      const where = `reduce.rules[${i}]`
+      if (!isObject(raw)) {
+        err(where, `Rule ${i} must be an object, got ${nameOf(raw)}.`)
+        return
+      }
+      if (!Array.isArray(raw.when)) {
+        err(`${where}.when`, `Rule ${i} needs a \`when\` array of conditions, got ${nameOf(raw.when)}. A single condition is a one-element array.`)
+        return
+      }
+      raw.when.forEach((c, ci) => {
+        if (!isObject(c)) err(`${where}.when[${ci}]`, `Condition ${ci} of rule ${i} must be an object, got ${nameOf(c)}.`)
+      })
+    })
+  }
+
+  return out
+}
 
 // EntryType is `string | object | array | null`, so String() on it silently renders
 // "[object Object]" rather than throwing. Every render site needs this.
@@ -88,7 +216,12 @@ if (cmd === 'compile') {
   const text = read(path)
 
   if (has('lift')) {
-    process.stdout.write(buildLiftRequest(text, path === '-' ? 'stdin' : basename(path)))
+    // The label on the fence is the name `parseLiftResponse` checks every `source.file`
+    // against, and it compares against the path IT is handed — the same one the user typed
+    // here. Labelling the fence with `basename(path)` told the lifter the file was
+    // "AGENTS.md" while the caller verifies against "docs/AGENTS.md", so every decision
+    // came back `provenance_file_unknown`. The label has to be the path as given.
+    process.stdout.write(buildLiftRequest(text, path === '-' ? 'stdin' : path))
     process.exit(0)
   }
 
@@ -113,21 +246,36 @@ if (cmd === 'compile') {
     die(`Unknown --emit value "${emit}". Expected sdk, json, ai-sdk or langchain.`)
   }
 
+  // Both of these ran on the `--emit json` branch alone, and neither is a property of the
+  // json emitter.
+  //
+  // `canEmit` is the refusal gate the README's target table documents, and it was reachable
+  // only from the two policy emitters — `compile` consulted the capability model for no
+  // target at all. Its `no_decisions` error is the one that bites here: a JSON Schema whose
+  // properties are all free text (the ordinary prose->residual case) compiles to zero
+  // decisions, and the emitted module then asks nothing and returns the fallthrough verdict
+  // for every input. capability.ts:72-79 already named this exact failure — langchain's
+  // `TypeSafeClassifier(questions=...)` declares `Field(min_length=1)` and raises at import
+  // — and nothing on this path called it. It is also the honest exit code for "I compiled
+  // nothing": one `dropped:` line at exit 0 reads as success.
+  //
+  // `validateRequest` owns the wire constraints the API enforces on whichever artifact ends
+  // up sending the request (empty question ids, the token budget; the 255-option ceiling
+  // and the 2..10 score bound now belong to validateProgram above, which every target
+  // already runs). Amendment: run it locally so a request that would 422 is caught here.
+  const req = emitJson(program!, '<state>')
+  const gate = [
+    ...canEmit(program!, emit),
+    ...validateRequest(req).filter(i => !STATE_DEPENDENT.includes(i.code)),
+  ]
+  for (const i of gate) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+  if (gate.some(i => i.severity === 'error')) process.exit(1)
+
   let out: string
   if (emit === 'ai-sdk') out = emitAiSdk(program!)
   else if (emit === 'langchain') out = emitLangchain(program!)
-  else if (emit === 'json') {
-    // Amendment: the API is the only thing that used to enforce this (e.g. the 255-option
-    // choice ceiling, question-id uniqueness) — run the wire validator locally so a request
-    // that would 422 is caught here instead.
-    const req = emitJson(program!, '<state>')
-    const reqIssues = validateRequest(req).filter(i => !STATE_DEPENDENT.includes(i.code))
-    for (const i of reqIssues) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
-    if (reqIssues.some(i => i.severity === 'error')) process.exit(1)
-    out = JSON.stringify(req, null, 2)
-  } else {
-    out = emitNative(program!)
-  }
+  else if (emit === 'json') out = JSON.stringify(req, null, 2)
+  else out = emitNative(program!)
 
   const dest = flag('o')
   if (dest) write(dest, out)
@@ -192,12 +340,22 @@ if (cmd === 'emit-policy') {
   // src/guard.js and decide() destructures four fixed ids, so there is nothing to emit into.
   const target = flag('for') ?? die('usage: jevc emit-policy --for <bouncer|toolgate> <program.json> [-o out]')
   const path = positional() ?? die('supply a compiled program JSON file')
-  let program: Program
+  let parsed: unknown
   try {
-    program = JSON.parse(read(path))
+    parsed = JSON.parse(read(path))
   } catch (e) {
     die(`${path} is not valid JSON: ${(e as Error).message}`)
   }
+
+  // Valid JSON is not a Program. Shape it before the cast, or validateProgram/lintProgram
+  // dereference fields that are not there and the user gets a Node stack trace naming
+  // jevc's internals instead of "that file is not a jevc program".
+  const shape = checkProgramShape(parsed, path)
+  if (shape.length) {
+    for (const i of shape) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+    die(`${path} is not a jevc program. Expected { decisions, reduce, residual, dropped } — the shape \`jevc compile <file> --lift\` asks the agent to produce.`)
+  }
+  const program = parsed as Program
 
   // The same gate `compile` runs. Without it a rule naming a decision that does not
   // exist emitted `when: {ghost: {p: ">=0.8"}}` at exit 0 — valid YAML, a rule that can
