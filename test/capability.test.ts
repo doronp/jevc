@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { canEmit, TARGETS } from '../src/emit/capability.js'
+import { runReducer } from '../src/runtime.js'
+import type { JevAnswer } from '../src/contract.js'
 import type { Program } from '../src/ir.js'
 
 const mixed: Program = {
@@ -21,6 +23,33 @@ const nouls: Program = {
     { when: [{ id: 'destructive', op: 'gte', value: 0.8 }], then: 'deny' }], otherwise: 'allow' },
   residual: '', dropped: [],
 }
+
+/** One rule naming two questions: `destructive >= 0.85 AND outside_repo >= 0.85`. */
+const andShaped: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+  { when: [{ id: 'destructive', op: 'gte', value: 0.85 },
+           { id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' }], otherwise: 'allow' } }
+
+/** The same two thresholds as a disjunction: one condition per rule, repeated per question. */
+const orShaped: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+  { when: [{ id: 'destructive', op: 'gte', value: 0.85 }], then: 'deny' },
+  { when: [{ id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' },
+  { when: [{ id: 'destructive', op: 'gte', value: 0.55 }], then: 'ask' },
+  { when: [{ id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
+], otherwise: 'allow' } }
+
+/** Transcription of toolgate's decide() (src/engine.ts:40-56): max over every question
+ *  probability, then `>= deny` => deny, `>= ask` => ask, else allow. */
+const toolgateVerdict = (ps: number[], deny = 0.85, ask = 0.55): string => {
+  const m = Math.max(...ps)
+  return m >= deny ? 'deny' : m >= ask ? 'ask' : 'allow'
+}
+
+const answers = (a: number, b: number): Record<string, JevAnswer> => ({
+  destructive: { type: 'noul', noul: a },
+  outside_repo: { type: 'noul', noul: b },
+})
+
+const GRID = [0, 0.1, 0.5, 0.54, 0.55, 0.56, 0.84, 0.85, 0.86, 0.9, 1]
 
 describe('canEmit', () => {
   it('accepts a mixed-kind program on the native target', () => {
@@ -48,15 +77,19 @@ describe('canEmit', () => {
     expect(canEmit(multi, 'bouncer')[0].code).toBe('reducer_too_complex')
   })
 
-  // toolgate reduces by max over EVERY question against two scalars, so one rule naming
-  // several questions at a shared threshold is its native shape — bouncer's
-  // one-question-per-rule limit must not be applied to it.
-  it('accepts a multi-question rule on toolgate, whose reducer is max-over-questions', () => {
-    const shared: Program = { ...nouls, reduce: { kind: 'rules', rules: [
-      { when: [{ id: 'destructive', op: 'gte', value: 0.85 },
-               { id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' }], otherwise: 'allow' } }
-    expect(canEmit(shared, 'toolgate')).toEqual([])
-    expect(canEmit(shared, 'bouncer')[0].code).toBe('reducer_too_complex')
+  // `when: [a, b]` is a CONJUNCTION — runReducer evaluates `rule.when.every(...)` — while
+  // toolgate's max(probability) >= threshold is a DISJUNCTION. Accepting the AND shape
+  // here emitted an OR policy: at a=0.9, b=0.1 the Program says allow and the emitted
+  // policy says deny. One condition per rule is the constraint on EVERY non-code target.
+  it('rejects a multi-condition rule on toolgate too, since when[] is an AND and max() is an OR', () => {
+    expect(canEmit(andShaped, 'toolgate')[0].code).toBe('reducer_too_complex')
+    expect(canEmit(andShaped, 'bouncer')[0].code).toBe('reducer_too_complex')
+  })
+
+  // toolgate's real native shape: one condition per rule, repeated per question.
+  // First-match-wins over that list evaluates as exactly max-over-questions.
+  it('accepts the OR form on toolgate — one condition per rule, repeated per question', () => {
+    expect(canEmit(orShaped, 'toolgate')).toEqual([])
   })
 
   it('rejects a threshold outside 0..1 on bouncer, whose p grammar is bounded', () => {
@@ -103,5 +136,25 @@ describe('canEmit', () => {
   it('declares every emit target the CLI and emitters can name', () => {
     expect(Object.keys(TARGETS).sort())
       .toEqual(['ai-sdk', 'bouncer', 'json', 'langchain', 'sdk', 'toolgate'])
+  })
+})
+
+// Comparing config SHAPES is not comparing BEHAVIOUR: the AND program and the OR program
+// emit byte-identical toolgate YAML, and only one of them means what the policy does.
+// So the acceptance rule is pinned against a transcription of the consumer's own reducer.
+describe('toolgate reducer semantics', () => {
+  it('diverges from the AND program, which is why canEmit must refuse it', () => {
+    expect(runReducer(andShaped, answers(0.9, 0.1))).toBe('allow')
+    expect(toolgateVerdict([0.9, 0.1])).toBe('deny')
+  })
+
+  it('agrees with the OR program on every point of a probability grid', () => {
+    for (const a of GRID) {
+      for (const b of GRID) {
+        // The pair is carried into the assertion so a failure names the point.
+        expect([a, b, runReducer(orShaped, answers(a, b))])
+          .toEqual([a, b, toolgateVerdict([a, b])])
+      }
+    }
   })
 })
