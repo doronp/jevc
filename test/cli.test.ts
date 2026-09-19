@@ -212,9 +212,14 @@ describe('jevc emit-policy', () => {
 
   // A target refusing a program it cannot express is the designed outcome, so it must read
   // as a message rather than a crash.
+  // The reducer names `radius` rather than the replaced `outside_repo`: the program has to
+  // be internally valid for the refusal under test to be the TARGET's, not the validator's.
   it('reports a refusal as a message, not a stack trace', () => {
-    const score = { ...program, decisions: [
-      { id: 'radius', kind: 'score', instructions: 'How wide?', criteria: ['file', 'repo'] }] }
+    const score = { decisions: [
+      { id: 'radius', kind: 'score', instructions: 'How wide?', criteria: ['file', 'repo'] }],
+      reduce: { kind: 'rules', rules: [
+        { when: [{ id: 'radius', op: 'gte', value: 0.8 }], then: 'deny' }], otherwise: 'allow' },
+      residual: '', dropped: [] }
     const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(score)])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toMatch(/only noul/)
@@ -224,6 +229,26 @@ describe('jevc emit-policy', () => {
   it('names the known targets when given an unknown one', () => {
     const error = runExpectingFailure(['emit-policy', '--for', 'jev-guard', write()])
     expect(error.stderr).toMatch(/bouncer, toolgate/)
+  })
+
+  // `compile` runs validateProgram; `emit-policy` parsed raw JSON and handed it straight
+  // to the emitter. A rule naming a decision that does not exist emitted
+  // `when: {ghost: {p: ">=0.8"}}` at exit 0 — a policy bouncer loads and whose rule can
+  // never match, which is the silent-gate failure again.
+  it('validates the program, rejecting a rule that names a decision which does not exist', () => {
+    const ghost = { ...program, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'ghost', op: 'gte', value: 0.8 }], then: 'deny' }], otherwise: 'allow' } }
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(ghost)])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/unknown decision "ghost"/)
+    expect(error.stdout ?? '').not.toMatch(/ghost/)
+  })
+
+  it('validates the program, rejecting a duplicate decision id', () => {
+    const dup = { ...program, decisions: [program.decisions[0], program.decisions[0]] }
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(dup)])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/duplicate/i)
   })
 
   it('reports invalid JSON cleanly', () => {
