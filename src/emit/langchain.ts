@@ -1,6 +1,7 @@
 import type { EntryType, JsonValue } from '../contract.js'
 import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
+import { cannotLower, refusal } from './capability.js'
 
 /**
  * A Python literal for an EntryType. JSON.stringify is not enough here: JSON's
@@ -54,6 +55,15 @@ function question(d: Decision): string {
 }
 
 export function emitLangchain(p: Program, name = 'program'): string {
+  // The house pattern, from emitBouncerPolicy (src/emit/policy/bouncer.ts:31); native.ts says
+  // why the code emitters need it too and capability.ts's `cannotLower` says why it is not
+  // the whole of canEmit. This target has the least visible failure of the three: Python is
+  // not compiled before it runs, so a threshold nobody refused does not announce itself until
+  // `_compare` raises inside a live gate. `pyThreshold` below is the other half of the same
+  // job — it renders the non-finite NUMBERS faithfully, which is exactly why `cannotLower`
+  // does not refuse those.
+  const issues = cannotLower(p, 'langchain')
+  if (issues.length) throw refusal('a langchain module', issues)
   // Each decision's uncertainty rule, RESOLVED from the Program (uncertaintyOf supplies
   // jevc's defaults where a decision declares none) rather than assumed to be 0.5.
   const uncertainties = p.decisions.map(d => {
