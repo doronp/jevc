@@ -1,4 +1,5 @@
 import type { EntryType, JsonValue } from '../contract.js'
+import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
 
 /**
@@ -34,10 +35,20 @@ function question(d: Decision): string {
 }
 
 export function emitLangchain(p: Program, name = 'program'): string {
+  // Each decision's uncertainty rule, RESOLVED from the Program (uncertaintyOf supplies
+  // jevc's defaults where a decision declares none) rather than assumed to be 0.5.
+  const uncertainties = p.decisions.map(d => {
+    const u = uncertaintyOf(d)
+    const body = 'band' in u
+      ? `{"band": [${py(u.band[0])}, ${py(u.band[1])}]}`
+      : `{"below_confidence": ${py(u.belowConfidence)}}`
+    return `    ${py(d.id)}: ${body},`
+  }).join('\n')
+
   const rules = p.reduce.rules.map(r => {
     const conds = r.when.map(c => {
       if (c.op === 'is') return `answers[${py(c.id)}].choice == ${py(c.value)}`
-      if (c.op === 'uncertain') return `answers[${py(c.id)}].confidence < 0.5`
+      if (c.op === 'uncertain') return `_uncertain(answers, ${py(c.id)})`
       // A noul answer has .noul, a score answer has .score; neither has both. Nested
       // getattr, not `or`: a legitimate noul of 0.0 is falsy and would fall through.
       const read = `getattr(answers[${py(c.id)}], "noul", getattr(answers[${py(c.id)}], "score", 0))`
@@ -56,6 +67,27 @@ ${p.decisions.map(question).join('\n')}
 }
 
 classifier = TypeSafeClassifier(questions=${name}_questions, model="jev-latest")
+
+# Each decision's uncertainty rule as the Program declares it. A noul answer is
+# {type, noul} with no .confidence field at all, so its band is tested on .noul; a choice
+# or score answer carries a required .confidence, which its floor is tested against.
+_UNCERTAINTY = {
+${uncertainties}
+}
+
+
+def _uncertain(answers, qid) -> bool:
+    rule = _UNCERTAINTY.get(qid)
+    ans = answers.get(qid)
+    # No answer means nothing was measured, which is not the same as being unsure of it.
+    if rule is None or ans is None:
+        return False
+    band = rule.get("band")
+    if band is not None:
+        noul = getattr(ans, "noul", None)
+        return noul is not None and band[0] < noul < band[1]
+    confidence = getattr(ans, "confidence", None)
+    return confidence is not None and confidence < rule["below_confidence"]
 
 
 def reduce(answers) -> str:
