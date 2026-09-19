@@ -80,13 +80,16 @@ describe('emitBouncerPolicy', () => {
 describe('emitToolgatePolicy', () => {
   // toolgate reduces by max-over-questions against two scalars, so an emittable program
   // needs one shared deny threshold and one shared ask threshold covering every question.
+  // Written as a DISJUNCTION — one condition per rule, repeated per question — because
+  // that is what max-over-questions means. A single rule naming both questions would be a
+  // conjunction, which this target cannot express and canEmit now refuses.
   const flat: Program = {
     decisions: p.decisions,
     reduce: { kind: 'rules', rules: [
-      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.85 },
-               { id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' },
-      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.55 },
-               { id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.85 }], then: 'deny' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' },
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
     ], otherwise: 'allow' },
     residual: '', dropped: [],
   }
@@ -115,8 +118,8 @@ describe('emitToolgatePolicy', () => {
   it('refuses a question left out of a threshold, since max-over-questions covers it anyway', () => {
     const partial: Program = { ...flat, reduce: { kind: 'rules', rules: [
       { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.85 }], then: 'deny' },
-      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.55 },
-               { id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'deletes_tracked_files', op: 'gte', value: 0.55 }], then: 'ask' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.55 }], then: 'ask' },
     ], otherwise: 'allow' } }
     expect(() => emitToolgatePolicy(partial)).toThrow(/outside_repo/)
   })

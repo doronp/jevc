@@ -69,11 +69,16 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
 
   if (cap.reducer !== 'code') {
     for (const [i, rule] of p.reduce.rules.entries()) {
-      // 'thresholds' targets reduce by max over every question, so a rule that names
-      // several questions at one threshold is their NATIVE shape, not too complex.
-      if (cap.reducer === 'single-condition' && rule.when.length > 1) {
+      // `when: [a, b]` is a CONJUNCTION (runtime.ts:39 evaluates `rule.when.every(...)`).
+      // Neither policy target has one: bouncer's `when` names exactly one question, and
+      // toolgate's max(probability) >= threshold is a DISJUNCTION. Exempting 'thresholds'
+      // here let an AND-shaped Program emit an OR-shaped policy — at a=0.9, b=0.1 the
+      // Program said allow and the emitted policy said deny. toolgate's native shape is
+      // one condition per rule REPEATED per question, which first-match-wins evaluates as
+      // exactly max-over-questions, and which thresholdsFor's coverage check accepts.
+      if (rule.when.length > 1) {
         out.push({ code: 'reducer_too_complex', path: `reduce.rules[${i}]`, severity: 'error',
-          message: `Target "${target}" allows one question per rule; this rule tests ${rule.when.length}. Split it, or emit to a code target.` })
+          message: `Target "${target}" allows one question per rule; this rule tests ${rule.when.length}, which is a conjunction. Split it into one rule per question, or emit to a code target.` })
       }
       for (const c of rule.when) {
         if (c.op === 'gte' || c.op === 'lte') {
