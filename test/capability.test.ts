@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { canEmit, TARGETS } from '../src/emit/capability.js'
+import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
+import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
 import { runReducer } from '../src/runtime.js'
 import type { JevAnswer } from '../src/contract.js'
 import type { Program } from '../src/ir.js'
@@ -179,8 +181,11 @@ describe('canEmit', () => {
   // `when: []` is an empty conjunction, and `[].every(...)` is true — runReducer fires
   // such a rule unconditionally. bouncer's emitter read `when[0]` and crashed with a
   // TypeError on `undefined.op`; toolgate's saw no condition and silently dropped the
-  // rule from its threshold accounting. Neither target has a way to say "always", so
-  // both refuse; the code targets say it exactly and are accepted.
+  // rule from its threshold accounting. Neither target can say "always" IN RULE POSITION:
+  // bouncer's nearest is `when: { any: { p: ">=0" } }`, which needs at least one answered
+  // question and so is a different rule, and its `default` only terminates the list;
+  // toolgate has no rule position at all, only two thresholds. Both refuse; the code
+  // targets say it exactly and are accepted.
   it('rejects a conditionless rule on the policy targets, which cannot express one', () => {
     const always: Program = { ...nouls, reduce: { kind: 'rules', rules: [
       { when: [], then: 'deny' }], otherwise: 'allow' } }
@@ -241,5 +246,90 @@ describe('toolgate reducer semantics', () => {
           .toEqual([a, b, toolgateVerdict([a, b])])
       }
     }
+  })
+})
+
+// canEmit is the documented pre-flight gate: a library consumer branches on it and calls
+// the emitter when it is clean. Every refusal that lives only inside an emitter is a
+// promise canEmit already broke — the caller was told yes and then handed an exception.
+// So the refusals are declared once, in capability.ts, and this pins the two together.
+describe('canEmit and the emitters refuse the same programs', () => {
+  const n = (id: string, extra: object = {}) =>
+    ({ id, kind: 'noul' as const, instructions: `Is ${id}?`, ...extra })
+  const prog = (decisions: any[], rules: any[], otherwise = 'allow'): Program =>
+    ({ decisions, reduce: { kind: 'rules', rules, otherwise }, residual: '', dropped: [] })
+  const gte = (id: string, value: number, then: string) => ({ when: [{ id, op: 'gte', value }], then })
+
+  const cases: Array<[string, 'bouncer' | 'toolgate', Program]> = [
+    ['a question named "any", bouncer\'s cross-question selector', 'bouncer',
+      prog([n('any')], [gte('any', 0.5, 'deny')])],
+    ['an `is` comparison, which bouncer has no equality for', 'bouncer',
+      prog([n('k')], [{ when: [{ id: 'k', op: 'is', value: 'x' }], then: 'deny' }])],
+    ['a rule naming a decision that does not exist', 'bouncer',
+      prog([n('k')], [gte('ghost', 0.5, 'deny')])],
+    ['a rule naming a decision that does not exist', 'toolgate',
+      prog([n('k')], [gte('ghost', 0.85, 'deny'), gte('k', 0.85, 'deny'),
+                      gte('ghost', 0.55, 'ask'), gte('k', 0.55, 'ask')])],
+    ['the reserved off_task id', 'toolgate',
+      prog([n('off_task')], [gte('off_task', 0.85, 'deny'), gte('off_task', 0.55, 'ask')])],
+    ['an lte condition, which is not a threshold', 'toolgate',
+      prog([n('k')], [{ when: [{ id: 'k', op: 'lte', value: 0.2 }], then: 'deny' }, gte('k', 0.55, 'ask')])],
+    ['a deny rule after an ask rule', 'toolgate',
+      prog([n('k')], [gte('k', 0.55, 'ask'), gte('k', 0.85, 'deny')])],
+    ['a non-allow fallthrough', 'toolgate',
+      prog([n('k')], [gte('k', 0.85, 'deny'), gte('k', 0.55, 'ask')], 'deny')],
+    ['two deny thresholds', 'toolgate',
+      prog([n('a'), n('b')], [gte('a', 0.85, 'deny'), gte('b', 0.9, 'deny'),
+                              gte('a', 0.55, 'ask'), gte('b', 0.55, 'ask')])],
+    ['equal ask and deny thresholds', 'toolgate',
+      prog([n('k')], [gte('k', 0.7, 'deny'), gte('k', 0.7, 'ask')])],
+    ['ask rules with no deny rule', 'toolgate',
+      prog([n('k')], [gte('k', 0.55, 'ask')])],
+    ['a question with no threshold rule', 'toolgate',
+      prog([n('a'), n('b')], [gte('a', 0.85, 'deny'), gte('a', 0.55, 'ask')])],
+  ]
+
+  // Emitter OPTIONS (bouncer's mode and timeoutMs) are not part of the Program and
+  // cannot be pre-flighted; those are checked in emit-policy.test.ts instead.
+  it.each(cases)('%s on %s', (_what, target, p) => {
+    const emit = target === 'bouncer' ? emitBouncerPolicy : emitToolgatePolicy
+    expect(canEmit(p, target).filter(i => i.severity === 'error')).not.toEqual([])
+    expect(() => emit(p)).toThrow()
+  })
+
+  it('and accept the same ones: a clean canEmit means the emitter does not throw', () => {
+    const ok: Array<['bouncer' | 'toolgate', Program]> = [
+      ['bouncer', prog([n('k')], [gte('k', 0.5, 'deny')])],
+      ['bouncer', prog([n('k', { uncertain: { band: [0.4, 0.6] } })],
+        [{ when: [{ id: 'k', op: 'uncertain' }], then: 'ask' }])],
+      ['toolgate', prog([n('k')], [gte('k', 0.85, 'deny'), gte('k', 0.55, 'ask')])],
+      ['toolgate', prog([n('k')], [gte('k', 0.85, 'deny')])],
+    ]
+    for (const [target, p] of ok) {
+      expect([target, canEmit(p, target)]).toEqual([target, []])
+      expect(() => (target === 'bouncer' ? emitBouncerPolicy : emitToolgatePolicy)(p)).not.toThrow()
+    }
+  })
+
+  // validateProgram already reports this as reduce_unknown_id, and the CLI runs it first.
+  // canEmit is also called directly by library consumers, and without the check the
+  // bouncer emitter writes `when: { ghost: ... }` — a rule naming an undeclared question,
+  // which is a load error, which disables the gate.
+  it('reports an unknown rule id on the code targets too', () => {
+    const ghost = prog([n('k')], [gte('ghost', 0.5, 'deny')])
+    for (const target of Object.keys(TARGETS)) {
+      expect([target, canEmit(ghost, target).some(i => i.code === 'rule_unknown_decision')])
+        .toEqual([target, true])
+    }
+  })
+
+  // bouncer's `p` takes an inclusive `LOW..HIGH` range, so an uncertainty rule lowers
+  // exactly (emit-policy.test.ts pins the endpoints against runReducer). toolgate has
+  // two scalars and no range, so the refusal there is real.
+  it('accepts an uncertainty rule on bouncer and refuses it on toolgate', () => {
+    const band = prog([n('k', { uncertain: { band: [0.4, 0.6] } })],
+      [{ when: [{ id: 'k', op: 'uncertain' }], then: 'ask' }])
+    expect(canEmit(band, 'bouncer')).toEqual([])
+    expect(canEmit(band, 'toolgate').map(i => i.code)).toContain('uncertain_unsupported')
   })
 })

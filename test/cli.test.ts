@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -160,6 +160,117 @@ describe('jevc compile', () => {
     const out = run(['compile', '-', '--emit', 'langchain'],
       JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean', description: 'OK?' } } }))
     expect(out).toMatch(/TypeSafeClassifier/)
+  })
+
+  // Fix round 3: the capability gate (`canEmit`) was reachable only from the two policy
+  // emitters, so `compile` ran it for no target at all. Its `no_decisions` error is the one
+  // that matters here: a schema of only free-text properties compiles to zero decisions, and
+  // the emitted module asks nothing and returns the fallthrough verdict for every input. The
+  // same program was already refused at exit 1 on `--emit json`.
+  for (const target of ['sdk', 'ai-sdk', 'langchain'] as const) {
+    it(`refuses a program with no decisions for --emit ${target}, as --emit json already does`, () => {
+      const error = runExpectingFailure(['compile', '-', '--emit', target], JSON.stringify({
+        type: 'object', properties: {
+          summary: { type: 'string', description: 'One-paragraph summary of the incident.' },
+          root_cause: { type: 'string', description: 'What caused it.' },
+        } }))
+      expect(error.status).not.toBe(0)
+      expect(error.stderr).toMatch(/Nothing to emit/)
+      expect(error.stdout ?? '').not.toMatch(/TypeSafeClassifier|programQuestions|createTypeSafeAi/)
+    })
+  }
+
+  // The default target is the one a user gets by typing nothing, so it must be gated too.
+  it('refuses a program with no decisions when no --emit is given at all', () => {
+    const error = runExpectingFailure(['compile', '-'],
+      JSON.stringify({ type: 'object', properties: {} }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/Nothing to emit/)
+  })
+
+  // The wire constraints belong to the API every target's client eventually talks to, not to
+  // the json emitter: validateRequest ran only inside the `--emit json` arm, so the same
+  // request that was refused as json shipped as TypeScript at exit 0.
+  it('runs the wire validator for --emit sdk too, not only for --emit json', () => {
+    const schema = { type: 'object', properties: { '': { type: 'boolean', description: 'Blank id?' } } }
+    const error = runExpectingFailure(['compile', '-', '--emit', 'sdk'], JSON.stringify(schema))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/Question id cannot be empty/)
+  })
+
+  // A valid schema must still pass every target untouched — the gate above is a refusal of
+  // programs no consumer can honestly run, not a new tax on ordinary ones.
+  for (const target of ['sdk', 'json', 'ai-sdk', 'langchain'] as const) {
+    it(`still emits an ordinary schema for --emit ${target} with no new errors`, () => {
+      const out = run(['compile', '-', '--emit', target], JSON.stringify({
+        type: 'object', properties: {
+          is_urgent: { type: 'boolean', description: 'Urgent?' },
+          dept: { type: 'string', enum: ['sales', 'support'], description: 'Which department?' },
+        } }))
+      expect(out.length).toBeGreaterThan(0)
+    })
+  }
+
+  // An unrecognised flag NAME was ignored outright, so `--emmit json` ran the default
+  // emitter: TypeScript written into the file the user asked to hold a wire request, at
+  // exit 0. This is the same failure the `--emit=json` fix named, one level up.
+  it('rejects a mistyped option name instead of silently running the default emitter', () => {
+    const error = runExpectingFailure(['compile', '-', '--emmit', 'json'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/--emmit/)
+    expect(error.stdout ?? '').not.toMatch(/programQuestions/)
+  })
+
+  it('rejects a single-dash long option like -emit instead of ignoring it', () => {
+    const error = runExpectingFailure(['compile', '-', '-emit', 'json'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/-emit/)
+  })
+
+  // `--emit $TARGET` with TARGET unset: flag() returned argv[i+1] === undefined, which
+  // `?? 'sdk'` could not tell apart from "the flag was never given".
+  it('rejects --emit with no value instead of falling through to the default target', () => {
+    const error = runExpectingFailure(['compile', '-', '--emit'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/requires a value/)
+    expect(error.stdout ?? '').not.toMatch(/programQuestions/)
+  })
+
+  it('rejects -o with no value instead of quietly printing to stdout', () => {
+    const error = runExpectingFailure(['compile', '-', '--emit', 'json', '-o'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/requires a value/)
+  })
+
+  it('rejects a flag-shaped -o value instead of creating a file named after a flag', () => {
+    const error = runExpectingFailure(['compile', '-', '--emit', 'json', '-o', '--emit'],
+      JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/requires a value/)
+    // The old behaviour wrote the artifact to a file literally named `--emit` in the
+    // working directory, which for this suite is the repo root. Clean up before asserting
+    // so a regression cannot leave an untracked file behind.
+    const stray = existsSync('--emit')
+    if (stray) rmSync('--emit')
+    expect(stray).toBe(false)
+  })
+
+  // The fence label is the name `parseLiftResponse` checks every `source.file` against, and
+  // it compares against the path it is handed. Labelling the fence with the basename told
+  // the lifter the file was "AGENTS.md" while the caller verifies against "docs/AGENTS.md",
+  // so every decision came back provenance_file_unknown.
+  it('labels the lifted document with the path as given, not just its basename', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    mkdirSync(join(dir, 'docs'))
+    const f = join(dir, 'docs', 'AGENTS.md')
+    writeFileSync(f, '# Rules\nNever delete tracked files.')
+    const out = run(['compile', f, '--lift'])
+    expect(out).toContain(`must be exactly "${f}"`)
+    expect(out).toContain(`--- ${f} ---`)
   })
 
   // Fix round 1 gave `read` a clean message; the write side kept throwing a raw ENOENT
@@ -329,5 +440,59 @@ describe('jevc emit-policy', () => {
     const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', f])
     expect(error.stderr).toMatch(/is not valid JSON/)
     expect(error.stderr).not.toMatch(/at Object\.|node:internal/)
+  })
+
+  // Fix round 3: JSON that parses but is not a Program was cast to `Program` and handed
+  // straight to validateProgram/lintProgram, which dereference `p.decisions`,
+  // `p.reduce.rules`, `rule.when`, `d.instructions` and `d.uncertain` with no guard. Every
+  // one of these escaped as a raw Node stack trace naming dist/ir.js. The inputs are not
+  // exotic: README says emit-policy reads "the shape `--lift` asks the agent to produce",
+  // i.e. model-generated JSON, and `jevc compile --emit json -o request.json` writes a
+  // JSON file that is NOT a Program.
+  const notAProgram: Array<[string, unknown]> = [
+    ['an unrelated JSON object', { hello: 'world' }],
+    ['a bare null', null],
+    ['a bare array', []],
+    ['a Program with no reduce', { decisions: [], residual: '', dropped: [] }],
+    ['a decision that is a string', { ...program, decisions: ['outside_repo'] }],
+    ['a decision missing instructions', { ...program, decisions: [{ id: 'x', kind: 'noul' }] }],
+    ['a rule whose `when` is an object, not an array', { ...program, reduce: { kind: 'rules',
+      rules: [{ when: { id: 'outside_repo', op: 'gte', value: 0.8 }, then: 'deny' }], otherwise: 'allow' } }],
+    ['an `uncertain` that is a string', { ...program, decisions: [
+      { id: 'outside_repo', kind: 'noul', instructions: 'Outside?', uncertain: 'maybe' }] }],
+  ]
+  for (const [label, bad] of notAProgram) {
+    it(`reports ${label} as a message, not a raw stack trace`, () => {
+      const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(bad)])
+      expect(error.status).not.toBe(0)
+      expect(error.stderr).not.toMatch(/at Object\.|at Function\.|node:internal|TypeError/)
+      expect(error.stderr).toMatch(/is not a jevc program/)
+    })
+  }
+
+  // The crash happened before the target name was looked at, so an unknown target was
+  // reported as a TypeError from the validator rather than as an unknown target.
+  it('still names the known targets when the program is also malformed', () => {
+    const error = runExpectingFailure(['emit-policy', '--for', 'nope', write({ hello: 'world' })])
+    expect(error.stderr).not.toMatch(/at Object\.|node:internal|TypeError/)
+  })
+
+  // Same root cause as compile's `--emmit`: an unrecognised flag name was ignored, so
+  // `--output policy.yaml` printed the policy to stdout at exit 0 and left whatever stale
+  // policy was already on disk in place — for bouncer, a gate nobody regenerated.
+  it('rejects --output rather than silently printing the policy to stdout', () => {
+    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'policy.yaml')
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(), '--output', dest])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/--output/)
+    expect(existsSync(dest)).toBe(false)
+    expect(error.stdout ?? '').not.toMatch(/version: 1/)
+  })
+
+  it('rejects a trailing -o rather than printing the policy to stdout', () => {
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(), '-o'])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/requires a value/)
+    expect(error.stdout ?? '').not.toMatch(/version: 1/)
   })
 })

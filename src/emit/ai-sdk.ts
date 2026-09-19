@@ -5,7 +5,20 @@ import type { Decision, Program } from '../ir.js'
 // JSON.stringify, not a hand-rolled quoter: EntryType is `string | object | array | null`,
 // so String(v) renders "[object Object]" silently, and a quoter that only escapes quotes
 // and backslashes emits a literal newline inside a string literal. Same ruling as native.ts.
-const idKey = (id: string) => (/^[A-Za-z_$][\w$]*$/.test(id) ? id : JSON.stringify(id))
+//
+// `__proto__` gets a COMPUTED key, and quoting it would not have been enough: in an object
+// initializer `{ __proto__: v }` and `{ "__proto__": v }` are both the prototype setter,
+// so the entry re-parents the object instead of becoming an own property and the question
+// vanishes from the emitted map entirely — never sent to the API, never answered, and the
+// rule that names it can never fire, at exit 0. `{ ["__proto__"]: v }` is an ordinary
+// property definition, and it survives `as const` (the key still narrows). Reachable
+// without malice: from-schema.ts uses the JSON Schema property name as the id, and
+// JSON.parse does create an own `__proto__` key. Applies to option names too, not just
+// decision ids — a choice that loses an option is a choice `is` can never match.
+const idKey = (id: string) =>
+  id === '__proto__' ? `[${JSON.stringify(id)}]`
+  : /^[A-Za-z_$][\w$]*$/.test(id) ? id
+  : JSON.stringify(id)
 
 // Every JS line terminator, LS and PS included: a `//` comment ends at any of them.
 // Residual is prose lifted from a human document, so it arrives with whatever line
@@ -137,9 +150,36 @@ function uncertain(a: Record<string, any>, id: string, confidence: Record<string
   return confidenceFrom(ans, confidence[id]) < rule.belowConfidence!
 }
 
+/**
+ * result.providerMetadata.typesafe.confidence, narrowed. The field is statically
+ * JSONObject, so reaching it by hand does not typecheck — this is the guard jevc has to
+ * supply rather than make every caller write a cast. An ABSENT entry means "the wire
+ * returned no confidence for this question, recompute it from the distribution", which
+ * is why non-numbers are dropped instead of coerced: absence must never read as 0.
+ *
+ *   const result  = await experimental_evaluate({ model, state, questions: programQuestions })
+ *   const verdict = reduce(result.answers, confidenceOf(result))
+ */
+export function confidenceOf(result: { providerMetadata?: Record<string, unknown> } | undefined): Record<string, number> {
+  const typesafe = result?.providerMetadata?.['typesafe'] as { confidence?: unknown } | undefined
+  const c = typesafe?.confidence
+  if (!c || typeof c !== 'object') return {}
+  return Object.fromEntries(
+    Object.entries(c as Record<string, unknown>).filter(([, v]) => typeof v === 'number'),
+  ) as Record<string, number>
+}
+
 /** The verdict is computed here, in code — never asked of the model.
- *  \`confidence\` is result.providerMetadata.typesafe.confidence; pass it when you have it. */
-export function reduce(a: Record<string, any>, confidence: Record<string, number> = {}): string {
+ *  \`confidence\` is required on purpose. It used to default to \`{}\`, which made
+ *  \`reduce(result.answers)\` — the short call, the one that compiles — evaluate every
+ *  choice/score threshold and every belowConfidence rule against confidenceFrom's
+ *  top-minus-second MARGIN instead of the model's own confidence. Those are different
+ *  statistics, not approximations of each other: on the backend's own verified answer
+ *  {allow 0.42, block 0.35, ask 0.23} the margin is 0.07 and the reported confidence is
+ *  0.13, which lands on opposite sides of a 0.10 threshold. Recomputation is the
+ *  documented fallback for a question the wire returned no confidence for — per-question,
+ *  inside confidenceFrom — never the default for all of them. */
+export function reduce(a: Record<string, any>, confidence: Record<string, number>): string {
 ${rules}
   return ${JSON.stringify(p.reduce.otherwise)}
 }
