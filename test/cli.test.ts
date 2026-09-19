@@ -1,8 +1,23 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { writeFileSync, mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+/** Scratch directory for one test. Every temp dir in this file is written, read and
+ *  asserted on entirely within the test that made it, so removal is deferred to afterAll:
+ *  that runs whether the test passed, failed or threw during its own setup, which a
+ *  try/finally inside the test body would not. Nothing is removed mid-file, so no cleanup
+ *  can land between a CLI write and the assertion that reads it back. */
+const tmpDirs: string[] = []
+const mkTmp = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
+})
 
 type ExecError = Error & { stderr?: string; stdout?: string; status?: number | null }
 
@@ -23,7 +38,7 @@ const runExpectingFailure = (args: string[], input?: string): ExecError => {
 
 describe('jevc compile', () => {
   it('compiles a JSON Schema from a file to TypeScript', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const f = join(dir, 's.json')
     writeFileSync(f, JSON.stringify({ type: 'object', properties: {
       is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
@@ -37,7 +52,7 @@ describe('jevc compile', () => {
   })
 
   it('emits a lift request for a markdown file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const f = join(dir, 'AGENTS.md')
     writeFileSync(f, '# Rules\nNever push to main.')
     const out = run(['compile', f, '--lift'])
@@ -92,7 +107,7 @@ describe('jevc compile', () => {
   // Fix round 1, item 3: an unreadable file must fail with a clean message naming the path,
   // not a raw node:fs stack trace.
   it('reports an unreadable file with a clean message instead of a raw stack trace', () => {
-    const missing = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'does-not-exist.json')
+    const missing = join(mkTmp(), 'does-not-exist.json')
     const error = runExpectingFailure(['compile', missing])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toContain(missing)
@@ -100,7 +115,7 @@ describe('jevc compile', () => {
   })
 
   it('reports a directory passed as a file with a clean message instead of a raw stack trace', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const error = runExpectingFailure(['compile', dir])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toContain(dir)
@@ -110,7 +125,7 @@ describe('jevc compile', () => {
   // Fix round 1, item 4: -o is the documented short flag for output path; only --o worked
   // before this fix.
   it('writes output to the path given by -o', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const schemaFile = join(dir, 's.json')
     writeFileSync(schemaFile, JSON.stringify({ type: 'object', properties: {
       is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
@@ -138,7 +153,7 @@ describe('jevc compile', () => {
   })
 
   it('accepts -o=<path> for the short flag too', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const schemaFile = join(dir, 's.json')
     writeFileSync(schemaFile, JSON.stringify({ type: 'object', properties: {
       is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
@@ -216,7 +231,7 @@ describe('jevc compile', () => {
       } }, 'tags.spam'],
   ] as const) {
     it(`refuses ${label} instead of writing a guard that never asks it`, () => {
-      const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+      const dir = mkTmp()
       const out = join(dir, 'guard.json')
       const error = runExpectingFailure(
         ['compile', '-', '--emit', 'json', '-o', out], JSON.stringify(schema))
@@ -319,7 +334,7 @@ describe('jevc compile', () => {
   // the lifter the file was "AGENTS.md" while the caller verifies against "docs/AGENTS.md",
   // so every decision came back provenance_file_unknown.
   it('labels the lifted document with the path as given, not just its basename', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     mkdirSync(join(dir, 'docs'))
     const f = join(dir, 'docs', 'AGENTS.md')
     writeFileSync(f, '# Rules\nNever delete tracked files.')
@@ -331,7 +346,7 @@ describe('jevc compile', () => {
   // Fix round 1 gave `read` a clean message; the write side kept throwing a raw ENOENT
   // with a node:fs stack. Both ends of the same I/O are user error, not a jevc bug.
   it('reports an unwritable -o as a message instead of a raw stack trace', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jevc-'))
+    const dir = mkTmp()
     const schemaFile = join(dir, 's.json')
     writeFileSync(schemaFile, JSON.stringify({ type: 'object', properties: {
       is_urgent: { type: 'boolean', description: 'Urgent?' } } }))
@@ -350,7 +365,7 @@ describe('jevc check', () => {
 
   // Fix round 1, item 3.
   it('reports a nonexistent --fixtures dir with a clean message instead of a raw stack trace', () => {
-    const missing = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'no-such-dir')
+    const missing = join(mkTmp(), 'no-such-dir')
     const error = runExpectingFailure(['check', '--fixtures', missing])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toContain(missing)
@@ -406,7 +421,7 @@ describe('jevc emit-policy', () => {
     residual: '', dropped: [],
   }
   const write = (p: unknown = program) => {
-    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program.json')
+    const f = join(mkTmp(), 'program.json')
     writeFileSync(f, JSON.stringify(p))
     return f
   }
@@ -419,7 +434,7 @@ describe('jevc emit-policy', () => {
 
   it('writes to -o', () => {
     const f = write()
-    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'policy.yaml')
+    const dest = join(mkTmp(), 'policy.yaml')
     run(['emit-policy', '--for', 'bouncer', f, '-o', dest])
     expect(readFileSync(dest, 'utf8')).toMatch(/version: 1/)
   })
@@ -445,19 +460,19 @@ describe('jevc emit-policy', () => {
   // file it was about to write (usually ENOENT) instead of the program it was given.
   it('takes the program from the positional argument, not the first .json on the line', () => {
     const f = write()
-    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'out.json')
+    const dest = join(mkTmp(), 'out.json')
     run(['emit-policy', '--for', 'bouncer', '-o', dest, f])
     expect(readFileSync(dest, 'utf8')).toMatch(/version: 1/)
   })
 
   it('accepts a program file that is not named *.json', () => {
-    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program')
+    const f = join(mkTmp(), 'program')
     writeFileSync(f, JSON.stringify(program))
     expect(run(['emit-policy', '--for', 'bouncer', f])).toMatch(/version: 1/)
   })
 
   it('reports an unwritable -o as a message instead of a raw stack trace', () => {
-    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'no-such-dir', 'policy.yaml')
+    const dest = join(mkTmp(), 'no-such-dir', 'policy.yaml')
     const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(), '-o', dest])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toContain(dest)
@@ -490,7 +505,7 @@ describe('jevc emit-policy', () => {
   })
 
   it('reports invalid JSON cleanly', () => {
-    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program.json')
+    const f = join(mkTmp(), 'program.json')
     writeFileSync(f, '{not json')
     const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', f])
     expect(error.stderr).toMatch(/is not valid JSON/)
@@ -536,7 +551,7 @@ describe('jevc emit-policy', () => {
   // `--output policy.yaml` printed the policy to stdout at exit 0 and left whatever stale
   // policy was already on disk in place — for bouncer, a gate nobody regenerated.
   it('rejects --output rather than silently printing the policy to stdout', () => {
-    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'policy.yaml')
+    const dest = join(mkTmp(), 'policy.yaml')
     const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(), '--output', dest])
     expect(error.status).not.toBe(0)
     expect(error.stderr).toMatch(/--output/)
