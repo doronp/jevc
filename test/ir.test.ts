@@ -85,6 +85,148 @@ describe('validateProgram', () => {
   })
 })
 
+// Fix round 2. One defect wearing several hats: a Program only ever exists at runtime as a
+// bare cast of parsed JSON (cli.ts:197, from-prompt.ts:172, runtime.ts:119), so the
+// TypeScript unions below constrain nothing that actually arrives, and validateProgram used
+// to re-derive by hand only the invariants someone had thought of. Each case here is a
+// member of that enumeration's complement, and each one reaches the wire at exit 0.
+describe('validateProgram — invariants the type system states and the cast discards', () => {
+  /** The cast IS the test: it is the same one every entry point performs on parsed JSON. */
+  const untyped = (p: unknown): Program => p as Program
+
+  it('rejects a condition op outside the vocabulary, which the runtime executes as lte', () => {
+    // `gt` is the plausible model variant of `gte`. Unguarded it reaches runtime.ts:43 and
+    // all five emitters, where anything that is not 'gte' runs as '<=' — verified through
+    // the shipped CLI: runReducer returned deny for noul 0.02 and allow for noul 0.97, and
+    // `emit-policy --for bouncer` wrote `p: <=0.8` under `then: deny` at exit 0.
+    const p = untyped({ ...prog(), reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_destructive', op: 'gt', value: 0.8 }], then: 'deny' }], otherwise: 'allow' } })
+    const issues = validateProgram(p)
+    expect(issues.map(i => i.code)).toEqual(['condition_op_unknown'])
+    expect(issues[0].severity).toBe('error')
+  })
+
+  it('rejects a decision kind outside the three primitives, which is emitted as a choice', () => {
+    const p = untyped({ ...prog(), decisions: [
+      { id: 'is_destructive', kind: 'boolean', instructions: 'Does the command delete data?' }] })
+    expect(validateProgram(p).map(i => i.code)).toEqual(['decision_kind_unknown'])
+  })
+
+  it('rejects criteria whose shape contradicts the kind', () => {
+    // The score throws in toQuestion three layers downstream; the choice does not throw at
+    // all, it ships the options "0" and "1".
+    const p = untyped({ ...prog(),
+      decisions: [
+        { id: 'department', kind: 'choice', instructions: 'Which team?', criteria: ['billing', 'technical'] },
+        { id: 'severity', kind: 'score', instructions: 'How severe?', criteria: { low: 'a', high: 'b' } },
+        { id: 'confirmed', kind: 'noul', instructions: 'Confirmed?', criteria: ['yes', 'no'] },
+      ],
+      reduce: { kind: 'rules', rules: [], otherwise: 'allow' } })
+    expect(validateProgram(p).map(i => `${i.code} ${i.path}`)).toEqual([
+      'criteria_shape decisions.department.criteria',
+      'criteria_shape decisions.severity.criteria',
+      'criteria_shape decisions.confirmed.criteria',
+    ])
+  })
+
+  it('rejects `is` against a noul or a score, where no answer can ever match it', () => {
+    const noul = prog({ reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_destructive', op: 'is', value: 'true' }], then: 'deny' }], otherwise: 'allow' } })
+    expect(validateProgram(noul).map(i => i.code)).toEqual(['is_needs_choice'])
+    const score = prog({ reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'blast_radius', op: 'is', value: 'whole repo' }], then: 'deny' }], otherwise: 'allow' } })
+    expect(validateProgram(score).map(i => i.code)).toEqual(['is_needs_choice'])
+  })
+
+  it('keeps gte against a choice legal, because it tests the answer\'s confidence', () => {
+    const p = prog()
+    p.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team?',
+      criteria: { billing: 'payments', technical: 'bugs' } })
+    p.reduce = { kind: 'rules', rules: [
+      { when: [{ id: 'department', op: 'gte', value: 0.9 }], then: 'route' }], otherwise: 'ask' }
+    expect(validateProgram(p)).toEqual([])
+  })
+
+  it('rejects an uncertain that declares neither band nor belowConfidence', () => {
+    // Strictly worse than omitting the field: uncertaintyOf defaults only when it is
+    // ABSENT, so isUncertain reaches a declared-but-empty rule and throws mid-evaluation.
+    const p = untyped({ ...prog(), decisions: [
+      { id: 'is_destructive', kind: 'noul', instructions: 'Does the command delete data?', uncertain: {} }] })
+    expect(validateProgram(p).map(i => i.code)).toEqual(['uncertain_empty'])
+  })
+
+  it('rejects a noul threshold outside 0..1, dead in one direction and unconditional in the other', () => {
+    // Level-index thresholds are range-checked against a score and were not against a
+    // noul, whose answer is a probability. `gte 3` can never fire; `lte 3` always does —
+    // verified: noul 0.99 fell through a `lte 3` rule to the verdict meant for low values.
+    const dead = prog({ reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_destructive', op: 'gte', value: 3 }], then: 'deny' }], otherwise: 'allow' } })
+    expect(validateProgram(dead).map(i => i.code)).toEqual(['probability_threshold_out_of_range'])
+    const unconditional = prog({ reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_destructive', op: 'lte', value: 3 }], then: 'allow' }], otherwise: 'deny' } })
+    expect(validateProgram(unconditional).map(i => i.code)).toEqual(['probability_threshold_out_of_range'])
+  })
+
+  it('rejects a confidence threshold on a choice outside 0..1', () => {
+    const p = prog()
+    p.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team?',
+      criteria: { billing: 'payments', technical: 'bugs' } })
+    p.reduce = { kind: 'rules', rules: [
+      { when: [{ id: 'department', op: 'gte', value: 2 }], then: 'route' }], otherwise: 'ask' }
+    expect(validateProgram(p).map(i => i.code)).toEqual(['probability_threshold_out_of_range'])
+  })
+
+  it('rejects a reducer with no otherwise, which makes the verdict literally undefined', () => {
+    // runReducer returns undefined, which every `if (verdict === "deny")` caller reads as
+    // permission, and emitNative writes it into a function declared `: string`.
+    const { otherwise: _dropped, ...noFallthrough } = prog().reduce
+    const p = untyped({ ...prog(), reduce: noFallthrough })
+    expect(validateProgram(p).map(i => `${i.code} ${i.path}`)).toEqual([
+      'reduce_verdict_missing reduce.otherwise',
+    ])
+  })
+
+  it('rejects a rule that matches and names no verdict', () => {
+    const p = untyped({ ...prog(), reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'is_destructive', op: 'gte', value: 0.8 }] }], otherwise: 'allow' } })
+    expect(validateProgram(p).map(i => `${i.code} ${i.path}`)).toEqual([
+      'reduce_verdict_missing reduce.rules[0].then',
+    ])
+  })
+
+  it('rejects an unknown reducer kind rather than running it as first-match-wins', () => {
+    const p = untyped({ ...prog(), reduce: { ...prog().reduce, kind: 'weights' } })
+    expect(validateProgram(p).map(i => i.code)).toEqual(['reduce_kind_unknown'])
+  })
+
+  // The wire limits belong to the Program, not to one emit path: validateRequest enforces
+  // them, but only `--emit=json` runs it, so `jevc compile` on `{"enum":[1,"1"]}` — two
+  // enum members that collapse to one criteria key — emitted a 1-option choice at exit 0
+  // on the default native path. The API answers a 1-option choice at confidence 1.0.
+  it('rejects a choice outside the 2..255 option range', () => {
+    const one = prog()
+    one.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team?',
+      criteria: { billing: 'payments' } })
+    expect(validateProgram(one).map(i => i.code)).toEqual(['choice_too_few_options'])
+    const many = prog()
+    many.decisions.push({ id: 'department', kind: 'choice', instructions: 'Which team?',
+      criteria: Object.fromEntries(Array.from({ length: 256 }, (_, i) => [`option_${i}`, null])) })
+    expect(validateProgram(many).map(i => i.code)).toEqual(['choice_too_many_options'])
+  })
+
+  it('rejects a score outside the 2..10 level range', () => {
+    const one = prog({ decisions: [
+      { id: 'blast_radius', kind: 'score', instructions: 'How wide?', criteria: ['single file'] }],
+      reduce: { kind: 'rules', rules: [], otherwise: 'allow' } })
+    expect(validateProgram(one).map(i => i.code)).toEqual(['score_too_few_levels'])
+    const eleven = prog({ decisions: [
+      { id: 'blast_radius', kind: 'score', instructions: 'How wide?',
+        criteria: Array.from({ length: 11 }, (_, i) => `level ${i}`) }],
+      reduce: { kind: 'rules', rules: [], otherwise: 'allow' } })
+    expect(validateProgram(eleven).map(i => i.code)).toEqual(['score_too_many_levels'])
+  })
+})
+
 describe('lintProgram — the decomposition law', () => {
   it('rejects a collapsed verdict question', () => {
     const p = prog()

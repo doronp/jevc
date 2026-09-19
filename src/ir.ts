@@ -43,6 +43,18 @@ export const VERDICT_WORDS = new Set([
 
 const DEFAULT_NOUL_BAND: [number, number] = [0.35, 0.65]
 
+/**
+ * The closed op vocabulary. `Condition`'s union constrains literals written in TypeScript
+ * and nothing else: every Program that reaches this function at runtime is a bare cast of
+ * parsed JSON (cli.ts:197, and parseLiftResponse on a model's output), so an op outside the
+ * vocabulary is a live input rather than a type error. It has to be refused here because
+ * runtime.ts:43 and all five emitters end in the same `op === 'gte' ? >= : <=` ternary:
+ * anything that is not 'gte' executes as 'lte' — the exact inverse of the rule, at exit 0.
+ * toolgate's emitter already refuses an op it does not recognise (policy/toolgate.ts:44),
+ * so the fallthrough everywhere else is an oversight, not a decision.
+ */
+const CONDITION_OPS: ReadonlySet<string> = new Set(['gte', 'lte', 'is', 'uncertain'])
+
 export function validateProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
   const err = (code: string, path: string, message: string) =>
@@ -56,9 +68,60 @@ export function validateProgram(p: Program): ValidationIssue[] {
     }
     seen.add(d.id)
 
-    if ((d.kind === 'choice' || d.kind === 'score') && !d.criteria) {
+    // `kind` is the other closed vocabulary a cast cannot enforce, and it fails the same
+    // silent way as an unknown op: toQuestion (emit/json.ts:4-19) tests noul, then score,
+    // then treats EVERYTHING else as a choice, so `kind: "boolean"` ships as a choice
+    // question. Nothing after this point means anything if the kind is not one of three.
+    if (d.kind !== 'noul' && d.kind !== 'choice' && d.kind !== 'score') {
+      err('decision_kind_unknown', `decisions.${d.id}`,
+        `"${d.id}" has kind "${String(d.kind)}"; the primitives are noul, choice and score. An unrecognised kind is emitted as a choice question rather than refused.`)
+      continue
+    }
+
+    // The shape of `criteria` IS the kind — the same three rows buildLiftRequest states to
+    // the lifter as prose (its TYPE RULES paragraph), enforced. Nothing between this gate
+    // and the wire re-checks it: toQuestion throws two layers downstream on a score that
+    // is not an array, silently DROPS an array handed to a noul, and silently ships an
+    // array handed to a choice as the options "0", "1", "2".
+    if (d.kind === 'noul') {
+      if (Array.isArray(d.criteria)) {
+        err('criteria_shape', `decisions.${d.id}.criteria`,
+          `"${d.id}" is a noul whose criteria is an array; a noul takes {true, false} descriptions. An array is not sent at all — the question reaches the model with neither side described.`)
+      }
+    } else if (!d.criteria) {
       err('criteria_missing', `decisions.${d.id}`,
         `"${d.id}" is a ${d.kind} decision with no criteria. A noul may omit criteria, but ${d.kind} decisions require it (options for choice, levels for score).`)
+    } else if (d.kind === 'choice') {
+      if (Array.isArray(d.criteria)) {
+        err('criteria_shape', `decisions.${d.id}.criteria`,
+          `"${d.id}" is a choice whose criteria is an array; a choice takes a map of option name to description. An array reaches the API as the options "0", "1", "2" — options no one named, which the reducer's \`is\` can never match.`)
+      } else {
+        // The wire limits are a property of the Program, not of one emit path.
+        // validateRequest enforces them on the request it builds, but only `--emit=json`
+        // ever runs that, so the default native path shipped a 1-option choice at exit 0.
+        const n = Object.keys(d.criteria).length
+        if (n < 2) {
+          err('choice_too_few_options', `decisions.${d.id}.criteria`,
+            `Choice "${d.id}" has ${n} option(s); at least 2 are required. The API accepts one option with 200 and returns it at confidence 1.0.`)
+        }
+        if (n > 255) {
+          err('choice_too_many_options', `decisions.${d.id}.criteria`,
+            `Choice "${d.id}" has ${n} options; the maximum is 255.`)
+        }
+      }
+    } else if (!Array.isArray(d.criteria)) {
+      err('criteria_shape', `decisions.${d.id}.criteria`,
+        `"${d.id}" is a score whose criteria is an object; a score takes an ORDERED ARRAY of level descriptions, because its answer is an index into that array (0..n-1).`)
+    } else {
+      const n = d.criteria.length
+      if (n < 2) {
+        err('score_too_few_levels', `decisions.${d.id}.criteria`,
+          `Score "${d.id}" has ${n} level(s); at least 2 are required. The API accepts a single level with 200 and returns a constant 0.0 at confidence 1.0.`)
+      }
+      if (n > 10) {
+        err('score_too_many_levels', `decisions.${d.id}.criteria`,
+          `Score "${d.id}" has ${n} levels; the API rejects more than 10.`)
+      }
     }
 
     if (d.kind === 'noul' && d.uncertain && 'belowConfidence' in d.uncertain) {
@@ -69,22 +132,71 @@ export function validateProgram(p: Program): ValidationIssue[] {
       err('band_needs_noul', `decisions.${d.id}.uncertain`,
         'A band applies to a noul. Use belowConfidence for choice and score.')
     }
+    // An `uncertain` that names neither is strictly worse than no `uncertain` at all:
+    // uncertaintyOf's default applies only when the field is ABSENT, so isUncertain
+    // (runtime.ts:30/33) reaches a declared-but-empty rule and throws instead of
+    // answering. A guardrail that throws is a guardrail that is off.
+    if (d.uncertain && !('band' in d.uncertain) && !('belowConfidence' in d.uncertain)) {
+      err('uncertain_empty', `decisions.${d.id}.uncertain`,
+        `"${d.id}" declares \`uncertain\` with neither band nor belowConfidence. Omit the field to take the default (band ${JSON.stringify(DEFAULT_NOUL_BAND)} for a noul, belowConfidence 0.5 otherwise); an empty one throws at evaluation time.`)
+    }
+  }
+
+  // The reducer is the verdict, and both of its unguarded fields fail OPEN — the one
+  // direction a guardrail must not fail. With no `otherwise`, runReducer returns undefined
+  // (runtime.ts:47) and every `verdict === 'deny'` test reads that as permission; emitNative
+  // writes the same undefined into a function declared `: string` (emit/native.ts:62-64),
+  // so the generated file does not compile. An unknown `kind` is executed as if it were
+  // "rules" rather than refused, which is the unknown-op failure one level up.
+  if (p.reduce.kind !== 'rules') {
+    err('reduce_kind_unknown', 'reduce.kind',
+      `Unknown reducer kind "${String(p.reduce.kind)}". The only reducer is "rules" (first match wins), and anything else is run as if it were that.`)
+  }
+  if (typeof p.reduce.otherwise !== 'string' || p.reduce.otherwise === '') {
+    err('reduce_verdict_missing', 'reduce.otherwise',
+      'The reducer has no `otherwise` verdict. Every rule can miss, and the fallthrough is what the caller gets when they all do — without it the verdict is undefined, which is not a verdict.')
   }
 
   const byId = new Map(p.decisions.map(d => [d.id, d]))
   for (const [ri, rule] of p.reduce.rules.entries()) {
+    if (typeof rule.then !== 'string' || rule.then === '') {
+      err('reduce_verdict_missing', `reduce.rules[${ri}].then`,
+        `Rule ${ri} names no verdict. A rule that matches and returns undefined is worse than no rule: it also stops every later rule from being tried.`)
+    }
     for (const c of rule.when) {
+      // Before the id lookup: an op outside the vocabulary is wrong whether or not the
+      // decision it names exists, and it is the one error that inverts a verdict silently.
+      if (!CONDITION_OPS.has(c.op)) {
+        err('condition_op_unknown', `reduce.rules[${ri}]`,
+          `Condition op "${String(c.op)}" on "${c.id}" is not one of gte, lte, is, uncertain. The runtime and every emitter end in \`op === 'gte' ? >= : <=\`, so an unknown op is not refused — it runs as lte, inverting the rule.`)
+      }
       const d = byId.get(c.id)
       if (!d) {
         err('reduce_unknown_id', `reduce.rules[${ri}]`,
           `Reducer references unknown decision "${c.id}".`)
         continue
       }
-      if (d.kind === 'score' && (c.op === 'gte' || c.op === 'lte')) {
-        const levels = Array.isArray(d.criteria) ? d.criteria.length : 0
-        if (levels && (c.value < 0 || c.value > levels - 1)) {
-          err('score_threshold_out_of_range', `reduce.rules[${ri}]`,
-            `Threshold ${c.value} is outside level-index space for "${c.id}" (${levels} levels => 0..${levels - 1}). Score is not a 0..1 value.`)
+      // `is` compares the chosen option of a choice (runtime.ts:41, via choiceOf), which
+      // is undefined for any other kind: the comparison is false for every possible
+      // answer, so the rule is dead and the program only reads as though it gates. The
+      // reverse pairing is NOT an error — gte/lte against a choice tests its confidence.
+      if (c.op === 'is' && d.kind !== 'choice') {
+        err('is_needs_choice', `reduce.rules[${ri}]`,
+          `\`is\` compares a choice's chosen option, but "${c.id}" is a ${d.kind}. The condition is false for every answer the model can give, so the rule can never fire.`)
+      }
+      if (c.op === 'gte' || c.op === 'lte') {
+        if (d.kind === 'score') {
+          const levels = Array.isArray(d.criteria) ? d.criteria.length : 0
+          if (levels && (c.value < 0 || c.value > levels - 1)) {
+            err('score_threshold_out_of_range', `reduce.rules[${ri}]`,
+              `Threshold ${c.value} is outside level-index space for "${c.id}" (${levels} levels => 0..${levels - 1}). Score is not a 0..1 value.`)
+          }
+        } else if (!(c.value >= 0 && c.value <= 1)) {
+          // Stated as the range the threshold must be IN, not the range it must avoid: a
+          // value that is not a number at all compares false against everything, so
+          // `< 0 || > 1` would pass it — and a hand-written program file is where that arrives.
+          err('probability_threshold_out_of_range', `reduce.rules[${ri}]`,
+            `Threshold ${c.value} is outside 0..1 for "${c.id}". A noul answer IS a probability and a threshold against a choice compares its confidence, so both live in 0..1: a gte above 1 is a rule that can never fire, and its mirror lte fires on every answer. Score level indices are the only thresholds that leave this range.`)
         }
       }
       if (d.kind === 'choice' && c.op === 'is') {
