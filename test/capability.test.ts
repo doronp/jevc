@@ -142,6 +142,28 @@ describe('canEmit', () => {
     expect(canEmit(p, 'bouncer')).toEqual([])
   })
 
+  // A target that cannot emit the question at all has no legend to drop. Reporting both
+  // makes the refusal look like two problems and buries the one that matters.
+  it('does not warn about a dropped legend for a kind it is already refusing', () => {
+    expect(canEmit(mixed, 'bouncer').filter(i => i.path === 'decisions.radius').map(i => i.code))
+      .toEqual(['kind_unsupported'])
+  })
+
+  // toolgate's thresholds are YAML NUMBERS written by stringify(), not strings matched
+  // against a grammar: 1e-7 round-trips through the yaml package both ends use. The
+  // serialised-form constraint belongs to bouncer, whose p is a string with the grammar
+  // `(>=|>|<=|<)\s*(\d*\.?\d+)` and no exponent.
+  it('accepts an exponential threshold on toolgate, which reads thresholds as numbers', () => {
+    const tiny: Program = { ...orShaped, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'destructive', op: 'gte', value: 1e-7 }], then: 'deny' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 1e-7 }], then: 'deny' },
+      { when: [{ id: 'destructive', op: 'gte', value: 1e-8 }], then: 'ask' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 1e-8 }], then: 'ask' },
+    ], otherwise: 'allow' } }
+    expect(canEmit(tiny, 'toolgate')).toEqual([])
+    expect(canEmit(tiny, 'bouncer').every(i => i.code === 'threshold_unrepresentable')).toBe(true)
+  })
+
   it('warns that ai-sdk drops the score legend', () => {
     const issues = canEmit(mixed, 'ai-sdk')
     expect(issues.every(i => i.severity === 'warn')).toBe(true)
@@ -152,6 +174,44 @@ describe('canEmit', () => {
     const p: Program = { ...mixed }
     p.decisions[1] = { ...p.decisions[1], uncertain: { belowConfidence: 0.7 } }
     expect(canEmit(p, 'ai-sdk').some(i => i.code === 'confidence_derived')).toBe(true)
+  })
+
+  // `when: []` is an empty conjunction, and `[].every(...)` is true — runReducer fires
+  // such a rule unconditionally. bouncer's emitter read `when[0]` and crashed with a
+  // TypeError on `undefined.op`; toolgate's saw no condition and silently dropped the
+  // rule from its threshold accounting. Neither target has a way to say "always", so
+  // both refuse; the code targets say it exactly and are accepted.
+  it('rejects a conditionless rule on the policy targets, which cannot express one', () => {
+    const always: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+      { when: [], then: 'deny' }], otherwise: 'allow' } }
+    expect(canEmit(always, 'bouncer')[0].code).toBe('rule_always_matches')
+    expect(canEmit(always, 'toolgate')[0].code).toBe('rule_always_matches')
+    expect(canEmit(always, 'sdk')).toEqual([])
+    expect(canEmit(always, 'ai-sdk')).toEqual([])
+  })
+
+  // A Program with no decisions compiles to a gate that asks nothing and therefore
+  // always returns `otherwise`. Every target accepts it in its own way and none of them
+  // complains: bouncer emits `questions: {}`, toolgate emits a thresholds block that
+  // applies to its four built-ins only, and langchain's TypeSafeClassifier.questions is
+  // Field(min_length=1), so that module raises a ValidationError the first time it runs.
+  it('rejects a program with no decisions on every target', () => {
+    const empty: Program = { decisions: [],
+      reduce: { kind: 'rules', rules: [], otherwise: 'allow' }, residual: '', dropped: [] }
+    for (const target of Object.keys(TARGETS)) {
+      expect([target, canEmit(empty, target)[0]?.code]).toEqual([target, 'no_decisions'])
+    }
+  })
+
+  // target-bouncer.md:43 — instructions is required and non-empty. An empty one makes
+  // the policy unloadable, and an unloadable policy stops resolution and routes to
+  // on_error: passthrough, which emits nothing. Same silent gate as a bad verdict.
+  it('rejects empty instructions on bouncer, whose loader requires them', () => {
+    const blank: Program = { ...nouls,
+      decisions: [{ ...nouls.decisions[0], instructions: '   ' }, nouls.decisions[1]] }
+    const issues = canEmit(blank, 'bouncer')
+    expect(issues[0].code).toBe('instructions_empty')
+    expect(issues[0].path).toBe('decisions.destructive')
   })
 
   it('rejects an unknown target by name', () => {

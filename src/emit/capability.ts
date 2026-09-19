@@ -10,9 +10,12 @@ export type TargetCapability = {
   thresholdRange?: [number, number]
   /**
    * Applied to the SERIALISED threshold, because that is what the consumer parses.
-   * bouncer's grammar is `(>=|>|<=|<)\s*(\d*\.?\d+)` — no exponent — and JS renders
-   * anything below 1e-6 exponentially, so 1e-7 is inside thresholdRange yet unloadable.
-   * Range and pattern catch different failures; both are needed.
+   * bouncer alone needs it: its `p` is a STRING with the grammar
+   * `(>=|>|<=|<)\s*(\d*\.?\d+)` — no exponent — and JS renders anything below 1e-6
+   * exponentially, so 1e-7 is inside thresholdRange yet unloadable. toolgate's
+   * thresholds are YAML numbers written by stringify() and read back by the same `yaml`
+   * package, where 1e-7 round-trips fine, so the pattern does not apply there.
+   * Range and pattern catch different failures; bouncer needs both.
    */
   thresholdPattern?: RegExp
   /**
@@ -21,12 +24,19 @@ export type TargetCapability = {
    * arbitrary strings, so a target with a fixed vocabulary must be checked against it.
    */
   verdicts?: ReadonlySet<string>
+  /**
+   * The target's loader rejects a question with empty instructions. Only bouncer
+   * documents that requirement (target-bouncer.md:43); toolgate accepts any string, and
+   * jevc's own contract lets a noul carry criteria instead of instructions, so this is
+   * not a universal rule and is not applied as one.
+   */
+  requiresInstructions?: boolean
   carriesConfidence: boolean
   carriesLegend: boolean
   note?: string
 }
 
-/** Decimal only: no exponent, no sign. Matches bouncer's and toolgate's parsers. */
+/** Decimal only: no exponent, no sign. Matches bouncer's `p` grammar. */
 const PLAIN_DECIMAL = /^\d*\.?\d+$/
 
 export const TARGETS: Record<string, TargetCapability> = {
@@ -41,11 +51,11 @@ export const TARGETS: Record<string, TargetCapability> = {
                note: 'EvaluationModelV4 drops legend and moves confidence into providerMetadata, where it may be absent.' },
   bouncer:   { name: 'bouncer', kinds: ['noul'], reducer: 'single-condition',
                thresholdRange: [0, 1], thresholdPattern: PLAIN_DECIMAL,
-               verdicts: new Set(['allow', 'ask', 'deny']),
+               verdicts: new Set(['allow', 'ask', 'deny']), requiresInstructions: true,
                carriesConfidence: false, carriesLegend: false,
                note: 'gate.questions has no type key; every question is sent as a noul. A rule names exactly one question.' },
   toolgate:  { name: 'toolgate', kinds: ['noul'], reducer: 'thresholds',
-               thresholdRange: [0, 1], thresholdPattern: PLAIN_DECIMAL,
+               thresholdRange: [0, 1],
                carriesConfidence: false, carriesLegend: false,
                note: 'validatePolicy throws unless every question is type: boolean.' },
 }
@@ -59,12 +69,29 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
 
   const out: ValidationIssue[] = []
 
+  // No decisions means no evidence: the emitted artifact asks nothing and always returns
+  // `otherwise`. Every target accepts that quietly — bouncer emits `questions: {}`,
+  // toolgate emits thresholds that apply to its own built-ins instead, langchain emits a
+  // classifier whose `questions` field is Field(min_length=1) and blows up on first use.
+  if (!p.decisions.length) {
+    out.push({ code: 'no_decisions', path: 'decisions', severity: 'error',
+      message: `Nothing to emit: the program has no decisions, so the generated artifact would ask nothing and always return "${p.reduce.otherwise}".` })
+  }
+
   for (const d of p.decisions) {
-    if (!cap.kinds.includes(d.kind)) {
+    const kindSupported = cap.kinds.includes(d.kind)
+    if (!kindSupported) {
       out.push({ code: 'kind_unsupported', path: `decisions.${d.id}`, severity: 'error',
         message: `Target "${target}" accepts only ${cap.kinds.join('/')} questions; "${d.id}" is a ${d.kind}. ${cap.note ?? ''}`.trim() })
     }
-    if (d.kind === 'score' && !cap.carriesLegend) {
+    if (cap.requiresInstructions && !d.instructions.trim()) {
+      out.push({ code: 'instructions_empty', path: `decisions.${d.id}`, severity: 'error',
+        message: `Target "${target}" requires non-empty instructions on every question; "${d.id}" has none. It would refuse to load the policy, and a policy it cannot load stops policy resolution entirely.` })
+    }
+    // Only worth saying about a question the target will actually emit: a score on a
+    // noul-only target is already refused above, and "the legend will be dropped" reads
+    // as a second, separate problem.
+    if (d.kind === 'score' && kindSupported && !cap.carriesLegend) {
       out.push({ code: 'legend_dropped', path: `decisions.${d.id}`, severity: 'warn',
         message: `Target "${target}" does not return a legend, so a bare score is uninterpretable. jevc keeps the level descriptions beside the emitted code.` })
     }
@@ -101,6 +128,15 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       // Program said allow and the emitted policy said deny. toolgate's native shape is
       // one condition per rule REPEATED per question, which first-match-wins evaluates as
       // exactly max-over-questions, and which thresholdsFor's coverage check accepts.
+      // `when: []` is an empty conjunction, and `[].every(...)` is true: the rule fires
+      // unconditionally. The code targets can write that (`true` / `True`); neither
+      // policy target can. bouncer's emitter read when[0] and threw a TypeError on
+      // `undefined.op`, and toolgate's simply never saw the rule while its coverage
+      // check went on believing every question was accounted for.
+      if (rule.when.length === 0) {
+        out.push({ code: 'rule_always_matches', path: `reduce.rules[${i}]`, severity: 'error',
+          message: `Target "${target}" needs one question per rule; this rule has no conditions, which always matches. Give it a condition, or emit to a code target.` })
+      }
       if (rule.when.length > 1) {
         out.push({ code: 'reducer_too_complex', path: `reduce.rules[${i}]`, severity: 'error',
           message: `Target "${target}" allows one question per rule; this rule tests ${rule.when.length}, which is a conjunction. Split it into one rule per question, or emit to a code target.` })
