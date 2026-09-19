@@ -21,12 +21,31 @@ import { emitJson } from './emit/json.js'
 const noAnswer = (id: string): Error =>
   new Error(`No answer for decision "${id}". Use askModel() to collect every missing answer as a reportable issue instead of throwing on the first one.`)
 
+/** The number a `gte`/`lte` condition compares, by kind. A non-finite one is refused rather
+ * than returned: every comparison against NaN or undefined is false, so a rule written to
+ * DENY never fires and the reducer falls through to the permissive `otherwise` at exit 0 —
+ * fail-open, from evidence nobody could read. `validateResponse` catches this one call
+ * earlier on the `evaluate` path (`answer_not_a_number`), so this is the backstop for the
+ * exported reducer's own callers; emit/native.ts inlines the same comparison. */
+const numberOf = (v: unknown, id: string, what: string): number => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  throw new Error(`Decision "${id}" was answered with a ${what} of ${typeof v === 'number' ? String(v) : JSON.stringify(v) ?? String(v)}, which is not a finite number. Every comparison against it is false, so the reducer would fall through to \`otherwise\` — refusing beats computing a permissive verdict from evidence that cannot be read.`)
+}
+
+/** The evidence number a threshold compares.
+ *
+ * On a CHOICE this is the CONFIDENCE, never the chosen option: `gte`/`lte` against a choice
+ * gates on how sure the model is, and `is` (via `choiceOf`) is the only condition that gates
+ * on WHAT it picked. That convention is load-bearing rather than incidental — ir.ts's
+ * `is_needs_choice` refuses `is` against a non-choice while deliberately allowing gte/lte
+ * against a choice, and `probability_threshold_out_of_range` requires such a threshold to
+ * live in 0..1 precisely because it is compared against a confidence. */
 export function value(a: Record<string, JevAnswer>, id: string): number {
   const ans = a[id]
   if (!ans) throw noAnswer(id)
-  if (ans.type === 'noul') return ans.noul
-  if (ans.type === 'score') return ans.score   // level-index space, 0..n-1
-  return ans.confidence
+  if (ans.type === 'noul') return numberOf(ans.noul, id, 'noul')
+  if (ans.type === 'score') return numberOf(ans.score, id, 'score')   // level-index space, 0..n-1
+  return numberOf(ans.confidence, id, 'confidence')
 }
 
 /** The `choice` field when the answer is a choice, `undefined` otherwise. Never throws
@@ -44,10 +63,13 @@ export function isUncertain(a: Record<string, JevAnswer>, id: string, p: Program
   const u = uncertaintyOf(d)
   if (ans.type === 'noul') {
     if (!('band' in u)) throw new Error(`Decision "${id}" is a noul but has no band.`)
-    return ans.noul > u.band[0] && ans.noul < u.band[1]
+    // Same refusal as `value`, and for a sharper reason: `NaN > 0.35 && NaN < 0.65` is
+    // false, so an unreadable answer reported CERTAIN — the escalate-to-human rule was the
+    // first thing it switched off.
+    return numberOf(ans.noul, id, 'noul') > u.band[0] && ans.noul < u.band[1]
   }
   if (!('belowConfidence' in u)) throw new Error(`Decision "${id}" needs belowConfidence.`)
-  return ans.confidence < u.belowConfidence
+  return numberOf(ans.confidence, id, 'confidence') < u.belowConfidence
 }
 
 export function runReducer(p: Program, a: Record<string, JevAnswer>): string {
@@ -185,9 +207,9 @@ export async function askModel(
       // REPLACE the API error with a TypeError about JSON and lose the status, the request id
       // and the class identity the caller is matching on. A redaction that cannot be performed
       // must degrade to withholding the body, never to destroying the error. (The other half
-      // of this — redactErrorBody strips only keys literally named `input`, so a 422 echoing
-      // the request under `state` or `request` is not redacted at all — lives in contract.ts
-      // and is reported rather than fixed here.)
+      // of this is now closed in contract.ts: `redactErrorBody` was a denylist of the single
+      // key `input`, so a 422 echoing the request under `state` or `request` — which is the
+      // shape it actually echoes — went through unredacted. It is an allowlist now.)
       let body: unknown
       try {
         body = redactErrorBody(e.body)

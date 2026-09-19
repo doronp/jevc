@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { validateRequest, validateResponse, estimateTokens, redactErrorBody } from '../src/contract.js'
+import { validateRequest, validateResponse, estimateTokens, redactErrorBody, TOKEN_BUDGET_TOTAL } from '../src/contract.js'
 import { loadFixtures, buildProgram } from '../src/check.js'
 import type { Program } from '../src/ir.js'
 
@@ -56,6 +56,31 @@ describe('validateRequest', () => {
       a: { type: 'noul', instructions: '' } } })[0].code).toBe('noul_empty')
   })
 
+  // Fix round 2.5, R1. A noul's criteria has exactly two sub-keys, `true` and `false`.
+  // Misspell one and the API silently ignores it (spec §3.1, the same rule the top-level and
+  // per-question whitelists above exist for), so the model answers with guidance for only one
+  // of its two outcomes and the author is never told their description was dropped.
+  it('rejects a misspelled noul criteria sub-key', () => {
+    const issues = validateRequest({ ...base, questions: {
+      a: { type: 'noul', instructions: 'Is it urgent?',
+        criteria: { treu: 'the ticket is urgent', false: 'the ticket is routine' } } } } as never)
+    expect(issues.map(i => [i.code, i.path]))
+      .toEqual([['unknown_field', 'questions.a.criteria.treu']])
+    expect(issues[0].severity).toBe('error')
+    expect(issues[0].message).toContain('true, false')
+  })
+
+  it('accepts both real noul criteria sub-keys, and an empty criteria object', () => {
+    // `criteria: {}` stays legal: emit-policy builds one, and an omitted description is a
+    // different (already-reported) thing from a misspelled one.
+    expect(validateRequest({ ...base, questions: {
+      a: { type: 'noul', instructions: 'x', criteria: { true: 'yes', false: 'no' } } } })).toEqual([])
+    expect(validateRequest({ ...base, questions: {
+      a: { type: 'noul', instructions: 'x', criteria: {} } } })).toEqual([])
+    expect(validateRequest({ ...base, questions: {
+      a: { type: 'noul', instructions: 'x', criteria: null } } })).toEqual([])
+  })
+
   it('reports every violation at once, not just the first', () => {
     const issues = validateRequest({ ...base, questions: {
       s: { type: 'score', instructions: 'x', criteria: ['one'] },
@@ -109,7 +134,7 @@ describe('validateRequest', () => {
 
   it('rejects only the whole-request budget when no single question is over budget', () => {
     // Three questions, each individually under TOKEN_BUDGET_SINGLE (32k) once
-    // combined with state, but summed together over TOKEN_BUDGET_TOTAL (64k).
+    // combined with state, but summed together over TOKEN_BUDGET_TOTAL.
     // Isolates the whole-request branch from the per-question branch, which
     // the over-budget test above always trips alongside it.
     const big = 'x'.repeat(140_000)
@@ -119,8 +144,23 @@ describe('validateRequest', () => {
       c: { type: 'noul', instructions: big } } })
     expect(issues).toEqual([{
       code: 'token_budget_exceeded', path: 'request', severity: 'error',
-      message: expect.stringContaining('64000'),
+      message: expect.stringContaining('45000'),
     }])
+  })
+
+  // Fix round 2.5, R3. The budget was 64,000 while the repo's own measurement
+  // (docs/superpowers/specs/2026-09-18-jevc-design.md §3.3) records `400 max_tokens_exceeded`
+  // at ~45k. A pre-flight budget check that passes requests the API rejects is the one thing
+  // it exists to prevent, so the constant is the measurement, not the documented number.
+  it('rejects a request in the gap between the measured 45k limit and the documented 64k', () => {
+    // Two 120k-char questions: ~23.5k tokens each (under the 32k per-question limit),
+    // ~47k together — refused by the API, accepted by the old 64,000 constant.
+    const big = 'x'.repeat(120_000)
+    const issues = validateRequest({ model: 'jev-latest', state: 'hello', questions: {
+      a: { type: 'noul', instructions: big },
+      b: { type: 'noul', instructions: big } } })
+    expect(issues.map(i => [i.code, i.path])).toEqual([['token_budget_exceeded', 'request']])
+    expect(TOKEN_BUDGET_TOTAL).toBe(45_000)
   })
 
   it('rejects an unknown top-level field (API silently ignores a typo like `temperature`)', () => {
@@ -164,7 +204,9 @@ describe('validateRequest', () => {
 // Fix round 2, F9: the response was a bare cast (`res.answers as Record<string, JevAnswer>`)
 // on the far side of a paid call, so a malformed one was either silently believed or blamed
 // on the program. Every case below was measured against the old code and is noted with what
-// it did then. validateResponse is deliberately not wired into evaluate() yet.
+// it did then. It IS wired into evaluate() — runtime.ts's askModel runs it on every response
+// and evaluate throws on the `error`-severity half (see test/runtime.test.ts, "evaluate —
+// validateResponse on the response").
 describe('validateResponse', () => {
   const p: Program = {
     decisions: [
@@ -230,6 +272,16 @@ describe('validateResponse', () => {
     expect(issues[0].path).toBe('answers.destructive')
     expect(issues[0].message).toMatch(/asked as a noul but answered as "choice"/)
     expect(issues[0].message).not.toMatch(/belowConfidence/)
+  })
+
+  // Round 2's report, carried into 2.5: the loop is over `p.decisions`, so a program with
+  // duplicate ids reported the same missing answer once per copy. Unreachable through
+  // askModel/evaluate (validateProgram's `duplicate_id` throws first) and reachable only by
+  // calling validateResponse directly, which is now public.
+  it('reports a missing answer once for a program with a duplicate id', () => {
+    const dup: Program = { ...p, decisions: [p.decisions[0]!, p.decisions[0]!] }
+    const issues = validateResponse(dup, { model: 'x', answers: {}, usage: { input_tokens: 1, output_tokens: 1 } })
+    expect(issues.map(i => [i.code, i.path])).toEqual([['answer_missing', 'answers.destructive']])
   })
 
   it('reports a decision the response did not answer', () => {
@@ -343,6 +395,10 @@ describe('estimateTokens', () => {
   })
 })
 
+// Fix round 2.5, R2. This was a denylist of one key, `input`, on a body shape the remote
+// party controls — and the request's own field is `state`, not `input`, so the two echo
+// shapes measured off a 422 (`{state: ...}` and `{request: {state: ...}}`) went through
+// untouched into `err.body`. Inverted to an allowlist of the diagnostic keys.
 describe('redactErrorBody', () => {
   // A real measured 422 body: it echoes the whole request, `input` included.
   const body = {
@@ -352,21 +408,37 @@ describe('redactErrorBody', () => {
     ],
   }
 
-  it('redacts the input field but keeps type/loc/msg', () => {
+  it('redacts everything that is not a known diagnostic key, input included', () => {
     const redacted = redactErrorBody(body) as { detail: Array<{
-      type: string; loc: string[]; msg: string; input: unknown
+      type: string; loc: unknown; msg: unknown; input: unknown
     }> }
     expect(redacted.detail[0].input).toBe('[redacted]')
     expect(redacted.detail[0].type).toBe('missing')
-    expect(redacted.detail[0].loc).toEqual(['body', 'model'])
-    expect(redacted.detail[0].msg).toBe('Field required')
+    // The cost of the inversion, pinned so it is a decision rather than a surprise: `loc` and
+    // `msg` are not on the allowlist, and `loc` in particular is a path into the request whose
+    // tail segments are keys of the caller's own state.
+    expect(redacted.detail[0].loc).toBe('[redacted]')
+    expect(redacted.detail[0].msg).toBe('[redacted]')
   })
 
-  it('redacts nested input fields at any depth', () => {
-    const nested = { outer: { inner: { input: { secret: 'x' }, keep: 'y' } } }
-    const redacted = redactErrorBody(nested) as { outer: { inner: { input: unknown; keep: string } } }
-    expect(redacted.outer.inner.input).toBe('[redacted]')
-    expect(redacted.outer.inner.keep).toBe('y')
+  // The two shapes the old denylist missed. Neither key is named `input`; both carry state.
+  it('redacts a 422 that echoes the request under `request`', () => {
+    const echo = { detail: 'validation failed',
+      request: { model: 'jev-latest', state: 'SECRET STATE', questions: {} } }
+    const redacted = redactErrorBody(echo)
+    expect(JSON.stringify(redacted)).not.toContain('SECRET STATE')
+    expect(redacted).toEqual({ detail: 'validation failed', request: '[redacted]' })
+  })
+
+  it('redacts a top-level `state` echo', () => {
+    const redacted = redactErrorBody({ error: 'bad request', state: 'SECRET STATE' })
+    expect(JSON.stringify(redacted)).not.toContain('SECRET STATE')
+    expect(redacted).toEqual({ error: 'bad request', state: '[redacted]' })
+  })
+
+  it('redacts at any depth inside an allowed container', () => {
+    const nested = { detail: { message: 'keep me', state: { secret: 'x' } } }
+    expect(redactErrorBody(nested)).toEqual({ detail: { message: 'keep me', state: '[redacted]' } })
   })
 
   it('passes a non-object body through unchanged', () => {
