@@ -17,7 +17,7 @@ TARGET B (installed from PyPI into /tmp/jevc-tgtB venv, Python 3.10.10 — note 
 - Files read: `__init__.py`, `_version.py`, `types.py`, `classifier.py`, `client.py`, `_state.py`, `experimental/middleware/{__init__,auto_mode,model_router}.py` (1710 lines total).
 - Verified by execution: `inspect.signature` on both middleware `__init__`s (no `threshold` param; `_PROBABILITY_THRESHOLD == 0.5`), the dead default-`criteria` path resolving to `None`, `ScoreAnswer.legend` required, `NoulAnswer` having no `confidence`, flat `answers` vs derived `nouls`/`choices`/`scores`, `min_length` validation on Choice/Score, and the exact `_payload()`/`_endpoint` output.
 
-jevc repo state read for grounding (not a git repo per environment): `/Users/podoleanu/work/jevc/docs/superpowers/specs/2026-09-18-jevc-design.md` §9, `/Users/podoleanu/work/jevc/fixtures/security-guardrails.json` (model `jev-1.13.0`, recorded 2026-09-18), `/Users/podoleanu/work/jevc/.env.example`.
+jevc repo state read for grounding (not a git repo per environment): `/Users/podoleanu/work/jevc/docs/design.md` §9, `/Users/podoleanu/work/jevc/fixtures/security-guardrails.json` (model `jev-1.13.0`, recorded 2026-09-18), `/Users/podoleanu/work/jevc/.env.example`.
 
 ## File locations
 

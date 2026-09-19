@@ -173,7 +173,7 @@ describe('validateRequest', () => {
   })
 
   // Fix round 2.5, R3. The budget was 64,000 while the repo's own measurement
-  // (docs/superpowers/specs/2026-09-18-jevc-design.md §3.3) records `400 max_tokens_exceeded`
+  // (docs/design.md §3.3) records `400 max_tokens_exceeded`
   // at ~45k. A pre-flight budget check that passes requests the API rejects is the one thing
   // it exists to prevent, so the constant is the measurement, not the documented number.
   it('rejects a request in the gap between the measured 45k limit and the documented 64k', () => {
