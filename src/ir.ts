@@ -55,6 +55,35 @@ const DEFAULT_NOUL_BAND: [number, number] = [0.35, 0.65]
  */
 const CONDITION_OPS: ReadonlySet<string> = new Set(['gte', 'lte', 'is', 'uncertain'])
 
+/**
+ * Names a decision id and a choice option key may not take, because every consumer
+ * downstream keys a PLAIN object by them and a plain object already has these.
+ *
+ * `__proto__` is the loud one: `questions[d.id] = {...}` hits Object.prototype's setter and
+ * re-parents the map instead of creating an own key, so the question VANISHES. Verified on
+ * this tree: `emitBouncerPolicy` on a program whose ids are `__proto__` and `other` writes a
+ * `gate.questions` block containing only `other` while `gate.rules` still names `__proto__` —
+ * valid YAML, loaded clean, and the rule can never match. `emitToolgatePolicy` drops it the
+ * same way. The code emitters are worse: they write the id into a TypeScript object LITERAL,
+ * where `{ __proto__: {...} }` is the prototype-setter syntax, so the generated file compiles
+ * and the question is absent at runtime.
+ *
+ * The rest are the inherited-lookup half of the same bug. `UNCERTAINTY[id]` (emit/ai-sdk.ts:133)
+ * against a plain object returns `Object` itself for `constructor` — truthy, so the `if (!rule)`
+ * guard passes and `rule.belowConfidence` is undefined — and a function for `toString`,
+ * `hasOwnProperty` and the others. Derived from Object.prototype rather than hand-listed so the
+ * set cannot drift from the thing it is protecting; `prototype` is added because the code
+ * emitters write these ids into generated source.
+ *
+ * Round 3 is making the emitters structurally safe (null-prototype maps, quoted keys). This is
+ * the gate half of the same fix: it catches the next emitter someone writes. Reachable without
+ * malice — `fromJsonSchema` uses the JSON Schema property name as the id, and `__proto__` is a
+ * legal JSON object key (verified: `{"properties":{"__proto__":{"type":"boolean"}}}` compiles
+ * to a decision with that id today).
+ */
+const RESERVED_KEYS: ReadonlySet<string> =
+  new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype'])
+
 export function validateProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
   const err = (code: string, path: string, message: string) =>
@@ -67,6 +96,11 @@ export function validateProgram(p: Program): ValidationIssue[] {
         `Duplicate decision id "${d.id}". Question maps are JSON objects, so the API silently keeps only the last definition.`)
     }
     seen.add(d.id)
+
+    if (RESERVED_KEYS.has(d.id)) {
+      err('reserved_id', `decisions.${d.id}`,
+        `Decision id "${d.id}" is a property every plain JavaScript object already has. Every question map downstream is a plain object keyed by this id, so the question is not refused — it is silently lost (\`__proto__\` re-parents the map on assignment; the others resolve through the prototype chain on lookup) and the rules that name it can never fire. Rename it.`)
+    }
 
     // `kind` is the other closed vocabulary a cast cannot enforce, and it fails the same
     // silent way as an unknown op: toQuestion (emit/json.ts:4-19) tests noul, then score,
@@ -100,6 +134,12 @@ export function validateProgram(p: Program): ValidationIssue[] {
         // validateRequest enforces them on the request it builds, but only `--emit=json`
         // ever runs that, so the default native path shipped a 1-option choice at exit 0.
         const n = Object.keys(d.criteria).length
+        for (const opt of Object.keys(d.criteria)) {
+          if (RESERVED_KEYS.has(opt)) {
+            err('reserved_option', `decisions.${d.id}.criteria`,
+              `Choice "${d.id}" has an option named "${opt}", a property every plain JavaScript object already has. The option map and the returned probability map are both plain objects keyed by the option name, so the option is silently lost rather than refused, and \`is\` against it can never match. Rename it.`)
+          }
+        }
         if (n < 2) {
           err('choice_too_few_options', `decisions.${d.id}.criteria`,
             `Choice "${d.id}" has ${n} option(s); at least 2 are required. The API accepts one option with 200 and returns it at confidence 1.0.`)
@@ -163,7 +203,26 @@ export function validateProgram(p: Program): ValidationIssue[] {
       err('reduce_verdict_missing', `reduce.rules[${ri}].then`,
         `Rule ${ri} names no verdict. A rule that matches and returns undefined is worse than no rule: it also stops every later rule from being tried.`)
     }
-    for (const c of rule.when) {
+    // A rule that states no condition. REFUSED rather than read as a deliberate "always":
+    // `[].every(...)` is true, so runReducer (runtime.ts) returns this rule's verdict for
+    // every input — verified on this tree, a program whose first rule is `{when: [], then:
+    // "allow"}` answers "allow" for is_destructive 0.99 — and every later rule plus
+    // `otherwise` is dead code that still reads as though it gates. The three reasons to
+    // refuse rather than accept: "always" is already spelled `otherwise`, so accepting adds
+    // a second spelling of an existing concept and no expressive power; the targets already
+    // disagree about how to render it (emit/native.ts writes `if ()`, which does not parse,
+    // while ai-sdk and langchain write `true`), and emit/capability.ts:137 already refuses
+    // it outright for both policy targets with this same code, so refusing here makes the
+    // whole toolchain agree instead of leaving the gate softer than the emitters; and an
+    // empty `when` is indistinguishable in the JSON from a `when` a lossy producer dropped —
+    // a lifted model response is exactly where that arrives. A missing `when` is the same
+    // authored defect and worse at runtime (`rule.when.every` throws), so it lands here too.
+    if (!Array.isArray(rule.when) || rule.when.length === 0) {
+      err('rule_always_matches', `reduce.rules[${ri}]`,
+        `Rule ${ri} states no condition, so it matches every input and returns "${String(rule.then)}" — masking \`otherwise\` and every rule after it. A rule that should always fire is \`otherwise\`; a rule that lost its conditions on the way here is a bug. Give it a condition or delete it.`)
+    }
+
+    for (const c of Array.isArray(rule.when) ? rule.when : []) {
       // Before the id lookup: an op outside the vocabulary is wrong whether or not the
       // decision it names exists, and it is the one error that inverts a verdict silently.
       if (!CONDITION_OPS.has(c.op)) {
@@ -211,26 +270,69 @@ export function validateProgram(p: Program): ValidationIssue[] {
   return out
 }
 
+/**
+ * The prose a lint rule can read, from an `instructions` that is not necessarily a string.
+ *
+ * `Decision.instructions` is TYPED `string` and is not one at runtime: the wire contract
+ * allows the structured `EntryType` form, `check.ts`'s `buildProgram` passes it through with
+ * `as never`, and 10 decisions across 2 fixtures in this repo's own corpus use it — so
+ * `d.instructions.toLowerCase()` threw a TypeError on 2 of 60 fixtures. lintProgram is
+ * advisory and must never throw.
+ *
+ * Flattening to the string leaves rather than skipping, because skipping is the failure this
+ * round exists to close: a question whose wording the lint never examined would pass clean.
+ * The model reads the whole object, so the whole object is the wording. `JSON.stringify`
+ * would drag the keys in and make `{"action": ...}` trip the verdict-framing regex.
+ * Measured: over the 10 object-form corpus decisions this produces zero new findings.
+ */
+function lintableText(instructions: unknown): string {
+  const parts: string[] = []
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') parts.push(v)
+    else if (Array.isArray(v)) v.forEach(walk)
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk)
+  }
+  walk(instructions)
+  return parts.join(' ').toLowerCase()
+}
+
+/** Verdict-shaped PHRASING, as opposed to a verdict-shaped option set. Applies to every
+ * kind: "what should the harness do?" is the same collapsed question whether it is offered
+ * as a choice, as a noul, or as a 0-4 severity ladder. */
+const VERDICT_FRAMING = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
+
 export function lintProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
 
   for (const d of p.decisions) {
+    const text = lintableText(d.instructions)
+
     // Rule 1 — never emit a collapsed verdict question. Two independent signals:
     // the option vocabulary (verdict-shaped words) and the instructions' framing
     // (verdict-shaped phrasing), since a domain-named verdict set like
     // {allow, deny, quarantine, sandbox} doesn't trip the vocabulary check alone.
-    if (d.kind === 'choice') {
-      const opts = d.criteria && !Array.isArray(d.criteria) ? Object.keys(d.criteria).map(o => o.toLowerCase()) : []
-      const verdictish = opts.filter(o => VERDICT_WORDS.has(o)).length
-      const vocabCollapse = opts.length > 0 && verdictish >= 2 && verdictish >= opts.length - 1
-      const framingCollapse = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
-        .test(d.instructions.toLowerCase())
-      if (vocabCollapse || framingCollapse) {
-        out.push({
-          code: 'collapsed_verdict', path: `decisions.${d.id}`, severity: 'error',
-          message: `"${d.id}" asks the model for a verdict (${opts.join('/')}). Measured: collapsed verdict questions return near-uniform distributions (allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13) while narrow evidence questions on the same input reach 0.93-0.97. Ask for evidence; the verdict must be computed in code by the reducer.`,
-        })
-      }
+    //
+    // The vocabulary half is choice-only by nature — it reads option keys. The FRAMING half
+    // is not, and scoping the whole rule to `kind === 'choice'` meant the check did not
+    // cover the thing it exists to prevent: the identical collapsed verdict asked as a noul
+    // ("Decide whether to block this.") or as a score ("What action should the harness take,
+    // 0 = allow ... 4 = block?") shipped clean. Measured before widening: over all 60
+    // fixtures / 343 decisions the framing regex matches 22 choice heads and ZERO noul or
+    // score heads, so extending it newly refuses nothing in the corpus.
+    const opts = d.kind === 'choice' && d.criteria && !Array.isArray(d.criteria)
+      ? Object.keys(d.criteria).map(o => o.toLowerCase()) : []
+    const verdictish = opts.filter(o => VERDICT_WORDS.has(o)).length
+    const vocabCollapse = opts.length > 0 && verdictish >= 2 && verdictish >= opts.length - 1
+    if (vocabCollapse || VERDICT_FRAMING.test(text)) {
+      // The citation is one call, named, so a reader can check it. The POPULATION claim this
+      // message used to make — "collapsed verdict questions return near-uniform
+      // distributions" — is refuted by this repo's own corpus: the 29 heads this rule fires
+      // on have a median confidence of 0.86, and 28 of them answered correctly. What the
+      // corpus does show is that the verdict head is the one you cannot gate on.
+      out.push({
+        code: 'collapsed_verdict', path: `decisions.${d.id}`, severity: 'error',
+        message: `"${d.id}" asks the model for the verdict itself${opts.length ? ` (${opts.join('/')})` : ''}. Measured (fixtures/security-guardrails.json, bash-rm-rf-node-modules-benign): the verdict head returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13 — a third of the mass on blocking a routine \`rm -rf node_modules\` — while the narrow heads in the SAME call were decisive: only_regenerable_artifacts 0.93, and blast_radius put 0.98 on level 1. And the failure is not detectable from the answer: across the 29 verdict-shaped heads in fixtures/, correct answers came back at confidences from 0.13 to 1.00, so no confidence floor separates a verdict from a coin flip. Ask for evidence; the reducer computes the verdict, and its thresholds can be re-tuned without a new call.`,
+      })
     }
 
     // Rule 3 — never emit a question spanning two scopes. The trailing ", or ...?"
@@ -238,33 +340,63 @@ export function lintProgram(p: Program): ValidationIssue[] {
     // that earlier "or" is very likely enumerating options within one scope (e.g.
     // "matching *.env or *.key") rather than introducing a second independent clause,
     // so a trailing ", or <clause>?" after it is not treated as compound.
-    const text = d.instructions.toLowerCase()
     if (/\bor did it\b|\bor whether\b|^(?:(?!\bor\b)[\s\S])*, or\s+[^,?]{0,60}\?|\band also\b/.test(text)) {
       out.push({
         code: 'compound_question', path: `decisions.${d.id}`, severity: 'warn',
-        message: `"${d.id}" appears to ask two things at once. Measured: a compound authorization question returned 0.59 — the wrong side of 0.5 — because it anchored on the authorized half of a command. Split it by scope.`,
+        message: `"${d.id}" appears to ask two things at once. Measured (fixtures/security-guardrails.json, bash-compound-rm-rf-escapes-repo): user_authorized_this_action returned 0.59 — the wrong side of 0.5 — on \`echo ... && rm -rf $HOME/Documents/* ./dist\` after the user asked only to clear \`dist/\`, because it anchored on the authorized segment. The same question scoped to ONE action is fine: user_authorized_history_rewrite answered 0.22 in git-reset-clean-force-push-protected-main. Split it by scope.`,
       })
     }
 
     // Rule 4 — carve-outs and exceptions are allowlists; a question that embeds one
-    // ("... except anything under test/fixtures/") is the shape that produces the
-    // near-uniform verdict distribution. Heuristic on wording, so it warns rather
-    // than blocks — it can both miss a phrasing and over-flag a legitimate "unless".
+    // ("... except anything under test/fixtures/") makes the model arbitrate the exception
+    // instead of answering a fact. Heuristic on wording, so it warns rather than blocks —
+    // it can both miss a phrasing and over-flag a legitimate "unless" or "other than".
+    //
+    // The citation used to be the glob-evasion numbers (0.25/0.10/0.14 vs 0.96/0.87/0.85).
+    // Those are real and measured, but they are about deny-PATTERNS missing evasive
+    // spellings and say nothing about carve-outs; they belong to Rule 5 below and only
+    // there. The two corpus questions that genuinely embed a carve-out are cited instead.
     if (/\b(except|unless|other than|aside from)\b/.test(text)) {
       out.push({
         code: 'embedded_carveout', path: `decisions.${d.id}`, severity: 'warn',
-        message: `"${d.id}" appears to embed a carve-out or exception in the question text. Measured: declared deny-patterns matched semantics at 0.25/0.10/0.14 while the semantic question on the same input hit 0.96/0.87/0.85. Carve-outs are allowlists — put them in \`reduce\` or in code, not in the question.`,
+        message: `"${d.id}" appears to embed a carve-out or exception in the question text. Measured (fixtures/agent-harness-rules.json): both corpus questions that do this are mushy. commit-only-when-explicitly-asked folds "NEVER commit unless the user explicitly asks" into one head and puts 0.18 on allow at confidence 0.64; vendored-edit-authorization-ambiguous folds in "unless explicitly asked" and returns allow 0.54 / ask 0.38 at confidence 0.31. The same carve-out asked as its own noul is sharp in both calls: user_explicitly_asked_to_commit 0.06, and user_explicitly_authorized_editing_vendored_code 0.28 alongside authorization_is_inferred_not_explicit 0.78. Carve-outs are allowlists — ask them separately and combine them in \`reduce\`.`,
       })
     }
 
     // Rule 5 — pattern and glob matching stays in code; a model asked to match a
     // literal pattern performs far worse than one asked the equivalent semantic
     // question. Heuristic on a few glob-shaped tokens, so it warns rather than blocks.
+    // These six numbers are the ones this rule is actually entitled to: all six are
+    // recorded answers in fixtures/agent-harness-rules.json, named below so a reader can
+    // check them, and all six are bounded by an `expect` clause the corpus asserts.
     if (/\*\.|\/\*|\*\//.test(text)) {
       out.push({
         code: 'embedded_pattern', path: `decisions.${d.id}`, severity: 'warn',
-        message: `"${d.id}" appears to embed a glob or pattern in the question text. Measured: declared deny-patterns matched semantics at 0.25/0.10/0.14 while the semantic question on the same input hit 0.96/0.87/0.85. Pattern matching stays in code — ask only what a pattern cannot express.`,
+        message: `"${d.id}" appears to embed a glob or pattern in the question text. Measured (fixtures/agent-harness-rules.json): asked to apply the DECLARED pattern, matched_by_declared_deny_pattern returned 0.25 (no-push-to-main-any-spelling) and 0.10 (never-create-a-pr-even-when-asked) and path_matches_declared_generated_globs 0.14 (never-hand-edit-generated-file) — all three wrong-side — while the semantic question in the same three calls answered 0.96, 0.87 and 0.85. Pattern matching stays in code — ask only what a pattern cannot express.`,
       })
+    }
+
+    // Rule 6 — a score whose levels are placeholders. contract.ts's
+    // `score_level_undescribed` fires only on `null` and `''`, and from-schema.ts lowers a
+    // bounded integer to labels like "severity = 0" / "severity = 1" — non-empty strings
+    // that sail through it, leaving a score that ships with nothing telling the model what
+    // any level MEANS. A score answer is a probability-weighted index over these labels, so
+    // undescribed levels do not merely lose precision, they decide the number.
+    //
+    // The predicate is the defect, not the one producer: levels are placeholders when they
+    // are blank, or when stripping the digits collapses them all to the same text ("severity
+    // = ", "level ", ""). Measured: fires on 0 of the 26 scores in fixtures/ and on
+    // from-schema's generated labels. `warn`, not `error` — the program is answerable, just
+    // badly, and this rule guesses at prose.
+    if (d.kind === 'score' && Array.isArray(d.criteria) && d.criteria.length >= 2) {
+      const levels = d.criteria.map(c => (typeof c === 'string' ? c : c == null ? '' : JSON.stringify(c)))
+      const indistinct = new Set(levels.map(l => l.replace(/\d+/g, '').trim())).size === 1
+      if (levels.some(l => l.trim() === '') || indistinct) {
+        out.push({
+          code: 'score_levels_undescribed', path: `decisions.${d.id}.criteria`, severity: 'warn',
+          message: `Score "${d.id}" has level descriptions that do not describe the levels (${levels.map(l => JSON.stringify(l)).join(', ')}) — they differ only by a number, so the model is told the index and not what it means. A score answer is a probability-weighted index over exactly these labels. Describe each level, or ask a noul per level instead.`,
+        })
+      }
     }
   }
 
@@ -273,7 +405,9 @@ export function lintProgram(p: Program): ValidationIssue[] {
     for (const dep of d.dependsOn ?? []) {
       out.push({
         code: 'dependent_questions', path: `decisions.${d.id}`, severity: 'warn',
-        message: `"${d.id}" depends on "${dep}". Questions in a batch are scored independently with no consistency enforced — a measured response asserted rule_conflict=exception_wins (0.52) and decision=deny (0.73) simultaneously. Ask the resolving question and derive this one in code.`,
+        // Naming the option and separating probability from confidence, because the two are
+        // different numbers and this message used to run them together.
+        message: `"${d.id}" depends on "${dep}". Questions in a batch are scored independently with no consistency enforced — measured (fixtures/agent-harness-rules.json, self-contradicting-rule-file-host-vs-container), one response asserted rule_conflict = documented_exception_wins at probability 0.52 and decision = deny at probability 0.82 in the same call. Ask the resolving question and derive this one in code.`,
       })
     }
   }
