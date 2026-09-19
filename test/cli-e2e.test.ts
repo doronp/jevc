@@ -608,19 +608,22 @@ describe('cases with a known history', () => {
   }
 
   /**
-   * LIVE BUG — a dotted-id collision drops questions and still exits 0.
+   * REGRESSION GUARD — a dotted-id collision used to drop questions and still exit 0.
    *
-   * `{"a.b": …, "a": {"b": …}, "c": …}` builds the id "a.b" twice. from-schema.ts:387-402
-   * correctly refuses to keep EITHER — a reducer condition on "a.b" could not say which
-   * question it means — but the CLI treats the result as an ordinary `dropped:` note. So
-   * two of the schema's three questions vanish and jevc writes a deployable artifact
-   * containing only `c`, at exit 0. Nothing downstream can tell that the gate it is
-   * running is a third of the gate that was authored.
+   * `{"a.b": …, "a": {"b": …}, "c": …}` builds the id "a.b" twice. from-schema.ts refuses
+   * to keep EITHER — a reducer condition on "a.b" could not say which question it means —
+   * and the CLI once treated that as an ordinary `dropped:` note. Two of the schema's three
+   * questions vanished and jevc wrote a deployable artifact containing only `c`, at exit 0.
+   * Nothing downstream could tell that the gate it was running was a third of the gate that
+   * was authored.
    *
-   * This is the same shape as the zero-decisions case above, which round 3 made an error;
-   * "I dropped most of it" is no more of a success than "I compiled nothing".
+   * This test was written as an `it.fails` pin against the tree at a5eadbb. The cleanup
+   * round closed it independently by giving `dropped[]` a `kind` and making
+   * `kind: 'collision'` an error however many decisions survived — "I dropped most of it"
+   * is no more of a success than "I compiled nothing". Kept as a live assertion so the
+   * contract cannot quietly revert.
    */
-  it.fails('LIVE BUG: compile exits non-zero when a dotted-id collision drops questions', () => {
+  it('compile exits non-zero when a dotted-id collision drops questions', () => {
     const collide = putJson('collide.json', { type: 'object', properties: {
       'a.b': { type: 'boolean', description: 'Literal dotted property?' },
       a: { type: 'object', properties: { b: { type: 'boolean', description: 'Nested dotted property?' } } },
