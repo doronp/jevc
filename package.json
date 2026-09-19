@@ -2,16 +2,35 @@
   "name": "jevc",
   "version": "0.1.0",
   "type": "module",
-  "engines": { "node": ">=22" },
-  "devEngines": { "runtime": { "name": "node", "version": ">=22.12.0", "onFail": "error" } },
-  "bin": { "jevc": "./dist/cli.js" },
-  "exports": { ".": "./dist/index.js" },
+  "engines": {
+    "node": ">=22"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.12.0",
+      "onFail": "error"
+    }
+  },
+  "bin": {
+    "jevc": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "check:live": "node dist/cli.js check --live"
   },
-  "dependencies": { "@typesafe-ai/sdk": "^0.6.0" },
-  "devDependencies": { "typescript": "^5.6.0", "vitest": "^5.0.1", "@types/node": "^22.10.0" }
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.1"
+  }
 }

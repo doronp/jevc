@@ -173,6 +173,7 @@ describe('jevc explain', () => {
     expect(() => run(['explain', 'no_such_decision'])).toThrow()
   })
 
+
   // Fix round 1, item 2: EntryType allows object-form instructions (10 decisions across 2
   // fixtures in the real corpus use it); String(objectValue) produces the literal text
   // "[object Object]" instead of the actual content.
@@ -180,5 +181,56 @@ describe('jevc explain', () => {
     const out = run(['explain', 'description::hallucinated'])
     expect(out).not.toContain('[object Object]')
     expect(out).toMatch(/main_question/)
+  })
+})
+
+describe('jevc emit-policy', () => {
+  const program = {
+    decisions: [{ id: 'outside_repo', kind: 'noul', instructions: 'Outside the repo root?' }],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.8 }], then: 'deny' }], otherwise: 'allow' },
+    residual: '', dropped: [],
+  }
+  const write = (p: unknown = program) => {
+    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program.json')
+    writeFileSync(f, JSON.stringify(p))
+    return f
+  }
+
+  it('emits a bouncer policy in observe mode', () => {
+    const out = run(['emit-policy', '--for', 'bouncer', write()])
+    expect(out).toMatch(/mode: observe/)
+    expect(out).toMatch(/p: ">=0.8"/)
+  })
+
+  it('writes to -o', () => {
+    const f = write()
+    const dest = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'policy.yaml')
+    run(['emit-policy', '--for', 'bouncer', f, '-o', dest])
+    expect(readFileSync(dest, 'utf8')).toMatch(/version: 1/)
+  })
+
+  // A target refusing a program it cannot express is the designed outcome, so it must read
+  // as a message rather than a crash.
+  it('reports a refusal as a message, not a stack trace', () => {
+    const score = { ...program, decisions: [
+      { id: 'radius', kind: 'score', instructions: 'How wide?', criteria: ['file', 'repo'] }] }
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', write(score)])
+    expect(error.status).not.toBe(0)
+    expect(error.stderr).toMatch(/only noul/)
+    expect(error.stderr).not.toMatch(/at Object\.|node:internal/)
+  })
+
+  it('names the known targets when given an unknown one', () => {
+    const error = runExpectingFailure(['emit-policy', '--for', 'jev-guard', write()])
+    expect(error.stderr).toMatch(/bouncer, toolgate/)
+  })
+
+  it('reports invalid JSON cleanly', () => {
+    const f = join(mkdtempSync(join(tmpdir(), 'jevc-')), 'program.json')
+    writeFileSync(f, '{not json')
+    const error = runExpectingFailure(['emit-policy', '--for', 'bouncer', f])
+    expect(error.stderr).toMatch(/is not valid JSON/)
+    expect(error.stderr).not.toMatch(/at Object\.|node:internal/)
   })
 })
