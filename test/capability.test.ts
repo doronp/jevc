@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { canEmit, TARGETS } from '../src/emit/capability.js'
+import { canEmit, rangeFor, TARGETS } from '../src/emit/capability.js'
 import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
 import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
-import { runReducer } from '../src/runtime.js'
+import { isUncertain, runReducer } from '../src/runtime.js'
 import type { JevAnswer } from '../src/contract.js'
-import type { Program } from '../src/ir.js'
+import type { Decision, Program } from '../src/ir.js'
 
 const mixed: Program = {
   decisions: [
@@ -377,5 +377,83 @@ describe('canEmit and the emitters refuse the same programs', () => {
       [{ when: [{ id: 'k', op: 'uncertain' }], then: 'ask' }])
     expect(canEmit(band, 'bouncer')).toEqual([])
     expect(canEmit(band, 'toolgate').map(i => i.code)).toContain('uncertain_unsupported')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rangeFor is the only ULP-exact arithmetic in the emit layer, and until now no test
+// imported it. emit-policy.test.ts proves it BEHAVIOURALLY, against bouncer's own
+// semantics over a probability grid, and that remains the check that matters. This block
+// pins the arithmetic itself and the three refusals a grid cannot reach, because when
+// rangeFor refuses there is no emitted range to put on a grid.
+describe('rangeFor puts each exclusive band end one double inside the inclusive range', () => {
+  const F64 = new DataView(new ArrayBuffer(8))
+  /**
+   * Deliberately a SECOND implementation of capability.ts's `step`. Importing the
+   * function under test would prove only that it equals itself; the whole value of a
+   * one-double assertion is that the expected double was computed some other way.
+   */
+  const ulp = (x: number, up: boolean): number => {
+    F64.setFloat64(0, x)
+    F64.setBigUint64(0, F64.getBigUint64(0) + (up ? 1n : -1n))
+    return F64.getFloat64(0)
+  }
+  const nextUp = (x: number) => ulp(x, true)
+  const nextDown = (x: number) => ulp(x, false)
+
+  const withBand = (band: number[]): Decision =>
+    ({ id: 'k', kind: 'noul', instructions: 'Is k?', uncertain: { band: band as [number, number] } })
+  const ends = (d: Decision): number[] => {
+    const { p, why } = rangeFor(d)
+    expect([why, p]).toEqual([undefined, expect.any(String)])
+    return p!.split('..').map(Number)
+  }
+
+  it('steps inward by exactly one double at each end', () => {
+    // Equality to nextUp/nextDown pins the MAGNITUDE; the inequalities pin the
+    // DIRECTION, which is the half a sign flip gets wrong while the endpoints still
+    // look like plausible neighbours of 0.4 and 0.6.
+    expect(ends(withBand([0.4, 0.6]))).toEqual([nextUp(0.4), nextDown(0.6)])
+    const [a, b] = ends(withBand([0.4, 0.6]))
+    expect([a > 0.4, b < 0.6]).toEqual([true, true])
+  })
+
+  it('emits the degenerate range when the exclusive band holds exactly one double', () => {
+    // (0.5, nextUp(nextUp(0.5))) contains nextUp(0.5) and nothing else, so the faithful
+    // inclusive range is that double twice. This is the tightest band that is emittable
+    // at all, and the first thing a two-ULP step turns into a refusal.
+    const only = nextUp(0.5)
+    expect(ends(withBand([0.5, nextUp(only)]))).toEqual([only, only])
+  })
+
+  it('refuses a band whose ends are adjacent doubles, because nothing lies between them', () => {
+    const hi = nextUp(0.5)
+    const { p, why } = rangeFor(withBand([0.5, hi]))
+    expect([p, why]).toEqual([undefined, expect.stringContaining('is empty')])
+    // The refusal is not over-eager: jevc's band is `> lo && < hi` (runtime.ts
+    // isUncertain), hi is by construction the next representable double after lo, and
+    // neither end is itself uncertain. There is no probability the refusal loses.
+    const held: Program = { decisions: [withBand([0.5, hi])], residual: '', dropped: [],
+      reduce: { kind: 'rules', rules: [], otherwise: 'allow' } }
+    const un = (x: number) => isUncertain({ k: { type: 'noul', noul: x } }, 'k', held)
+    expect([un(0.5), un(hi)]).toEqual([false, false])
+  })
+
+  it('refuses a band with equal ends, which is empty before any stepping', () => {
+    expect(rangeFor(withBand([0.5, 0.5])).why).toMatch(/is empty/)
+  })
+
+  it('refuses a band whose stepped end serialises with an exponent', () => {
+    // step(0, up) is Number.MIN_VALUE, which String()s to "5e-324", and bouncer's `p`
+    // grammar has no exponent. Inside thresholdRange, still unloadable — the reason
+    // rangeFor checks the SERIALISED form and not the number.
+    const { p, why } = rangeFor(withBand([0, 0.6]))
+    expect([p, why]).toEqual([undefined, expect.stringContaining('no exponent')])
+    expect(String(nextUp(0))).toBe('5e-324')
+  })
+
+  it('refuses a belowConfidence decision, which a bouncer answer cannot carry', () => {
+    const conf: Decision = { id: 'k', kind: 'noul', instructions: 'Is k?', uncertain: { belowConfidence: 0.5 } }
+    expect(rangeFor(conf).why).toMatch(/confidence/)
   })
 })

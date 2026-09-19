@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { emitNative } from '../src/emit/native.js'
+import { emitAiSdk } from '../src/emit/ai-sdk.js'
 import { emitJson } from '../src/emit/json.js'
+import { tsIdKey, TS_LINE_TERMINATORS } from '../src/emit/ts-lowering.js'
 import type { Program } from '../src/ir.js'
 
 const p: Program = {
@@ -149,6 +152,73 @@ describe('emitNative, hostile-but-legal Programs', () => {
       '// Escalate /assets/*/icon.png.',
       '// raise = 1',
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L1. `idKey` and the ECMAScript line-terminator set were byte-identical copies in
+// native.ts and ai-sdk.ts (`diff` of the two declarations was empty). Nothing forced
+// them to stay in step, and both encode a rule this project has already shipped wrong:
+// the computed-key form that is the only ordinary syntax defining an own `__proto__`
+// property, and the terminator set a `//` comment ends at. One definition now, in
+// src/emit/ts-lowering.ts — the TYPESCRIPT-only module. The cross-grammar guard, which
+// is why bouncer's and langchain's near-identical regexes must NOT be merged into it,
+// lives at the end of emit-backends.test.ts.
+// ---------------------------------------------------------------------------
+
+const LS = '\u2028'
+const PS = '\u2029'
+const emitSrc = (f: string) => readFileSync(new URL(`../src/emit/${f}`, import.meta.url), 'utf8')
+
+describe('ts-lowering is the single definition for the TypeScript targets', () => {
+  it('leaves no private copy of idKey or the terminator set in either emitter', () => {
+    for (const f of ['native.ts', 'ai-sdk.ts']) {
+      const src = emitSrc(f)
+      expect(src, `${f} still declares its own idKey`).not.toMatch(/^\s*const idKey\s*=/m)
+      expect(src, `${f} still declares its own LINE`).not.toMatch(/^\s*const LINE\s*=/m)
+      // The escape itself, not the prose: a second `\u2028` in a regex here is a second
+      // definition of the set, whatever it is called.
+      expect(src, `${f} still spells out \\u2028`).not.toContain('\\u2028')
+      expect(src, `${f} does not import the shared lowering`)
+        .toMatch(/from '\.\/ts-lowering\.js'/)
+    }
+  })
+
+  it('gives `__proto__` the computed key, the only form that is not the setter', () => {
+    expect(tsIdKey('__proto__')).toBe('["__proto__"]')
+    // Behavioural, not textual: build the literal the emitter would and check the key
+    // is an OWN property rather than a swapped prototype.
+    const built = new Function(`return { ${tsIdKey('__proto__')}: "kept" }`)() as object
+    expect(Object.getOwnPropertyNames(built)).toEqual(['__proto__'])
+    expect(Object.getPrototypeOf(built)).toBe(Object.prototype)
+  })
+
+  it('leaves a plain identifier bare and quotes everything else', () => {
+    expect(tsIdKey('is_urgent')).toBe('is_urgent')
+    expect(tsIdKey('$x9')).toBe('$x9')
+    expect(tsIdKey('9lives')).toBe('"9lives"')
+    expect(tsIdKey('has-dash')).toBe('"has-dash"')
+    expect(tsIdKey('')).toBe('""')
+    expect(tsIdKey('a b')).toBe('"a b"')
+  })
+
+  it('counts U+2028 and U+2029 as line terminators, because ECMAScript does', () => {
+    expect(`a${LS}b${PS}c\r\nd\re\nf`.split(TS_LINE_TERMINATORS))
+      .toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
+    // \r\n is one break, not two: the alternation has to come first.
+    expect('a\r\nb'.split(TS_LINE_TERMINATORS)).toEqual(['a', 'b'])
+  })
+
+  it('is safe to share as one /g object across both emitters', () => {
+    // A single module-level `/g` regex carries `lastIndex`. `replace` zeroes it and
+    // `split` clones, so the two emitters cannot interfere — pinned because a future
+    // `.test()` on this object would make emission order-dependent.
+    const hostile: Program = { ...p, residual: `one${LS}two`,
+      decisions: [{ ...p.decisions[0], source: { file: `a.md${LS}x`, line: 1, quote: `q${PS}r` } }] }
+    const first = emitNative(hostile)
+    emitAiSdk(hostile)
+    expect(emitNative(hostile)).toBe(first)
+    expect(TS_LINE_TERMINATORS.lastIndex).toBe(0)
   })
 })
 
