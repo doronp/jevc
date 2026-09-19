@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emitAiSdk } from '../src/emit/ai-sdk.js'
 import { emitLangchain } from '../src/emit/langchain.js'
+import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
+import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
 import { runReducer } from '../src/runtime.js'
 import type { JevAnswer } from '../src/contract.js'
 import type { Program } from '../src/ir.js'
@@ -865,4 +867,66 @@ describe('consumer-semantics grid, continued', () => {
     expect(disagree.slice(0, 8).join('\n')).toBe('')
     expect(disagree.length).toBe(0)
   }, 180_000)
+})
+
+// ---------------------------------------------------------------------------
+// L1. The TypeScript emitters now share src/emit/ts-lowering.ts. Its line-terminator
+// set is ECMAScript's, and THREE near-identical regexes have to stay three:
+//
+//   ts-lowering.ts (native, ai-sdk)        \r\n | [\r \n U+2028 U+2029]
+//   policy/bouncer.ts, policy/toolgate.ts  \r\n | \r | \n
+//   langchain.ts                           \r\n | \r | \n
+//
+// U+2028 ends a `//` comment in JavaScript. It does NOT end a `#` comment in YAML 1.2
+// (line breaks are LF and CR only) or in CPython (its tokenizer does not treat it as a
+// terminator), so in those two targets it is an ordinary character inside the comment.
+// The two tests below are the guard against the "unification" that looks obvious: the
+// first pins the divergence as behaviour, the second keeps the module's blast radius to
+// the two targets its name claims.
+// ---------------------------------------------------------------------------
+
+describe('the three line-terminator regexes are three because the grammars are three', () => {
+  const LS = '\u2028'
+  const split: Program = {
+    decisions: [{ id: 'is_urgent', kind: 'noul', instructions: 'Urgent?' }],
+    reduce: { kind: 'rules', rules: [{ when: [{ id: 'is_urgent', op: 'gte', value: 0.8 }], then: 'deny' }],
+      otherwise: 'allow' },
+    residual: `Judge the tone.${LS}raise SystemExit(3)`, dropped: [],
+  }
+  /** The comment lines the residual was lowered into, whatever the comment marker is. */
+  const residualLines = (src: string) =>
+    src.split('\n').filter(l => /^(\/\/|#) (Judge the tone|raise SystemExit)/.test(l))
+
+  it('the TypeScript targets break the comment at U+2028, because ECMAScript does', () => {
+    for (const [name, src] of [['native', emitNative(split)], ['ai-sdk', emitAiSdk(split)]] as const) {
+      const lines = residualLines(src)
+      expect(lines, name).toEqual(['// Judge the tone.', '// raise SystemExit(3)'])
+      expect(lines.some(l => l.includes(LS)), `${name} left a terminator in a // comment`).toBe(false)
+    }
+  })
+
+  it('the YAML and Python targets do not, because U+2028 is text to both of them', () => {
+    for (const [name, src] of [
+      ['langchain', emitLangchain(split)],
+      ['bouncer', emitBouncerPolicy(split)],
+      ['toolgate', emitToolgatePolicy(split)],
+    ] as const) {
+      const lines = residualLines(src)
+      // ONE comment line, with U+2028 still inside it. Splitting here would not be safer
+      // — it would emit a different document to a consumer that reads the character as
+      // ordinary text, which is the regression this pins.
+      expect(lines, name).toEqual([`# Judge the tone.${LS}raise SystemExit(3)`])
+    }
+  })
+
+  it('nothing outside the two TypeScript emitters imports ts-lowering', () => {
+    const srcDir = new URL('../src/', import.meta.url)
+    const files = readdirSync(srcDir, { recursive: true, encoding: 'utf8' })
+      .filter(f => f.endsWith('.ts'))
+    const importers = files
+      .filter(f => /from '(\.\.?\/)*(emit\/)?ts-lowering\.js'/.test(
+        readFileSync(new URL(f, srcDir), 'utf8')))
+      .sort()
+    expect(importers).toEqual(['emit/ai-sdk.ts', 'emit/native.ts'])
+  })
 })

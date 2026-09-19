@@ -1,29 +1,11 @@
 import type { EntryType } from '../contract.js'
 import type { Condition, Decision, Program } from '../ir.js'
-
-// JSON.stringify is the escaper: it handles quotes, backslashes, newlines,
-// unicode, and non-string EntryType values (objects/arrays) uniformly. A
-// hand-rolled escaper is easy to get wrong in ways that only show up on
-// inputs the fixtures don't cover (see fix-round-1 items 2-3).
-//
-// `__proto__` is the one id JSON.stringify cannot rescue: in an object literal
-// `__proto__: v` is the PROTOTYPE SETTER, not a property definition, and quoting it
-// (`"__proto__": v`) is the setter too. The question or the choice option simply
-// vanishes from the emitted literal — the artifact compiles, tsc is clean, and the
-// wire map is short one entry. A computed key is the only ordinary form that defines
-// an own property, and `{ ["__proto__"]: v } as const` still narrows. Reachable
-// without malice: from-schema.ts uses a JSON Schema property name / enum member as
-// the id, so a prototype-pollution detector's own vocabulary produces it.
-const idKey = (id: string) =>
-  id === '__proto__' ? `[${JSON.stringify(id)}]`
-  : /^[A-Za-z_$][\w$]*$/.test(id) ? id
-  : JSON.stringify(id)
-
-// Every JS line terminator, LS and PS included: a `//` comment ends at any of them.
-// Same constant and same reason as ai-sdk.ts — provenance quotes and residual prose are
-// lifted verbatim out of a human document, so they arrive with whatever separators that
-// document had, and U+2028 is what pasting from a PDF or Word gives you.
-const LINE = /\r\n|[\r\n\u2028\u2029]/g
+// One definition, shared with ai-sdk.ts: `idKey` and the line-terminator set were
+// byte-identical copies here and there, and nothing forced them to stay in step. The
+// module is named for the TYPESCRIPT targets — its ECMAScript terminator set is
+// deliberately NOT the one bouncer.ts, toolgate.ts and langchain.ts use, and the header
+// of ts-lowering.ts says why all three must stay separate.
+import { tsIdKey as idKey, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
 
 function provenance(d: Decision): string {
   if (!d.source) return ''
