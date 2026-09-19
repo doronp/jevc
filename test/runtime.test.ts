@@ -39,6 +39,17 @@ describe('value', () => {
   it('reads a score in level-index space, not 0..1', () => {
     expect(value(answers(), 'radius')).toBe(2.0)
   })
+  // R8, a convention pin rather than a defect test. `value` on a CHOICE returns its
+  // confidence, never the chosen option — so `gte`/`lte` against a choice gates on how sure
+  // the model is, and `is` (via choiceOf) is the only thing that gates on what it picked.
+  // validateProgram depends on this: `is_needs_choice` refuses `is` against a non-choice
+  // while deliberately allowing gte/lte against a choice, and `probability_threshold_out_of_
+  // range` requires such a threshold to live in 0..1 for exactly this reason.
+  it('reads a choice as its CONFIDENCE, not as the option it picked', () => {
+    // The answer picked "source" at confidence 0.8. 0.8 is what a threshold compares.
+    expect(value(answers(), 'target')).toBe(0.8)
+    expect(choiceOf(answers(), 'target')).toBe('source')
+  })
 })
 
 describe('isUncertain', () => {
@@ -169,8 +180,9 @@ describe('evaluate', () => {
     const err = caught as BadRequestError
     expect(err.message).not.toContain(secretState)
     expect(String(err.stack)).not.toContain(secretState)
-    // The existing body redaction mechanism (strips `input` fields) still applies.
-    expect(err.body).toEqual({ context: { input: '[redacted]' } })
+    // The body redaction still applies, and after R2 it is an allowlist: `context` is not a
+    // known diagnostic key, so the whole subtree goes rather than just the `input` inside it.
+    expect(err.body).toEqual({ context: '[redacted]' })
     // Class identity and request id survive the rebuild.
     expect(err.status).toBe(400)
     expect(err.requestId).toBe('req-1')
@@ -233,6 +245,56 @@ describe('runReducer — an op outside the vocabulary', () => {
     }
     expect(runReducer(lteRule, answers({ destructive: { type: 'noul', noul: 0.2 } }))).toBe('allow')
     expect(runReducer(lteRule, answers())).toBe('deny')
+  })
+})
+
+// R7 — a noul that is not a finite number makes every comparison in the reducer false: not
+// inside the uncertainty band, not over the gte threshold, not under the lte one. The rule
+// never fires and the caller gets `otherwise` at exit 0. Fail-open in the reducer is the one
+// direction this project must never take.
+describe('runReducer — an answer whose number is not a number', () => {
+  const denyOrAllow: Program = {
+    ...p,
+    reduce: {
+      kind: 'rules',
+      rules: [{ when: [{ id: 'destructive', op: 'uncertain' }], then: 'ask' },
+              { when: [{ id: 'destructive', op: 'gte', value: 0.8 }], then: 'deny' }],
+      otherwise: 'allow',
+    },
+  }
+  const missing = { type: 'noul' } as unknown as JevAnswer
+
+  it('refuses rather than falling through to the permissive otherwise', () => {
+    // Measured on the old code: both of these returned 'allow'.
+    expect(() => runReducer(denyOrAllow, answers({ destructive: missing })))
+      .toThrow(/"destructive"[\s\S]*not a finite number/)
+    expect(() => runReducer(denyOrAllow, answers({ destructive: { type: 'noul', noul: NaN } })))
+      .toThrow(/"destructive"[\s\S]*not a finite number/)
+  })
+
+  it('refuses a score and a choice the same way', () => {
+    const noScore = { type: 'score', legend: {}, probabilities: {}, confidence: 0.9 } as unknown as JevAnswer
+    expect(() => value(answers({ radius: noScore }), 'radius')).toThrow(/not a finite number/)
+    const noConfidence = { type: 'choice', choice: 'build', probabilities: {} } as unknown as JevAnswer
+    expect(() => value(answers({ target: noConfidence }), 'target')).toThrow(/not a finite number/)
+  })
+
+  it('does not report certainty for an answer it cannot read', () => {
+    // Old behaviour: `NaN > 0.35 && NaN < 0.65` is false, so isUncertain said "certain" —
+    // the `uncertain` rule above did not fire either, which is how the fall-through happened.
+    expect(() => isUncertain(answers({ destructive: missing }), 'destructive', p))
+      .toThrow(/not a finite number/)
+    const noConfidence = { type: 'choice', choice: 'build', probabilities: {} } as unknown as JevAnswer
+    expect(() => isUncertain(answers({ target: noConfidence }), 'target', p))
+      .toThrow(/not a finite number/)
+  })
+
+  it('evaluate never reaches the reducer with one: validateResponse names it first', async () => {
+    // Not a defect test — the proof that the guard above is a backstop for direct callers of
+    // the exported reducer, not the only thing standing between the wire and a verdict.
+    const bad = { ...answers(), destructive: { type: 'noul' } }
+    await expect(evaluate(p, 'rm -rf /', { client: serves({ model: 'jev-1.13.0', answers: bad, usage }) }))
+      .rejects.toThrow(/Invalid response:[\s\S]*"destructive"\.noul is undefined, not a number/)
   })
 })
 
