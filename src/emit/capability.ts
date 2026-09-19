@@ -19,6 +19,17 @@ export type TargetCapability = {
    */
   thresholdPattern?: RegExp
   /**
+   * What this target DOES with a `gte`/`lte` threshold, in the consumer's own terms, and
+   * therefore what goes wrong when the value is not a number. Read only by
+   * `threshold_not_a_number`, whose check is target-independent while its damage is not:
+   * the policy targets write the value into a YAML file, the two TypeScript ones splice it
+   * into source the consumer then compiles, langchain renders it as a Python literal, and
+   * json does not carry the reducer at all. One sentence each, measured, because a refusal
+   * that states the policy consequence on a code target is telling the author to look in a
+   * file that does not exist.
+   */
+  thresholdSink: string
+  /**
    * The verdict words the target's own parser accepts, or undefined where any string
    * goes (the code targets return whatever the reducer returns). jevc verdicts are
    * arbitrary strings, so a target with a fixed vocabulary must be checked against it.
@@ -56,15 +67,45 @@ export type TargetCapability = {
 /** Decimal only: no exponent, no sign. Matches bouncer's `p` grammar. */
 const PLAIN_DECIMAL = /^\d*\.?\d+$/
 
+/**
+ * The `thresholdSink` sentences, kept out of the table so each one can be read as prose and
+ * so the table stays a table. Every claim in them was measured on this tree — the TS error
+ * codes come from `tsc --noEmit --strict` over the emitted modules with `jevc` resolved to
+ * `dist/`, the Python one from importing the emitted module and calling its `reduce`, and
+ * the runReducer verdicts from `runReducer` itself on a noul grid of 0, 0.5 and 1.
+ */
+const SPLICED_INTO_TYPESCRIPT =
+  'splices this threshold into the emitted module unquoted, where the consumer\'s own `tsc --strict` refuses it: ' +
+  '`null` is TS18050 ("The value \'null\' cannot be used here") on sdk and TS2345 on ai-sdk, and `true` is TS2365 ' +
+  '("Operator \'>=\' cannot be applied to types \'number\' and \'boolean\'") on sdk and TS2345 on ai-sdk. ' +
+  '`jevc compile` has written, at exit 0, a file the consumer\'s build will not accept. A numeric string is the ' +
+  'quiet half: `"0.5"` spliced unquoted IS the numeric literal 0.5, so it compiles clean and the threshold ' +
+  'changes type with nothing to show for it.'
+
 export const TARGETS: Record<string, TargetCapability> = {
   sdk:       { name: 'sdk', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true,
+               thresholdSink: SPLICED_INTO_TYPESCRIPT },
   json:      { name: 'json', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true,
+               // The request carries the QUESTIONS; the reducer stays in jevc, so this is the
+               // one target where the value never reaches the artifact. It is refused all the
+               // same, and for the plainest reason of the six: nothing downstream will ever
+               // object, so the coercion is the whole of the damage.
+               thresholdSink: 'carries the questions to the wire and leaves the verdict to jevc\'s own `runReducer`, ' +
+                 'so this threshold reaches no artifact at all — it is simply coerced, silently, forever. Measured: ' +
+                 'with `null` as a `gte` threshold runReducer answers deny at a probability of 0, 0.5 and 1 alike, ' +
+                 'because `null` reads as 0 and a deny rule at 0 fires on everything.' },
   langchain: { name: 'langchain', kinds: ['noul', 'choice', 'score'], reducer: 'code',
-               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true },
+               idsOnTheWire: true, carriesConfidence: true, carriesLegend: true,
+               thresholdSink: 'renders this threshold through `py()`, which QUOTES a string and maps null to `None`, ' +
+                 'so the emitted `_compare` raises at reduce time where `runReducer` coerces and returns a verdict. ' +
+                 'Measured over a noul grid of 0, 0.5 and 1: `"0.5"` raises ' +
+                 '`TypeError: \'>=\' not supported between instances of \'float\' and \'str\'` at every point, and ' +
+                 '`null` the same against \'NoneType\' — a gate that answers nothing at all instead of answering wrongly.' },
   'ai-sdk':  { name: 'ai-sdk', kinds: ['noul', 'choice', 'score'], reducer: 'code',
                idsOnTheWire: true, carriesConfidence: false, carriesLegend: false,
+               thresholdSink: SPLICED_INTO_TYPESCRIPT,
                note: 'EvaluationModelV4 drops legend and moves confidence into providerMetadata, where it may be absent.' },
   bouncer:   { name: 'bouncer', kinds: ['noul'], reducer: 'single-condition',
                thresholdRange: [0, 1], thresholdPattern: PLAIN_DECIMAL,
@@ -72,11 +113,18 @@ export const TARGETS: Record<string, TargetCapability> = {
                reservedIds: { any: 'bouncer reads `any` in a rule as "any question", not as a question named "any".' },
                rangeCondition: true,
                carriesConfidence: false, carriesLegend: false,
+               thresholdSink: 'writes this threshold into the `p` string of the policy file, where the grammar is ' +
+                 '`(>=|>|<=|<)\\s*(\\d*\\.?\\d+)` and anything else is a LOAD error — which stops policy resolution ' +
+                 'and routes to `on_error: passthrough`, so the gate emits nothing at all (target-bouncer.md:9).',
                note: 'gate.questions has no type key; every question is sent as a noul. A rule names exactly one question.' },
   toolgate:  { name: 'toolgate', kinds: ['noul'], reducer: 'thresholds',
                thresholdRange: [0, 1],
                reservedIds: { off_task: 'toolgate drops off_task when there is no task context, so the question would vanish.' },
                carriesConfidence: false, carriesLegend: false,
+               thresholdSink: 'writes this threshold into the policy file as a YAML number, where ' +
+                 'target-toolgate.md:27-28 declares one. Measured at exit 0 on this tree: `deny: "0.8"`, `deny: true`, ' +
+                 '`deny: ""` and `deny: null` all emitted. `null` is the severe one — it satisfies toolgate\'s own ' +
+                 '`0 <= ask <= deny <= 1` by the same coercion and then denies EVERY gated tool call.',
                note: 'validatePolicy throws unless every question is type: boolean.' },
 }
 
@@ -370,6 +418,67 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
     }
   }
 
+  // EVERY TARGET, which is why this loop is out here and not in the policy branch below.
+  //
+  // `Condition.value` is TYPED `number` and is not one at runtime: `emit-policy` JSON.parses
+  // a file README:225 calls "the shape `--lift` asks the agent to produce" — model output —
+  // and casts it. Every other check on this value in jevc is a RELATIONAL comparison, and
+  // those COERCE: `"0.8" >= 0 && "0.8" <= 1` is true, `null >= 0 && null <= 1` is true, and
+  // `!(ask < deny)` compares two STRINGS lexically. So the check has to be the type itself,
+  // before any comparison.
+  //
+  // toolgate is where this lands in a deployed file: it has no thresholdPattern, and its
+  // emitter copies `c.value` straight into `stringify({ thresholds })`, where
+  // target-toolgate.md:27-28 declares a number. Measured on this tree at exit 0: `deny: "0.8"`,
+  // `deny: true`, `deny: ""` and `deny: null` all emitted. `null` is the severe one — it
+  // satisfies toolgate's own `0 <= ask <= deny <= 1` by the same coercion and then denies
+  // EVERY gated tool call. README:381 already documents these thresholds as "0..1, plain
+  // decimal"; this makes the code true.
+  //
+  // NOT a `continue`, and hoisting does not change that: bouncer's thresholdPattern catches
+  // five of the six by their serialisation and reports `threshold_unrepresentable`, which is
+  // a different sentence about the same value, and a caller reading one issue at a time is
+  // owed both. The two checks simply run in two loops now, and bouncer still collects both.
+  // The one the pattern does not catch is `"0.8"`, which `cmp()` renders byte-identically to
+  // the number — harmless on bouncer, which is why the type check is what closes it.
+  //
+  // WHY IT MOVED. It sat inside `if (cap.reducer !== 'code')`, so the four code targets ran
+  // none of it, and each mistranslated the value its own way instead — see `thresholdSink`
+  // above for the measured consequence per target, and note that no two of them agree. The
+  // CHECK is target-independent (a value that violates its own declared type is malformed
+  // input anywhere); only the DAMAGE is per-target, so only the sentence varies.
+  //
+  // WHAT DID NOT MOVE, and this is the half that measurement corrected: the old check was
+  // `typeof c.value !== 'number' || !Number.isFinite(c.value)`, and only the first clause is
+  // target-independent. NaN and +-Infinity ARE numbers — they do not violate the declared
+  // type — and the four code targets lower them EXACTLY: `pyThreshold` (emit/langchain.ts:32)
+  // exists for precisely that and renders `float("nan")`, while the TypeScript targets splice
+  // the JS globals, so the artifact agrees with runReducer on every answer. Two tests pin that
+  // agreement (emit-backends.test.ts "never interpolates a non-finite threshold as a bare JS
+  // global" and "langchain: compares false rather than raising, exactly as runReducer does"),
+  // and hoisting the finiteness clause with the rest broke both — refusing a Program the
+  // target expresses faithfully is the property's branch (1) claiming a program that belongs
+  // in branch (2). It stays in the policy branch below, where it is a real limit: neither
+  // `.nan` in a YAML number nor an exponent-free `p` string can spell a non-finite threshold.
+  //
+  // COERCION WAS CONSIDERED AND REJECTED, twice over. Lowering through `Number(v)` —
+  // `"0.5"`->0.5, `null`->0, `true`->1 — reproduces runReducer's own coercion exactly and
+  // would make every target agree. But `null`->0 is a `gte` deny rule with threshold 0, a
+  // rule that fires on EVERYTHING, which is the `deny: null` failure mode this file cures by
+  // type-checking rather than by coercing; and coercing here while refusing on the policy
+  // targets would leave one Program meaning different things on different targets, which is
+  // the disagreement the six targets were brought into line to end. A value that violates
+  // its own declared type is malformed input, and naming it is the honest answer.
+  for (const [i, rule] of p.reduce.rules.entries()) {
+    for (const c of conditionsOf(rule)) {
+      if (c.op !== 'gte' && c.op !== 'lte') continue
+      if (typeof c.value !== 'number') {
+        out.push({ code: 'threshold_not_a_number', path: `reduce.rules[${i}]`, severity: 'error',
+          message: `Target "${target}" ${cap.thresholdSink} This threshold is not a number at all: "${c.id}" has ${JSON.stringify(c.value) ?? String(c.value)} (${typeof c.value}). Every range check in jevc is a relational comparison and those coerce, so a value that is not a number passes all of them and reaches the target unchanged. Write a plain number${cap.thresholdRange ? ` in ${cap.thresholdRange[0]}..${cap.thresholdRange[1]}` : ''}.` })
+      }
+    }
+  }
+
   if (cap.reducer !== 'code') {
     for (const [i, rule] of p.reduce.rules.entries()) {
       const when = conditionsOf(rule)
@@ -413,29 +522,17 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       }
       for (const c of when) {
         if (c.op === 'gte' || c.op === 'lte') {
-          // `Condition.value` is TYPED `number` and is not one at runtime: `emit-policy`
-          // JSON.parses a file README:225 calls "the shape `--lift` asks the agent to
-          // produce" — model output — and casts it. Every other check on this value in jevc
-          // is a RELATIONAL comparison, and those COERCE: `"0.8" >= 0 && "0.8" <= 1` is true,
-          // `null >= 0 && null <= 1` is true, and `!(ask < deny)` compares two STRINGS
-          // lexically. So the check has to be the type itself, before any comparison.
-          //
-          // toolgate is where this lands in a deployed file: it has no thresholdPattern, and
-          // its emitter copies `c.value` straight into `stringify({ thresholds })`, where
-          // target-toolgate.md:27-28 declares a number. Measured on this tree at exit 0:
-          // `deny: "0.8"`, `deny: true`, `deny: ""` and `deny: null` all emitted. `null` is
-          // the severe one — it satisfies toolgate's own `0 <= ask <= deny <= 1` by the same
-          // coercion and then denies EVERY gated tool call. README:381 already documents
-          // these thresholds as "0..1, plain decimal"; this makes the code true.
-          //
-          // NOT a `continue`: bouncer's thresholdPattern catches five of the six by their
-          // serialisation and reports `threshold_unrepresentable`, which is a different
-          // sentence about the same value, and a caller reading one issue at a time is owed
-          // both. The one it does not catch is `"0.8"`, which `cmp()` renders byte-identically
-          // to the number — harmless on bouncer, which is why the type check is what closes it.
-          if (typeof c.value !== 'number' || !Number.isFinite(c.value)) {
+          // The finiteness half of the old `threshold_not_a_number`, left behind when the
+          // type half was hoisted to every target. It belongs to the POLICY targets alone:
+          // a serialised policy has no spelling for a non-finite threshold — toolgate's YAML
+          // number would be `.nan`/`.inf`, which target-toolgate.md:27-28 does not declare,
+          // and bouncer's `p` grammar has no exponent, let alone a word — while the four code
+          // targets write `NaN` / `float("nan")` and agree with runReducer exactly. Same code
+          // as the hoisted check because it is the same class of defect to a caller reading
+          // one issue at a time; a different sentence because the remedy is different.
+          if (typeof c.value === 'number' && !Number.isFinite(c.value)) {
             out.push({ code: 'threshold_not_a_number', path: `reduce.rules[${i}]`, severity: 'error',
-              message: `Target "${target}" writes this threshold into the policy file as a number; "${c.id}" has ${JSON.stringify(c.value) ?? String(c.value)} (${typeof c.value}). Every range check in jevc is a relational comparison and those coerce, so a value that is not a finite number passes them all and lands in the artifact unchanged — where the consumer either refuses to load the file or reads it as a bound nobody wrote. Write a plain number in 0..1.` })
+              message: `Target "${target}" ${cap.thresholdSink} ${c.value} is a number, but not a finite one, and the policy file has no spelling for it — a code target writes it exactly, this one cannot write it at all. Write a plain number${cap.thresholdRange ? ` in ${cap.thresholdRange[0]}..${cap.thresholdRange[1]}` : ''}.` })
           }
           if (cap.thresholdRange) {
             const [lo, hi] = cap.thresholdRange
@@ -483,3 +580,43 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
 
   return out
 }
+
+/**
+ * The issues a CODE emitter refuses on its own, as distinct from everything `canEmit` knows.
+ *
+ * The house pattern is `emitBouncerPolicy` (emit/policy/bouncer.ts:31): call canEmit first,
+ * throw with the issues. The two policy emitters can take the WHOLE error list because they
+ * structurally depend on it — `emitBouncerPolicy` reads `r.when[0]` and `rangeFor(d).p!`, both
+ * of which are only safe because canEmit refused the rules where they are not.
+ *
+ * The code emitters depend on none of it, and MEASURING the whole list on them is what settled
+ * this. `canEmit(p, 'sdk').length` inside `emitNative` (and the same in ai-sdk/langchain) broke
+ * 16 tests across three files, and not one of them was a mistranslation:
+ *   - 10 x `rule_unknown_decision`, from emitter UNIT tests whose Program pairs a canned
+ *     reducer with whatever decisions the test is really about. The lowering is faithful and
+ *     `validateProgram` (reduce_unknown_id) is the gate that refuses the Program itself.
+ *   -  3 x `id_empty`, from "every awkward name is still asked and still decides". The code
+ *     targets carry `""` INTACT — that is the tested behaviour and the property's branch (2);
+ *     `id_empty` is a fact about the WIRE, which is why it is scoped to `idsOnTheWire` and why
+ *     cli.ts backstops it with `validateRequest` instead of the emitter doing it.
+ *   -  2 x `threshold_not_a_number` on NaN/Infinity, which the code targets render exactly.
+ *   -  1 x the same, reached through a second path.
+ * A refusal that fires on an artifact the target expresses faithfully is branch (1) claiming a
+ * Program that belongs in branch (2) — the same class of lie as an unrefused mistranslation,
+ * pointed the other way. So the code emitters refuse exactly what they cannot LOWER, which
+ * today is one code, and the rest stays advice a consumer reads from `canEmit` and the CLI
+ * enforces at cli.ts:398.
+ *
+ * Adding a code here is a real decision: it means "this emitter cannot write a faithful
+ * artifact for this Program", not "this Program is questionable".
+ */
+const UNLOWERABLE = new Set(['threshold_not_a_number'])
+
+/** The errors a code emitter must refuse, ready for the house-pattern throw. Empty is the
+ *  ordinary case: a code target takes an arbitrary reducer and lowers almost anything. */
+export const cannotLower = (p: Program, target: string): ValidationIssue[] =>
+  canEmit(p, target).filter(i => i.severity === 'error' && UNLOWERABLE.has(i.code))
+
+/** The house-pattern message, one definition for the three code emitters. */
+export const refusal = (what: string, issues: readonly ValidationIssue[]): Error =>
+  new Error(`Cannot emit ${what}:\n${issues.map(i => `  ${i.path}: ${i.message}`).join('\n')}`)

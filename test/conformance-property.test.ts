@@ -1230,7 +1230,8 @@ describe('the code targets: a threshold that is not a number', () => {
    * and never looks inside a condition. `validateProgram`'s range checks are RELATIONAL, so
    * they coerce: `"0.5" >= 0 && "0.5" <= 1` is true and `null >= 0 && null <= 1` is true.
    *
-   * The three code targets then disagree three different ways, and none of them is a refusal:
+   * The three code targets DID disagree three different ways, and none of them was a refusal.
+   * Measured on this tree before the fix, and kept because it is the argument FOR refusing:
    *
    *   sdk / ai-sdk   splice it UNQUOTED into a comparison — `value(a,"q") >= null`. tsc
    *                  rejects that (TS18050 / TS2365 / TS2345), so `jevc compile` has written
@@ -1242,6 +1243,21 @@ describe('the code targets: a threshold that is not a number', () => {
    *                  'int' and 'str'` at reduce time — where `runReducer` coerces and returns
    *                  a verdict. `pyThreshold` (src/emit/langchain.ts:32) was written for
    *                  exactly this hazard and only covers non-finite NUMBERS.
+   *
+   * THE RULING, and what these three tests assert now: a non-number threshold is REFUSED,
+   * uniformly, by all six targets. `threshold_not_a_number` was already the answer for the
+   * two policy targets (src/emit/capability.ts) and the check is target-independent, so it
+   * was hoisted out of the policy branch; the three code emitters call `canEmit` themselves,
+   * the way `emitBouncerPolicy` does, so calling one directly refuses too.
+   *
+   * COERCION WAS REJECTED. Lowering the value through `Number(v)` — `"0.5"`->0.5, `null`->0,
+   * `true`->1 — reproduces `runReducer`'s own JS coercion and would have made both pins pass.
+   * It is wrong twice over: `null`->0 is a `gte` deny rule with threshold 0, a rule that fires
+   * on EVERYTHING (measured below: runReducer answers deny at noul = 0, 0.5 and 1 alike), which
+   * is the failure mode the `deny: null` fix cured by type-checking rather than coercing; and
+   * coercing on the code targets while capability.ts refuses on the policy ones leaves the same
+   * Program meaning different things on different targets, which is the disease the six-target
+   * agreement work was curing.
    */
   const NOT_A_NUMBER: [string, unknown][] = [
     ['a numeric string, the shape lifted model output actually arrives in', '0.5'],
@@ -1251,53 +1267,87 @@ describe('the code targets: a threshold that is not a number', () => {
   const withThreshold = (value: unknown): Program =>
     prog([noul('q')], [{ when: [{ id: 'q', op: 'gte', value } as unknown as Condition], then: 'deny' }])
 
-  it('none of them is refused, which is what makes the rest of this describe reachable', () => {
-    for (const [, value] of NOT_A_NUMBER) {
+  /** The message an emitter refused with, or the fact that it did not refuse at all. A bare
+   *  `toThrow()` passes on any throw, including the `TypeError` an emitter would raise on its
+   *  way to writing the artifact — this test is about the REFUSAL, so it reads the sentence. */
+  const refusalOf = (emit: () => string): string => {
+    try { emit(); return 'EMITTED — no refusal' } catch (e) { return (e as Error).message }
+  }
+
+  it('every target refuses a non-number threshold', () => {
+    // WAS "none of them is refused, which is what makes the rest of this describe reachable".
+    // That was a CHARACTERISATION test by its own name: it pinned that canEmit cleared these
+    // Programs, so the two counterexamples below could run at all. It is the same shape as the
+    // empty-id characterisation at :1108 and is re-cut for the same reason — what it recorded
+    // stopped being true on purpose, and the positive contract is what the ruling decided.
+    // Kept here so the next reader can see what it used to say: canEmit returned [] for sdk,
+    // ai-sdk and langchain on all three values, while bouncer and toolgate already refused.
+    for (const [what, value] of NOT_A_NUMBER) {
       const p = withThreshold(value)
+      // validateProgram still clears it, and that is the whole mechanism rather than an
+      // oversight: its range checks are RELATIONAL and relational comparisons coerce. The
+      // type is the only thing that can be checked here, and canEmit is where it is checked.
       expect(errorsOf(validateProgram(p))).toEqual([])
-      for (const t of ['sdk', 'ai-sdk', 'langchain'] as const) {
-        expect(errorsOf(canEmit(p, t))).toEqual([])
+      for (const t of ['sdk', 'json', 'ai-sdk', 'langchain', 'bouncer', 'toolgate'] as const) {
+        expect(errorsOf(canEmit(p, t)).map(i => i.code), `${what} on ${t}`)
+          .toContain('threshold_not_a_number')
       }
     }
   })
 
-  it.fails('LIVE BUG: sdk and ai-sdk emit TypeScript that tsc --strict rejects', () => {
-    const sources: Record<string, string> = {}
-    for (const [i, [, value]] of NOT_A_NUMBER.entries()) {
-      sources[`nn_sdk_${i}`] = emitNative(withThreshold(value))
-      sources[`nn_ai_${i}`] = emitAiSdk(withThreshold(value))
-    }
-    const { diagnostics } = tsBatch(sources, [])
-    const bad = Object.entries(diagnostics).filter(([, d]) => d.length)
-      .map(([name, d]) => `${name}: ${d[0]}`)
-    expect(bad).toEqual([])
-  }, SLOW)
-
-  it.fails('LIVE BUG: langchain raises where runReducer returns a verdict', () => {
-    if (!pythonAvailable) expect.unreachable('python3 is required for the langchain target')
-    const sources: Record<string, string> = {}
-    const plan: PyPlan[] = []
-    const refs: string[][] = []
-    const grid: Record<string, JevAnswer>[] = [0, 0.5, 1].map(noulValue =>
-      ({ q: { type: 'noul', noul: noulValue } } as Record<string, JevAnswer>))
-    for (const [i, [, value]] of NOT_A_NUMBER.entries()) {
+  it('sdk and ai-sdk refuse instead of emitting TypeScript tsc --strict rejects', () => {
+    // WAS an `it.fails` pin that emitted all six modules and asserted tsc had nothing to say.
+    // Measured on this tree before the fix, it had four things to say and they are kept here,
+    // because they are what the refusal is FOR:
+    //   nn_sdk_1.ts(15,24):  TS18050  The value 'null' cannot be used here.
+    //   nn_sdk_2.ts(15,7):   TS2365   Operator '>=' cannot be applied to types 'number' and 'boolean'.
+    //   nn_ai_1.ts(143,41):  TS2345   Argument of type 'null' is not assignable to parameter of type 'number'.
+    //   nn_ai_2.ts(143,41):  TS2345   Argument of type 'boolean' is not assignable to parameter of type 'number'.
+    // and NOTHING about the numeric string — the quiet half: `"0.5"` spliced unquoted is the
+    // numeric literal 0.5, which compiles clean and changes the threshold's type in silence.
+    //
+    // This is branch (1) of the property at the top of this file, not a lowered bar: EXACTLY
+    // ONE of "canEmit returns an issue and the emitter refuses" or "the artifact is valid and
+    // agrees with runReducer" must hold, and a refusal satisfies the first. There is no
+    // artifact left for tsc to reject, which is the point — the four diagnostics above were
+    // reported against a file `jevc compile` had already written, at exit 0.
+    //
+    // The emitters are called DIRECTLY, bypassing canEmit, exactly as the pin did. That is not
+    // an artificial route: `emitNative` and `emitAiSdk` are exported from src/index.ts, and a
+    // library function that produces a broken artifact when called on its own is the defect.
+    for (const [what, value] of NOT_A_NUMBER) {
       const p = withThreshold(value)
-      sources[`nn_py_${i}`] = emitLangchain(p)
-      plan.push({ mod: `nn_py_${i}`, cases: grid.map(a => ({ a })) })
-      refs.push(grid.map(a => reference(p, a)))
+      for (const [target, emit] of [['sdk', emitNative], ['ai-sdk', emitAiSdk]] as const) {
+        const why = refusalOf(() => emit(p))
+        expect(why, `${target}: ${what}`).toContain(`Cannot emit ${target === 'sdk' ? 'an sdk' : 'an ai-sdk'} module`)
+        // Naming what cannot be expressed is half of branch (1): the path locates the rule
+        // and the message carries the value, so the author can find it in their own file.
+        expect(why, `${target}: ${what}`).toContain('reduce.rules[0]')
+        expect(why, `${target}: ${what}`).toContain(`(${value === null ? 'object' : typeof value})`)
+      }
     }
-    const { results, runError } = pyBatch(sources, plan)
-    expect(runError).toBeUndefined()
-    const bad: string[] = []
-    for (const [i, [what]] of NOT_A_NUMBER.entries()) {
-      results[`nn_py_${i}`].forEach((got, j) => {
-        if (refs[i][j].startsWith('THREW')) return
-        if (got.v === refs[i][j]) return
-        bad.push(`${what} at noul=${(grid[j].q as { noul: number }).noul}: runReducer says ${refs[i][j]}, the module says ${JSON.stringify(got)}`)
-      })
+  })
+
+  it('langchain refuses instead of emitting a module that raises where runReducer answers', () => {
+    // WAS an `it.fails` pin that ran the three modules over a noul grid of 0, 0.5 and 1 and
+    // compared each verdict to runReducer's. Measured before the fix, 6 of those 9 points
+    // disagreed, and the detail is the argument against the coercion the doc comment rejects:
+    //   "0.5"  TypeError: '>=' not supported between instances of 'int'/'float' and 'str' at
+    //          all three points, where runReducer answered allow, deny, deny.
+    //   null   TypeError: ... 'NoneType' at all three, where runReducer answered DENY AT EVERY
+    //          POINT — null coerces to 0 and `gte 0` fires on everything, including noul = 0.
+    //   true   agreed at all three, because `True` is 1 in Python and in JS alike. That
+    //          agreement is the accident: nothing anywhere recorded the change of type.
+    // python3 is no longer required to reach the assertion — the refusal is jevc's, not
+    // Python's, and the sweep above still exercises the real interpreter on every Program
+    // that clears canEmit.
+    for (const [what, value] of NOT_A_NUMBER) {
+      const why = refusalOf(() => emitLangchain(withThreshold(value)))
+      expect(why, what).toContain('Cannot emit a langchain module')
+      expect(why, what).toContain('reduce.rules[0]')
+      expect(why, what).toContain(`(${value === null ? 'object' : typeof value})`)
     }
-    expect(bad).toEqual([])
-  }, SLOW)
+  })
 })
 
 // ---------------------------------------------------------------------------

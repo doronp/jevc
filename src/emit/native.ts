@@ -6,6 +6,7 @@ import type { Condition, Decision, Program } from '../ir.js'
 // deliberately NOT the one bouncer.ts, toolgate.ts and langchain.ts use, and the header
 // of ts-lowering.ts says why all three must stay separate.
 import { tsIdKey as idKey, tsValue, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
+import { cannotLower, refusal } from './capability.js'
 
 function provenance(d: Decision): string {
   if (!d.source) return ''
@@ -53,6 +54,18 @@ function emitCondition(c: Condition): string {
 }
 
 export function emitNative(p: Program, name = 'program'): string {
+  // The house pattern, from emitBouncerPolicy (src/emit/policy/bouncer.ts:31): the gate runs
+  // INSIDE the emitter as well as in front of it. `emitNative` is exported from src/index.ts,
+  // so `emitNative(p)` on its own is a supported call, and a library function that writes a
+  // broken artifact when called that way is a defect however carefully cli.ts gates its own
+  // path. It does gate it — cli.ts:398 runs canEmit before this call and exits 1 on an error
+  // — so nothing on the CLI path changes; what changes is the consumer who skipped the
+  // documented `if (canEmit(p, t).length) refuse()` and got a module their own tsc rejects.
+  //
+  // `cannotLower`, not the whole of `canEmit`: the difference is measured, and capability.ts
+  // records the 16 tests that measured it.
+  const issues = cannotLower(p, 'sdk')
+  if (issues.length) throw refusal('an sdk module', issues)
   const rules = p.reduce.rules
     .map(r => {
       // `when: []` is an empty conjunction and `[].every(...)` is true (runtime.ts), so the

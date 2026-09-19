@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseLiftResponse } from '../src/from-prompt.js'
@@ -61,9 +61,18 @@ const AGENTS = [
   '',
 ].join('\n')
 
+/** Every scratch dir `lifted()` hands out, removed at the end of the file. afterAll rather
+ *  than try/finally so it happens even when a test throws, and deferred to the end so no
+ *  cleanup can ever land between a CLI write and the assertion that reads the file back. */
+const tmpDirs: string[] = []
+afterAll(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
+})
+
 /** Writes AGENTS.md under a nested directory, so the path as typed is not its basename. */
 function lifted() {
   const dir = mkdtempSync(join(tmpdir(), 'jevc-lift-'))
+  tmpDirs.push(dir)
   const path = join(dir, 'AGENTS.md')
   writeFileSync(path, AGENTS)
   const request = cli(['compile', path, '--lift'])
