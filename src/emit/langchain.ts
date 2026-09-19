@@ -49,7 +49,9 @@ export function emitLangchain(p: Program, name = 'program'): string {
     const conds = r.when.map(c => {
       if (c.op === 'is') return `answers[${py(c.id)}].choice == ${py(c.value)}`
       if (c.op === 'uncertain') return `_uncertain(answers, ${py(c.id)})`
-      return `_compare(answers, ${py(c.id)}, ${py(c.op === 'gte' ? '>=' : '<=')}, ${c.value})`
+      // py(), not interpolation: Infinity and NaN are JS globals and Python NameErrors,
+      // and nothing upstream rejects a non-finite threshold.
+      return `_compare(answers, ${py(c.id)}, ${py(c.op === 'gte' ? '>=' : '<=')}, ${py(c.value)})`
     }).join(' and ')
     return `    if ${conds}:\n        return ${py(r.then)}`
   }).join('\n')
