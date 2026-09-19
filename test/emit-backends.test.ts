@@ -262,3 +262,39 @@ describe('emitted uncertainty', () => {
     expect(got).toEqual(expectedConf)
   }, 60_000)
 })
+
+// ---------------------------------------------------------------------------
+// C5 — a threshold against a choice compares its confidence, as value() does
+// ---------------------------------------------------------------------------
+
+const choiceThreshold: Program = {
+  decisions: [{ id: 'dept', kind: 'choice', instructions: 'Which team?',
+    criteria: { billing: 'payments', technical: 'bugs' } }],
+  reduce: { kind: 'rules', rules: [
+    { when: [{ id: 'dept', op: 'gte', value: 0.7 }], then: 'route' }], otherwise: 'ask' },
+  residual: '', dropped: [],
+}
+
+const expectedThreshold = CONF_GRID.map(c =>
+  runReducer(choiceThreshold, { dept: { type: 'choice', choice: 'billing', confidence: c,
+    probabilities: { billing: c, technical: 1 - c } } as JevAnswer }))
+
+describe('threshold against a choice', () => {
+  // runtime.value() reads a choice's confidence. Both emitters read probability, then
+  // score, then gave up on 0 — so every gte was false and every lte true no matter what
+  // the model returned. `route` was unreachable.
+  it('ai-sdk: compares the confidence, not zero', () => {
+    const got = runAiSdk(emitAiSdk(choiceThreshold), CONF_GRID.map(c => ({
+      answers: { dept: { type: 'choice', choice: 'billing',
+        probabilities: { billing: c, technical: 1 - c } } },
+      confidence: { dept: c },
+    })))
+    expect(got).toEqual(expectedThreshold)
+  }, 60_000)
+
+  it('langchain: compares the confidence, not zero', () => {
+    const got = runLangchain(emitLangchain(choiceThreshold),
+      CONF_GRID.map(c => ({ dept: { kind: 'choice', choice: 'billing', confidence: c } })))
+    expect(got).toEqual(expectedThreshold)
+  }, 60_000)
+})

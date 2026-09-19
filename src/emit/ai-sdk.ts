@@ -47,8 +47,7 @@ export function emitAiSdk(p: Program, name = 'program'): string {
       const at = `a[${JSON.stringify(c.id)}]`
       if (c.op === 'is') return `${at}?.choice === ${JSON.stringify(c.value)}`
       if (c.op === 'uncertain') return `uncertain(a, ${JSON.stringify(c.id)}, confidence)`
-      // probability (boolean) and score live under different keys on this backend.
-      return `(${at}?.probability ?? ${at}?.score ?? 0) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
+      return `valueOf(a, ${JSON.stringify(c.id)}, confidence) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
     }).join(' && ')
     return `  if (${conds}) return ${JSON.stringify(r.then)}`
   }).join('\n')
@@ -91,6 +90,20 @@ export function confidenceFrom(
   if (!ps.length) return 0
   const sorted = [...ps].sort((x, y) => y - x)
   return sorted[0] - (sorted[1] ?? 0)
+}
+
+/**
+ * The number a threshold compares against, chosen the way jevc's own runtime chooses it:
+ * a boolean's probability, a score's level index, otherwise (a choice) its confidence.
+ * probability and score live under different keys on this backend, and a choice answer
+ * has neither — reading 0 there made every gte false and every lte true regardless of
+ * what the model returned. Refusing choice thresholds in canEmit was the alternative,
+ * rejected because this target takes an arbitrary reducer: the Program is expressible
+ * here, so the emitter should express it rather than narrow the target.
+ */
+function valueOf(a: Record<string, any>, id: string, confidence: Record<string, number>): number {
+  const ans = a[id]
+  return ans?.probability ?? ans?.score ?? confidenceFrom(ans, confidence[id])
 }
 
 /** Uncertainty per UNCERTAINTY above, not a fixed 0.5. A boolean's band is tested on its

@@ -49,10 +49,7 @@ export function emitLangchain(p: Program, name = 'program'): string {
     const conds = r.when.map(c => {
       if (c.op === 'is') return `answers[${py(c.id)}].choice == ${py(c.value)}`
       if (c.op === 'uncertain') return `_uncertain(answers, ${py(c.id)})`
-      // A noul answer has .noul, a score answer has .score; neither has both. Nested
-      // getattr, not `or`: a legitimate noul of 0.0 is falsy and would fall through.
-      const read = `getattr(answers[${py(c.id)}], "noul", getattr(answers[${py(c.id)}], "score", 0))`
-      return `(${read}) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
+      return `_value(answers, ${py(c.id)}) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
     }).join(' and ')
     return `    if ${conds}:\n        return ${py(r.then)}`
   }).join('\n')
@@ -74,6 +71,22 @@ classifier = TypeSafeClassifier(questions=${name}_questions, model="jev-latest")
 _UNCERTAINTY = {
 ${uncertainties}
 }
+
+
+def _value(answers, qid):
+    """The number a threshold compares against, as jevc's own runtime picks it: a noul's
+    value, a score's level index, otherwise a choice's confidence. A choice answer has
+    neither .noul nor .score, and falling back to 0 there made every >= fail and every
+    <= pass whatever the model said. Nested getattr with a None sentinel, not "or": a
+    legitimate noul of 0.0 is falsy and would fall through."""
+    ans = answers.get(qid)
+    noul = getattr(ans, "noul", None)
+    if noul is not None:
+        return noul
+    score = getattr(ans, "score", None)
+    if score is not None:
+        return score
+    return getattr(ans, "confidence", 0)
 
 
 def _uncertain(answers, qid) -> bool:
