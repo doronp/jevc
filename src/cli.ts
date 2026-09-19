@@ -154,6 +154,15 @@ if (cmd === 'emit-policy') {
     die(`${path} is not valid JSON: ${(e as Error).message}`)
   }
 
+  // The same gate `compile` runs. Without it a rule naming a decision that does not
+  // exist emitted `when: {ghost: {p: ">=0.8"}}` at exit 0 — valid YAML, a rule that can
+  // never match, and (for bouncer) a policy whose only failure mode is a silent gate.
+  // canEmit checks what the TARGET can express; validateProgram checks that the Program
+  // is coherent at all, and neither substitutes for the other.
+  const issues = [...validateProgram(program!), ...lintProgram(program!)]
+  for (const i of issues) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
+  if (issues.some(i => i.severity === 'error')) process.exit(1)
+
   const { emitBouncerPolicy } = await import('./emit/policy/bouncer.js')
   const { emitToolgatePolicy } = await import('./emit/policy/toolgate.js')
   let out: string
