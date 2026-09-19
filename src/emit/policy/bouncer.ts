@@ -29,10 +29,17 @@ export function emitBouncerPolicy(p: Program, opts: BouncerOptions = {}): string
   for (const d of p.decisions) {
     const c = d.criteria && !Array.isArray(d.criteria)
       ? (d.criteria as { true?: EntryType; false?: EntryType }) : undefined
+    // Only the keys `true` and `false` are read, and a side the Program does not
+    // describe is OMITTED rather than sent as "". bouncer forwards criteria verbatim to
+    // the model, so an empty string does not mean "unspecified", it means "this side is
+    // described by nothing" — a worse prompt than leaving the side unnamed. Matches
+    // bouncer's own rule that criteria is dropped from the request when it is empty.
+    const criteria: Record<string, string> = {}
+    if (c?.true != null) criteria.true = asString(c.true)
+    if (c?.false != null) criteria.false = asString(c.false)
     // No `type` key: bouncer hardcodes type "noul" for every question.
-    // Only the keys `true` and `false` are read; anything else is silently dropped.
-    questions[d.id] = c
-      ? { instructions: asString(d.instructions), criteria: { true: asString(c.true), false: asString(c.false) } }
+    questions[d.id] = Object.keys(criteria).length
+      ? { instructions: asString(d.instructions), criteria }
       : { instructions: asString(d.instructions) }
   }
 

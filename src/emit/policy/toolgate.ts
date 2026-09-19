@@ -30,8 +30,16 @@ function thresholdsFor(p: Program): { deny: number; ask: number } {
 
   const byVerdict = new Map<string, Set<number>>()
   const covered = new Map<string, Set<string>>()   // verdict -> question ids
+  let sawAsk = false
   for (const r of p.reduce.rules) {
     if (r.then !== 'deny' && r.then !== 'ask') refuse(`rule verdict "${r.then}" is not deny or ask.`)
+    // jevc's reducer is first-match-wins over an ORDERED list; toolgate always tests
+    // `>= deny` before `>= ask`. A deny rule sitting after an ask rule therefore means
+    // something the policy cannot: with ask 0.55 listed first and deny 0.85 second, the
+    // Program answers `ask` at p=0.9 and the emitted policy answers `deny`. Every
+    // threshold is legal and every question covered, so nothing else here catches it.
+    if (r.then === 'ask') sawAsk = true
+    else if (sawAsk) refuse(`a deny rule comes after an ask rule; toolgate always tests deny first, so the order cannot be preserved. List every deny rule before every ask rule.`)
     for (const c of r.when) {
       if (c.op !== 'gte') refuse(`condition op "${c.op}" on "${c.id}"; only >= maps to a threshold.`)
       byVerdict.set(r.then, (byVerdict.get(r.then) ?? new Set()).add(c.value))
@@ -52,8 +60,11 @@ function thresholdsFor(p: Program): { deny: number; ask: number } {
 
   const deny = [...byVerdict.get('deny')!][0]
   const ask = [...byVerdict.get('ask')!][0]
-  // validatePolicy enforces 0 <= ask <= deny <= 1.
-  if (!(ask <= deny)) refuse(`ask (${ask}) is above deny (${deny}); validatePolicy requires ask <= deny.`)
+  // validatePolicy enforces 0 <= ask <= deny <= 1, but ask == deny is a policy whose ask
+  // branch can never run: toolgate tests `>= deny` first, so every probability that the
+  // Program would ask about is denied instead. Two distinct verdicts in the Program have
+  // to stay two distinct verdicts, so this is strict where validatePolicy is not.
+  if (!(ask < deny)) refuse(`ask (${ask}) is not below deny (${deny}); toolgate tests deny first, so the ask threshold would never be reached.`)
   return { deny, ask }
 }
 
@@ -72,11 +83,16 @@ export function emitToolgatePolicy(p: Program): string {
   for (const d of p.decisions) {
     const c = d.criteria && !Array.isArray(d.criteria)
       ? (d.criteria as { true?: EntryType; false?: EntryType }) : undefined
+    // A side the Program does not describe is omitted, not sent as "": criteria goes
+    // into the model's prompt, where an empty string says the side is described by
+    // nothing rather than saying nothing about it.
+    const criteria: Record<string, string> = {}
+    if (c?.true != null) criteria.true = asString(c.true)
+    if (c?.false != null) criteria.false = asString(c.false)
     // validatePolicy throws unless type is exactly "boolean". Overriding a built-in id is
     // a wholesale per-key replace, not a deep merge, so criteria must be re-emitted here.
-    questions[d.id] = c
-      ? { type: 'boolean', instructions: asString(d.instructions),
-          criteria: { true: asString(c.true), false: asString(c.false) } }
+    questions[d.id] = Object.keys(criteria).length
+      ? { type: 'boolean', instructions: asString(d.instructions), criteria }
       : { type: 'boolean', instructions: asString(d.instructions) }
   }
 
