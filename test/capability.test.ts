@@ -92,6 +92,31 @@ describe('canEmit', () => {
     expect(canEmit(orShaped, 'toolgate')).toEqual([])
   })
 
+  // target-bouncer.md:58 — `then` / `default` must be allow, ask or deny. jevc verdicts are
+  // arbitrary strings, so an unchecked one emits a policy bouncer refuses to parse; a policy
+  // that fails to parse STOPS resolution (line 9) and routes to on_error, whose default
+  // passthrough emits nothing. The user replaces a working gate with a silent one.
+  it("rejects a rule verdict outside bouncer's allow/ask/deny vocabulary", () => {
+    const q: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'destructive', op: 'gte', value: 0.8 }], then: 'quarantine' }], otherwise: 'allow' } }
+    const issues = canEmit(q, 'bouncer')
+    expect(issues.some(i => i.code === 'verdict_unsupported')).toBe(true)
+    expect(issues.find(i => i.code === 'verdict_unsupported')!.message).toMatch(/quarantine/)
+  })
+
+  it('rejects a fallthrough verdict outside the same vocabulary', () => {
+    const q: Program = { ...nouls, reduce: { ...nouls.reduce, otherwise: 'escalate' } }
+    expect(canEmit(q, 'bouncer').some(i => i.code === 'verdict_unsupported')).toBe(true)
+  })
+
+  it('accepts all three verdicts bouncer does parse', () => {
+    const q: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'destructive', op: 'gte', value: 0.8 }], then: 'deny' },
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.6 }], then: 'ask' },
+    ], otherwise: 'allow' } }
+    expect(canEmit(q, 'bouncer')).toEqual([])
+  })
+
   it('rejects a threshold outside 0..1 on bouncer, whose p grammar is bounded', () => {
     const p: Program = { ...mixed, decisions: [nouls.decisions[0], mixed.decisions[1]],
       reduce: { kind: 'rules', rules: [
