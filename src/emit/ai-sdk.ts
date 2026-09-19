@@ -7,6 +7,11 @@ import type { Decision, Program } from '../ir.js'
 // and backslashes emits a literal newline inside a string literal. Same ruling as native.ts.
 const idKey = (id: string) => (/^[A-Za-z_$][\w$]*$/.test(id) ? id : JSON.stringify(id))
 
+// Every JS line terminator, LS and PS included: a `//` comment ends at any of them.
+// Residual is prose lifted from a human document, so it arrives with whatever line
+// endings that document had.
+const LINE = /\r\n|[\r\n\u2028\u2029]/g
+
 function question(d: Decision): string {
   if (d.kind === 'noul') {
     // EvaluationModelV4 renames noul -> boolean; the answer field becomes `probability`.
@@ -138,5 +143,6 @@ ${rules}
 
 export const model = createTypeSafeAi({ apiKey: process.env.TYPESAFE_AI_API_KEY })
   .evaluationModel('jev-latest')
-${p.residual ? `\n/* Still requires a generative model:\n${p.residual}\n*/\n` : ''}`
+${p.residual ? `\n${['Still requires a generative model:', ...p.residual.split(LINE)]
+    .map(l => `// ${l}`).join('\n')}\n` : ''}`
 }

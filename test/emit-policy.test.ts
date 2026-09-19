@@ -83,6 +83,17 @@ describe('emitBouncerPolicy', () => {
     expect(emitBouncerPolicy({ ...p, residual: 'summary: write a summary.' }))
       .toMatch(/# summary: write a summary\./)
   })
+
+  // Residual is prose lifted from a human document, so its line endings are the
+  // document's, not ours. Asserted on the emitted LINES rather than through parse():
+  // the `yaml` package both targets pin does not end a comment at a lone CR, but the
+  // YAML spec says a CR is a line break and PyYAML and go-yaml implement it, so a file
+  // whose "comment" is only a comment to one parser is not a comment.
+  it('comments out every line of a CR-separated residual', () => {
+    const out = emitBouncerPolicy({ ...p, residual: 'Judge the tone.\rmode: guard' })
+    expect(out.split(/\r\n|\r|\n/).filter(l => l.includes('mode: guard')))
+      .toEqual(['# mode: guard'])
+  })
 })
 
 describe('emitToolgatePolicy', () => {
@@ -134,6 +145,13 @@ describe('emitToolgatePolicy', () => {
   it('refuses a non-allow fallthrough', () => {
     expect(() => emitToolgatePolicy({ ...flat, reduce: { ...flat.reduce, otherwise: 'deny' } }))
       .toThrow(/fallthrough/)
+  })
+
+  // Same CR hazard as bouncer's, asserted the same way and for the same reason.
+  it('comments out every line of a CR-separated residual', () => {
+    const out = emitToolgatePolicy({ ...flat, residual: 'Judge the tone.\rthresholds: {deny: 0.99}' })
+    expect(out.split(/\r\n|\r|\n/).filter(l => l.includes('thresholds: {deny')))
+      .toEqual(['# thresholds: {deny: 0.99}'])
   })
   it('refuses the reserved off_task id, which toolgate drops without task context', () => {
     const bad: Program = { ...flat, decisions: [{ id: 'off_task', kind: 'noul', instructions: 'x' }] }

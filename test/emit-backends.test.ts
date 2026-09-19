@@ -331,3 +331,24 @@ describe('a missing answer', () => {
     ])).toEqual(['handle', 'ignore'])
   }, 60_000)
 })
+
+// ---------------------------------------------------------------------------
+// I10 / M1 — residual text is lifted prose and cannot be trusted to be inert
+// ---------------------------------------------------------------------------
+
+describe('residual', () => {
+  // The residual was wrapped in /* ... */. It is prose lifted from a human document, so
+  // it can contain */ — a glob like /assets/*/icon.png does — and the comment then ends
+  // early, leaving the rest of the sentence as code.
+  it('ai-sdk: a */ in the residual does not end the comment early', () => {
+    const r: Program = { ...lower, residual: 'Escalate anything under /assets/*/icon.png.' }
+    expect(runAiSdk(emitAiSdk(r), [{ answers: {} }])).toEqual(['handle'])
+  }, 60_000)
+
+  // Python's tokenizer treats a lone \r as a line terminator, so splitting the residual
+  // on '\n' only leaves everything after a CR uncommented — and executed at import.
+  it('langchain: a lone CR in the residual stays inside the comment', () => {
+    const r: Program = { ...lower, residual: 'Judge the tone.\rraise SystemExit(3)' }
+    expect(runLangchain(emitLangchain(r), [{}])).toEqual(['handle'])
+  }, 60_000)
+})
