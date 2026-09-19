@@ -1,4 +1,5 @@
 import type { EntryType } from '../contract.js'
+import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
 
 // JSON.stringify, not a hand-rolled quoter: EntryType is `string | object | array | null`,
@@ -29,11 +30,23 @@ export function emitAiSdk(p: Program, name = 'program'): string {
       .map((c, i) => `${JSON.stringify(String(i))}: ${JSON.stringify(c)}`).join(', ')} },`)
     .join('\n')
 
+  // Each decision's uncertainty rule, RESOLVED from the Program (uncertaintyOf supplies
+  // jevc's defaults where a decision declares none) and carried into the generated module.
+  // The emitter used to lower every `uncertain` condition to a literal `< 0.5`, which is a
+  // different question from the one the Program asks.
+  const uncertainties = p.decisions.map(d => {
+    const u = uncertaintyOf(d)
+    const body = 'band' in u
+      ? `{ band: [${u.band[0]}, ${u.band[1]}] }`
+      : `{ belowConfidence: ${u.belowConfidence} }`
+    return `  ${idKey(d.id)}: ${body},`
+  }).join('\n')
+
   const rules = p.reduce.rules.map(r => {
     const conds = r.when.map(c => {
       const at = `a[${JSON.stringify(c.id)}]`
       if (c.op === 'is') return `${at}?.choice === ${JSON.stringify(c.value)}`
-      if (c.op === 'uncertain') return `confidenceFrom(${at}) < 0.5`
+      if (c.op === 'uncertain') return `uncertain(a, ${JSON.stringify(c.id)}, confidence)`
       // probability (boolean) and score live under different keys on this backend.
       return `(${at}?.probability ?? ${at}?.score ?? 0) ${c.op === 'gte' ? '>=' : '<='} ${c.value}`
     }).join(' && ')
@@ -55,8 +68,24 @@ export const ${name}Questions = {
 ${p.decisions.map(question).join('\n')}
 } as const
 
-/** Confidence is not returned inline. Derive it; never treat absence as zero. */
-export function confidenceFrom(answer: { probabilities?: Record<string, number>; probability?: number } | undefined): number {
+/** Every decision's uncertainty rule as the Program declares it: a band around the
+ *  boundary for a boolean, a confidence floor for a choice or score. */
+export const UNCERTAINTY: Record<string, { band?: [number, number]; belowConfidence?: number }> = {
+${uncertainties || '  // no decisions'}
+}
+
+/**
+ * Confidence is not returned inline on this backend — it is relocated to
+ * result.providerMetadata.typesafe.confidence, keyed by question id, and is ABSENT (not
+ * null) when the wire returned none. Pass that map in: it is the model's own number,
+ * whereas the fallback recomputes from probabilities that the backend rounds to 2dp, so
+ * the two disagree near a threshold. Absence still never means zero.
+ */
+export function confidenceFrom(
+  answer: { probabilities?: Record<string, number>; probability?: number } | undefined,
+  provided?: number,
+): number {
+  if (typeof provided === 'number') return provided
   if (typeof answer?.probability === 'number') return Math.abs(2 * answer.probability - 1)
   const ps = Object.values(answer?.probabilities ?? {})
   if (!ps.length) return 0
@@ -64,8 +93,20 @@ export function confidenceFrom(answer: { probabilities?: Record<string, number>;
   return sorted[0] - (sorted[1] ?? 0)
 }
 
-/** The verdict is computed here, in code — never asked of the model. */
-export function reduce(a: Record<string, any>): string {
+/** Uncertainty per UNCERTAINTY above, not a fixed 0.5. A boolean's band is tested on its
+ *  probability; everything else against its confidence. An absent answer is not uncertain:
+ *  there is no measurement to be uncertain about. */
+function uncertain(a: Record<string, any>, id: string, confidence: Record<string, number>): boolean {
+  const rule = UNCERTAINTY[id]
+  const ans = a[id]
+  if (!rule || !ans) return false
+  if (rule.band) return ans.probability > rule.band[0] && ans.probability < rule.band[1]
+  return confidenceFrom(ans, confidence[id]) < rule.belowConfidence!
+}
+
+/** The verdict is computed here, in code — never asked of the model.
+ *  \`confidence\` is result.providerMetadata.typesafe.confidence; pass it when you have it. */
+export function reduce(a: Record<string, any>, confidence: Record<string, number> = {}): string {
 ${rules}
   return ${JSON.stringify(p.reduce.otherwise)}
 }
