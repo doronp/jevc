@@ -1,29 +1,12 @@
 import type { EntryType } from '../contract.js'
 import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
-
-// JSON.stringify, not a hand-rolled quoter: EntryType is `string | object | array | null`,
-// so String(v) renders "[object Object]" silently, and a quoter that only escapes quotes
-// and backslashes emits a literal newline inside a string literal. Same ruling as native.ts.
-//
-// `__proto__` gets a COMPUTED key, and quoting it would not have been enough: in an object
-// initializer `{ __proto__: v }` and `{ "__proto__": v }` are both the prototype setter,
-// so the entry re-parents the object instead of becoming an own property and the question
-// vanishes from the emitted map entirely — never sent to the API, never answered, and the
-// rule that names it can never fire, at exit 0. `{ ["__proto__"]: v }` is an ordinary
-// property definition, and it survives `as const` (the key still narrows). Reachable
-// without malice: from-schema.ts uses the JSON Schema property name as the id, and
-// JSON.parse does create an own `__proto__` key. Applies to option names too, not just
-// decision ids — a choice that loses an option is a choice `is` can never match.
-const idKey = (id: string) =>
-  id === '__proto__' ? `[${JSON.stringify(id)}]`
-  : /^[A-Za-z_$][\w$]*$/.test(id) ? id
-  : JSON.stringify(id)
-
-// Every JS line terminator, LS and PS included: a `//` comment ends at any of them.
-// Residual is prose lifted from a human document, so it arrives with whatever line
-// endings that document had.
-const LINE = /\r\n|[\r\n\u2028\u2029]/g
+// One definition, shared with native.ts: `idKey` and the line-terminator set were
+// byte-identical copies here and there, and nothing forced them to stay in step. The
+// module is named for the TYPESCRIPT targets — its ECMAScript terminator set is
+// deliberately NOT the one bouncer.ts, toolgate.ts and langchain.ts use, and the header
+// of ts-lowering.ts says why all three must stay separate.
+import { tsIdKey as idKey, TS_LINE_TERMINATORS as LINE } from './ts-lowering.js'
 
 function question(d: Decision): string {
   if (d.kind === 'noul') {
