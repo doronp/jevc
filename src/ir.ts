@@ -1,4 +1,8 @@
+import { noulCriteriaIssues } from './contract.js'
 import type { EntryType, ValidationIssue } from './contract.js'
+// A value import, where every other edge to contract.ts is type-only. Safe because the
+// dependency is one-way at runtime: contract.ts's only import from ir.ts is `import type
+// { Program }`, which is erased (see the note at the top of that file), so there is no cycle.
 
 export type Uncertain = { belowConfidence: number } | { band: [number, number] }
 
@@ -121,6 +125,15 @@ export function validateProgram(p: Program): ValidationIssue[] {
       if (Array.isArray(d.criteria)) {
         err('criteria_shape', `decisions.${d.id}.criteria`,
           `"${d.id}" is a noul whose criteria is an array; a noul takes {true, false} descriptions. An array is not sent at all — the question reaches the model with neither side described.`)
+      } else {
+        // The same whitelist validateRequest enforces, from the same constant. It lived only
+        // there, which gated the path that gets an answer back and left the path that WRITES
+        // A DEPLOYABLE FILE open: measured on this tree, `emit-policy --for bouncer` on a
+        // noul with `criteria: {treu: "...", false: "..."}` exited 0 and wrote a policy whose
+        // question carries only the `false` description — the author's other outcome is gone
+        // from the artifact and from the request it makes. Costs the corpus nothing: its 252
+        // nouls use `true` and `false` and no other key.
+        out.push(...noulCriteriaIssues(d.criteria, d.id, `decisions.${d.id}`))
       }
     } else if (!d.criteria) {
       err('criteria_missing', `decisions.${d.id}`,

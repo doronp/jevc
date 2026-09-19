@@ -434,6 +434,78 @@ describe('validateProgram — ids that a plain object already has', () => {
   })
 })
 
+// R1 put this whitelist on `validateRequest` only. The wire path runs that; the two paths
+// that WRITE A FILE somebody deploys — `jevc emit-policy`, and any library caller that emits
+// without asking — run `validateProgram` and nothing else. A typo'd outcome key is accepted
+// by the API, ignored by it, and dropped by every emitter, so the description the author
+// wrote never reaches the model and nothing says so.
+describe('validateProgram — a noul criteria key that is neither true nor false', () => {
+  const withCriteria = (criteria: unknown): Program => {
+    const p = prog()
+    p.decisions.push({ id: 'is_protected', kind: 'noul',
+      instructions: 'Does this touch a protected path?', criteria: criteria as never })
+    return p
+  }
+  const typo = { treu: 'the command deletes data the user cannot regenerate', false: 'it is reversible' }
+
+  it('refuses it on the program path, where the artifact is produced', () => {
+    const issues = validateProgram(withCriteria(typo))
+    expect(issues.map(i => `${i.code} ${i.path}`))
+      .toEqual(['unknown_field decisions.is_protected.criteria.treu'])
+    expect(issues[0].severity).toBe('error')
+  })
+
+  it('is what emit-policy silently discards: the author\'s `true` side never reaches the model', async () => {
+    const { emitBouncerPolicy } = await import('../src/emit/policy/bouncer.js')
+    // bouncer takes nouls only, so this is the whole program rather than prog() plus one.
+    const yaml = emitBouncerPolicy({
+      decisions: [{ id: 'is_protected', kind: 'noul',
+        instructions: 'Does this touch a protected path?', criteria: typo as never }],
+      reduce: { kind: 'rules', rules: [{ when: [{ id: 'is_protected', op: 'gte', value: 0.8 }], then: 'deny' }],
+        otherwise: 'allow' },
+      residual: '', dropped: [],
+    })
+    expect(yaml).toContain('it is reversible')                                // the `false` side ships
+    expect(yaml).not.toContain('the command deletes data the user cannot regenerate')
+  })
+
+  it('agrees with validateRequest, which already refused the same key on the wire', async () => {
+    const { validateRequest } = await import('../src/contract.js')
+    const { emitJson } = await import('../src/emit/json.js')
+    const onWire = validateRequest(emitJson(withCriteria(typo), { tool: 'Bash' }))
+      .filter(i => i.code === 'unknown_field')
+    expect(onWire.map(i => i.path)).toEqual(['questions.is_protected.criteria.treu'])
+    // Same code, same severity, same prose — one whitelist, read from two places.
+    const inProgram = validateProgram(withCriteria(typo)).filter(i => i.code === 'unknown_field')
+    expect(inProgram[0].severity).toBe(onWire[0].severity)
+    expect(inProgram[0].message).toBe(onWire[0].message)
+  })
+
+  it('accepts true, false, both, and an omitted or empty criteria', () => {
+    for (const c of [{ true: 'yes' }, { false: 'no' }, { true: 'yes', false: 'no' }, {}, undefined]) {
+      expect(validateProgram(withCriteria(c)).map(i => i.code), JSON.stringify(c) ?? 'undefined').toEqual([])
+    }
+  })
+
+  it('does not double-report on an array, which criteria_shape already owns', () => {
+    expect(validateProgram(withCriteria(['yes', 'no'])).map(i => i.code)).toEqual(['criteria_shape'])
+  })
+
+  it('costs the corpus nothing: 252 nouls, and every key is true or false', () => {
+    const keys = new Set<string>()
+    let nouls = 0
+    for (const f of corpus) {
+      for (const q of Object.values(f.questions)) {
+        if (q.type !== 'noul') continue
+        nouls++
+        for (const k of Object.keys(q.criteria ?? {})) keys.add(k)
+      }
+    }
+    expect(nouls).toBe(252)
+    expect([...keys].sort()).toEqual(['false', 'true'])
+  })
+})
+
 describe('lintProgram — the collapsed verdict is not a choice-only defect', () => {
   it('refuses a collapsed verdict asked as a noul', () => {
     const p = prog()
