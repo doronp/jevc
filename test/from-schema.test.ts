@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { fromJsonSchema } from '../src/from-schema.js'
+import { validateProgram, type Program } from '../src/ir.js'
+import { runReducer } from '../src/runtime.js'
+import type { JevAnswer } from '../src/contract.js'
+
+/** A choice answer that picked `option`; only `choice` matters to the reducer's `is`. */
+const picked = (id: string, option: string): Record<string, JevAnswer> =>
+  ({ [id]: { type: 'choice', choice: option, probabilities: {}, confidence: 0.9 } })
 
 describe('fromJsonSchema — primitives', () => {
   it('lowers a boolean to a noul, carrying description into instructions', () => {
@@ -98,5 +105,68 @@ describe('fromJsonSchema — primitives', () => {
       flag: { type: 'string', enum: ['on', 'on'] } } })
     expect(dupes.decisions).toHaveLength(0)
     expect(dupes.dropped[0].reason).toMatch(/1 option\(s\)/)
+  })
+
+  // The option NAMES are the option set: they are the criteria keys the API sends, and
+  // they are what `is` compares. `String()` rendered every object "[object Object]", so a
+  // 3-option choice reached the model as 2 options and one branch of the reducer became
+  // unreachable. End to end on the verdict, because a test on the criteria keys alone is
+  // the shape of test that let the earlier `String()` collapses ship.
+  it('keeps structurally distinct enum members reachable as distinct verdicts', () => {
+    const p = fromJsonSchema({ type: 'object', properties: {
+      route: { enum: ['direct', { via: 'cache' }, { via: 'queue' }],
+        description: 'How should this be routed?' } } })
+
+    const options = Object.keys(p.decisions[0].criteria as object)
+    expect(options).toHaveLength(3)
+    const program: Program = { ...p, reduce: { kind: 'rules', otherwise: 'review', rules: [
+      { when: [{ id: 'route', op: 'is', value: options[0] }], then: 'allow' },
+      { when: [{ id: 'route', op: 'is', value: options[1] }], then: 'warm' },
+      { when: [{ id: 'route', op: 'is', value: options[2] }], then: 'defer' },
+    ] } }
+
+    expect(validateProgram(program)).toEqual([])
+    expect(options.map(o => runReducer(program, picked('route', o)))).toEqual(['allow', 'warm', 'defer'])
+  })
+
+  // Two DIFFERENT values that render to one name are the same deletion by another route,
+  // and no rendering avoids every case (1 vs "1", true vs "true"). Refuse the schema
+  // rather than ship a choice with an option missing from it.
+  it('refuses an enum whose members do not survive as distinct option names', () => {
+    const p = fromJsonSchema({ type: 'object', properties: {
+      code: { enum: [1, '1', 'other'] } } })
+    expect(p.decisions).toHaveLength(0)
+    expect(p.dropped[0].reason).toMatch(/both name the option "1"/)
+  })
+
+  // A const union member's `description` is the only text saying what the option MEANS;
+  // dropping it left the model choosing between bare labels it was never told apart.
+  it('carries each const union member description into its criteria', () => {
+    const p = fromJsonSchema({ type: 'object', properties: {
+      tier: { oneOf: [
+        { const: 'fast', description: 'Cheap and small; acceptable when latency dominates.' },
+        { const: 'frontier', description: 'Expensive; use when the answer must be right.' },
+      ] } } })
+    expect(p.decisions[0].criteria).toEqual({
+      fast: 'Cheap and small; acceptable when latency dominates.',
+      frontier: 'Expensive; use when the answer must be right.',
+    })
+  })
+
+  // A `const` pins the value, so there is no decision left to make. Asked anyway, the
+  // model may answer the opposite of what the schema already fixed, and the reducer will
+  // act on that answer.
+  it('asks no question about a property a const has already pinned', () => {
+    const boolean = fromJsonSchema({ type: 'object', properties: {
+      enabled: { type: 'boolean', const: true } } })
+    expect(boolean.decisions).toEqual([])
+
+    const enumerated = fromJsonSchema({ type: 'object', properties: {
+      tier: { type: 'string', enum: ['fast', 'frontier'], const: 'fast' } } })
+    expect(enumerated.decisions).toEqual([])
+
+    const scored = fromJsonSchema({ type: 'object', properties: {
+      severity: { type: 'integer', minimum: 0, maximum: 3, const: 2 } } })
+    expect(scored.decisions).toEqual([])
   })
 })
