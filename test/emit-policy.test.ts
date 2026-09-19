@@ -291,7 +291,9 @@ const nextDown = (x: number) => ulpStep(x, false)
 /** Every threshold and band edge in the program, a tick and a ULP either side, plus 0 and 1. */
 const gridFor = (prog: Program): number[] => {
   const s = new Set([0, 1])
-  // ±1e-9 is about 4.5 million ULPs at 0.4. It catches a coarse endpoint mismatch — the
+  // 1e-9 is 18,014,399 ULPs at 0.4 (ulp(0.4) is 5.5511e-17), and 9,007,199 at 0.6. The
+  // "about 4.5 million" this round was briefed with is the count near 1.6, not near a
+  // probability; measured, not inherited. It catches a coarse endpoint mismatch — the
   // exact endpoint is in the grid, so emitting the band verbatim goes red at p = 0.4 —
   // but it is blind to the ONE-DOUBLE step rangeFor takes to turn jevc's exclusive band
   // into bouncer's inclusive range. Measured on this tree: a two-ULP inward step emits
