@@ -21,6 +21,11 @@ export const MODELS: readonly JevModel[] = ['jev-latest', 'jev-preview', 'jev-1.
 // never errors), so jevc has to whitelist what it emits instead.
 const REQUEST_FIELDS = ['model', 'state', 'questions'] as const
 const QUESTION_FIELDS = ['type', 'instructions', 'criteria'] as const
+// A noul's criteria is the only criteria shape with fixed key names — a choice's keys are
+// the author's option names and a score's are array indices — so it is the only one a
+// whitelist can cover. `criteria: {treu: ...}` is accepted by the API, ignored by it, and
+// the description the author wrote for that outcome never reaches the model.
+const NOUL_CRITERIA_KEYS = ['true', 'false'] as const
 
 export type JevRequest = {
   model: JevModel
@@ -48,7 +53,13 @@ export type ValidationIssue = {
 
 // Measured: 29,464 tokens for 150,232 chars.
 const CHARS_PER_TOKEN = 5.1
-export const TOKEN_BUDGET_TOTAL = 64_000
+// The documentation says 64k total. The measurement says otherwise: "~45k tokens returns
+// `400 max_tokens_exceeded`" (docs/superpowers/specs/2026-09-18-jevc-design.md §3.3). The
+// documented number is the one the API rejects requests under, so a pre-flight check set to
+// it passes requests the API refuses — the one outcome this check exists to prevent. Do NOT
+// round this back up to the documented figure without a new measurement to cite; the largest
+// request in fixtures/ is ~1,037 tokens, so nothing real is near either number.
+export const TOKEN_BUDGET_TOTAL = 45_000
 export const TOKEN_BUDGET_SINGLE = 32_000
 
 export function estimateTokens(v: unknown): number {
@@ -154,6 +165,16 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
       if (noInstructions && noCriteria) {
         err('noul_empty', at, 'A noul needs instructions or criteria.')
       }
+      // An empty criteria object stays legal (emit/policy builds one, and "described
+      // neither outcome" is the noul_empty case above, reported once). A key that is
+      // neither `true` nor `false` is the typo case: silently ignored on the wire, so the
+      // model answers one of its two outcomes with no guidance and nothing says so.
+      for (const key of Object.keys(q.criteria ?? {})) {
+        if (!(NOUL_CRITERIA_KEYS as readonly string[]).includes(key)) {
+          err('unknown_field', `${at}.criteria.${key}`,
+            `Unknown criteria key "${key}" on noul "${id}". A noul describes two outcomes: ${NOUL_CRITERIA_KEYS.join(', ')}. The API silently ignores anything else, so this description never reaches the model.`)
+        }
+      }
     }
 
     for (const path of backtickPaths(q)) {
@@ -195,8 +216,10 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
  * model alias that moves (`jev-latest` resolved to jev-1.13.0 today), and runtime.ts takes it
  * with a bare `as Record<string, JevAnswer>` — the type asserts a shape nobody checked.
  * Same conventions as validateRequest: every violation reported at once, `error` means the
- * verdict would be wrong or would throw, `warn` means the verdict still stands. Not wired
- * into evaluate() here — that call site belongs to runtime.ts. */
+ * verdict would be wrong or would throw, `warn` means the verdict still stands. The call
+ * site is runtime.ts, not here: `askModel` runs this on every response and `evaluate`
+ * throws on the `error`-severity half. It is also public, so a caller can arrive with a
+ * program the validators never saw. */
 export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
   const out: ValidationIssue[] = []
   const err = (code: string, path: string, message: string) =>
@@ -233,7 +256,11 @@ export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
   }
   const byId = answers as Record<string, unknown>
 
-  for (const d of p.decisions) {
+  // Deduplicated by id, the same way emitJson's `Object.fromEntries` collapses the question
+  // map (last definition wins), so a program with duplicate ids reports one issue per id
+  // rather than one per copy. Unreachable through askModel/evaluate — validateProgram's
+  // `duplicate_id` throws first — but this function is public.
+  for (const d of new Map(p.decisions.map(d => [d.id, d])).values()) {
     const at = `answers.${d.id}`
     const a = byId[d.id]
     if (a === undefined) {
@@ -333,16 +360,32 @@ export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
   return out
 }
 
+/** The keys an error body may keep. Everything else is replaced, subtree and all.
+ *
+ * This was a denylist of one key, `input`, and it lost the bet a denylist always makes: the
+ * request's own field is `state`, not `input`, so the two echo shapes measured off a 422
+ * (`{state: ...}` at the top level and `{request: {state: ...}}`) passed straight through
+ * into `err.body`. The shape is chosen by a remote party, so the set that can be enumerated
+ * is the set we want to keep, not the set we want to drop.
+ *
+ * The cost is real and deliberate: FastAPI's `loc` and `msg` are not here. `loc` is a path
+ * INTO the request whose tail segments are keys of the caller's own state, and `msg` is
+ * generic enough ("Field required") not to be worth the same bet. The rebuilt error message
+ * (`"400 request failed (body redacted)"`, runtime.ts) already carries the status. */
+const ERROR_BODY_KEYS: ReadonlySet<string> = new Set(['error', 'message', 'detail', 'code', 'type'])
+
 /** The 422 body echoes the whole request, state included. Never log it raw. */
 export function redactErrorBody(body: unknown): unknown {
   if (body === null || typeof body !== 'object') return body
+  // Still cloned through JSON first, and still allowed to throw on a circular body: the
+  // caller (runtime.ts) turns that into `[unredactable]`, which is the right answer, and a
+  // recursive walk over a cycle would not return at all.
   const clone = JSON.parse(JSON.stringify(body))
-  const strip = (n: unknown): void => {
-    if (n === null || typeof n !== 'object') return
-    const o = n as Record<string, unknown>
-    if ('input' in o) o.input = '[redacted]'
-    for (const v of Object.values(o)) strip(v)
+  const keep = (n: unknown): unknown => {
+    if (Array.isArray(n)) return n.map(keep)
+    if (n === null || typeof n !== 'object') return n
+    return Object.fromEntries(Object.entries(n as Record<string, unknown>)
+      .map(([k, v]) => [k, ERROR_BODY_KEYS.has(k) ? keep(v) : '[redacted]']))
   }
-  strip(clone)
-  return clone
+  return keep(clone)
 }
