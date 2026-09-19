@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
-import { fromJsonSchema } from './from-schema.js'
+import { fromJsonSchema, type SchemaProgram } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
@@ -225,7 +225,7 @@ if (cmd === 'compile') {
     process.exit(0)
   }
 
-  let program: Program | undefined
+  let program: SchemaProgram | undefined
   try {
     program = fromJsonSchema(JSON.parse(text))
   } catch {
@@ -237,7 +237,27 @@ if (cmd === 'compile') {
   if (issues.some(i => i.severity === 'error')) process.exit(1)
 
   if (program!.residual) process.stderr.write(`\nresidual:\n${program!.residual}\n`)
-  for (const d of program!.dropped) process.stderr.write(`dropped: ${d.reason}\n`)
+
+  // `dropped` carries two categorically different reports and only one of them is this
+  // tool working as designed. `unsupported` — "this construct has no Jev equivalent" — is
+  // a note: the artifact is still everything Jev can represent of what the author wrote.
+  // `collision` is the author's intent LOST: two things they wrote claim one id or one
+  // option name, so BOTH were discarded and the artifact asks NEITHER. Unrepresentable
+  // rather than unsupported, and renaming one of them fixes it.
+  //
+  // So a collision is an error however many other decisions survived. The soft version of
+  // this shipped a well-formed guard at exit 0 whenever ONE decision came through:
+  // {"a.b": bool, "a": {"properties": {"b": bool}}, "keeper": bool} wrote a one-question
+  // request with two of the three questions silently absent and `dropped:` on stderr
+  // reading as information. `canEmit`'s `no_decisions` below is the SAME contract at the
+  // other extreme — nothing survived — and it is blind to the partial case because
+  // `decisions.length` is 1. One rule, both ends: the artifact asks everything the schema
+  // asked, or jevc refuses to write one. Branching on `kind` and not on the prose, because
+  // the prose changes whenever the message improves.
+  const collided = program!.dropped.filter(d => d.kind === 'collision')
+  for (const d of program!.dropped) {
+    process.stderr.write(`${d.kind === 'collision' ? 'error' : 'dropped'}: ${d.reason}\n`)
+  }
 
   // ai-sdk and langchain existed as emitters with no way to reach them: the only route to
   // either was to import jevc as a library.
@@ -269,7 +289,10 @@ if (cmd === 'compile') {
     ...validateRequest(req).filter(i => !STATE_DEPENDENT.includes(i.code)),
   ]
   for (const i of gate) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
-  if (gate.some(i => i.severity === 'error')) process.exit(1)
+  // The collisions were reported above rather than re-printed here, but they exit with the
+  // gate so a run that has both kinds of problem reports both: a gate that reveals its
+  // objections one at a time turns a single fix into a guessing game.
+  if (collided.length || gate.some(i => i.severity === 'error')) process.exit(1)
 
   let out: string
   if (emit === 'ai-sdk') out = emitAiSdk(program!)

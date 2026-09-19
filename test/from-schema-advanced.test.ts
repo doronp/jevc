@@ -282,4 +282,43 @@ describe('fromJsonSchema — advanced', () => {
     expect(p.decisions.map(d => d.id)).toEqual(['tags.abuse'])
     expect(p.dropped[0].quote).toBe('tags.spam')
   })
+
+  // `dropped` holds two categorically different reports and the caller has to be able to
+  // tell them apart without reading English. "No Jev equivalent" is the mapper working as
+  // designed: the author gets everything representable of what they wrote. A collision is
+  // the author's intent LOST — two things they wrote claim one name, so both were
+  // discarded — which is unrepresentable rather than unsupported, and renaming fixes it.
+  // `jevc compile` exits 1 on the second and 0 on the first, and it branches on this field
+  // rather than pattern-matching the prose, which changes whenever the message improves.
+  it('labels every drop as either a lost collision or an unsupported construct', () => {
+    const collisions: JsonSchema[] = [
+      // A dotted id two properties both claim.
+      { type: 'object', properties: {
+        'a.b': { type: 'boolean' },
+        a: { type: 'object', properties: { b: { type: 'boolean' } } } } },
+      // Two enum members that land on one option name.
+      { type: 'object', properties: { code: { enum: [1, '1', 'other'] } } },
+      // The same, one level down, where each member becomes its own noul id.
+      { type: 'object', properties: {
+        tags: { type: 'array', items: { enum: [2, '2', 'other'] } } } },
+    ]
+    for (const schema of collisions) {
+      const p = fromJsonSchema(schema)
+      expect(p.dropped.map(d => d.kind), JSON.stringify(schema)).toEqual(['collision'])
+    }
+
+    const unsupported: JsonSchema[] = [
+      // A continuous range, a >10-level integer, a type with no lowering at all,
+      // a degenerate 1-option choice, and a root with nothing to lower.
+      { type: 'object', properties: { ratio: { type: 'number', minimum: 0, maximum: 1 } } },
+      { type: 'object', properties: { n: { type: 'integer', minimum: 0, maximum: 99 } } },
+      { type: 'object', properties: { when: { type: ['string', 'integer'] } } },
+      { type: 'object', properties: { flag: { enum: ['on', 'on'] } } },
+      { $ref: '#/$defs/Ticket' },
+    ]
+    for (const schema of unsupported) {
+      const p = fromJsonSchema(schema)
+      expect(p.dropped.map(d => d.kind), JSON.stringify(schema)).toEqual(['unsupported'])
+    }
+  })
 })
