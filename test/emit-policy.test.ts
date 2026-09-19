@@ -59,6 +59,14 @@ describe('emitBouncerPolicy', () => {
                { id: 'outside_repo', op: 'gte', value: 0.6 }], then: 'deny' }], otherwise: 'allow' } }
     expect(() => emitBouncerPolicy(conj)).toThrow(/one question per rule/)
   })
+  // A policy that exists but fails to parse STOPS bouncer's policy resolution and routes
+  // to on_error (default passthrough = emit nothing), so an unparseable verdict does not
+  // degrade the gate, it disables it.
+  it('refuses a verdict outside allow/ask/deny rather than emitting an unloadable policy', () => {
+    const odd: Program = { ...p, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'outside_repo', op: 'gte', value: 0.8 }], then: 'quarantine' }], otherwise: 'allow' } }
+    expect(() => emitBouncerPolicy(odd)).toThrow(/quarantine/)
+  })
   it('refuses a score decision, which bouncer would send as a mangled noul', () => {
     const score: Program = { ...p, decisions: [
       { id: 'radius', kind: 'score', instructions: 'How wide?', criteria: ['file', 'repo'] }] }

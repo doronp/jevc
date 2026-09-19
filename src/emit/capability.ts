@@ -15,6 +15,12 @@ export type TargetCapability = {
    * Range and pattern catch different failures; both are needed.
    */
   thresholdPattern?: RegExp
+  /**
+   * The verdict words the target's own parser accepts, or undefined where any string
+   * goes (the code targets return whatever the reducer returns). jevc verdicts are
+   * arbitrary strings, so a target with a fixed vocabulary must be checked against it.
+   */
+  verdicts?: ReadonlySet<string>
   carriesConfidence: boolean
   carriesLegend: boolean
   note?: string
@@ -35,6 +41,7 @@ export const TARGETS: Record<string, TargetCapability> = {
                note: 'EvaluationModelV4 drops legend and moves confidence into providerMetadata, where it may be absent.' },
   bouncer:   { name: 'bouncer', kinds: ['noul'], reducer: 'single-condition',
                thresholdRange: [0, 1], thresholdPattern: PLAIN_DECIMAL,
+               verdicts: new Set(['allow', 'ask', 'deny']),
                carriesConfidence: false, carriesLegend: false,
                note: 'gate.questions has no type key; every question is sent as a noul. A rule names exactly one question.' },
   toolgate:  { name: 'toolgate', kinds: ['noul'], reducer: 'thresholds',
@@ -65,6 +72,24 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
       out.push({ code: 'confidence_derived', path: `decisions.${d.id}.uncertain`, severity: 'warn',
         message: `Target "${target}" does not return confidence inline; it will be recomputed from the probability distribution. Never treat an absent confidence as 0.` })
     }
+  }
+
+  // Verdict vocabulary. bouncer's parser accepts allow/ask/deny and nothing else
+  // (target-bouncer.md:58), and an unparseable policy does not degrade its gate — it
+  // STOPS policy resolution (line 9) and routes to on_error, whose default `passthrough`
+  // emits nothing at all. An unchecked verdict therefore replaces a working gate with a
+  // silent one, at exit 0. toolgate has the same vocabulary but is already checked by
+  // thresholdsFor, which refuses any rule verdict that is not deny/ask.
+  if (cap.verdicts) {
+    const allowed = [...cap.verdicts].join('/')
+    const check = (verdict: string, path: string) => {
+      if (!cap.verdicts!.has(verdict)) {
+        out.push({ code: 'verdict_unsupported', path, severity: 'error',
+          message: `Target "${target}" accepts only the verdicts ${allowed}; got "${verdict}". A policy it cannot parse stops policy resolution entirely, so the gate goes silent rather than degrading.` })
+      }
+    }
+    for (const [i, rule] of p.reduce.rules.entries()) check(rule.then, `reduce.rules[${i}].then`)
+    check(p.reduce.otherwise, 'reduce.otherwise')
   }
 
   if (cap.reducer !== 'code') {
