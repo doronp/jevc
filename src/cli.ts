@@ -12,13 +12,35 @@ import { validateRequest } from './contract.js'
 const argv = process.argv.slice(2)
 const cmd = argv[0]
 const flag = (name: string): string | undefined => {
-  const i = argv.indexOf(`--${name}`)
+  // Single-char flags are documented in short form (-o); accept the long form too.
+  const i = argv.findIndex(a => a === `--${name}` || (name.length === 1 && a === `-${name}`))
   return i >= 0 ? argv[i + 1] : undefined
 }
 const has = (name: string) => argv.includes(`--${name}`)
-const read = (p: string) => (p === '-' ? readFileSync(0, 'utf8') : readFileSync(p, 'utf8'))
 
 const die = (msg: string): never => { process.stderr.write(`${msg}\n`); process.exit(1) }
+
+// EntryType is `string | object | array | null`, so String() on it silently renders
+// "[object Object]" rather than throwing. Every render site needs this.
+const renderEntry = (v: unknown): string => typeof v === 'string' ? v : JSON.stringify(v)
+
+// Compile time has no real state — emitJson substitutes a '<state>' placeholder — so the
+// two state-shape-dependent checks cannot be meaningful yet and would false-reject valid
+// schemas. evaluate() runs the full validator against the real state at runtime.
+// NOT filtering token_budget_exceeded: a tiny placeholder under-reports tokens, which errs
+// toward accepting rather than rejecting — the right direction here.
+const STATE_DEPENDENT = ['path_unresolved', 'state_empty']
+
+// Ordinary I/O failures are user errors (wrong path, unreadable file), not jevc bugs —
+// they get a message naming the path, never a node:fs stack trace.
+const read = (p: string) => {
+  try { return p === '-' ? readFileSync(0, 'utf8') : readFileSync(p, 'utf8') }
+  catch (e) { return die(`Cannot read ${p === '-' ? 'stdin' : p}: ${(e as Error).message}`) }
+}
+const fixtures = (dir: string) => {
+  try { return loadFixtures(dir) }
+  catch (e) { return die(`Cannot load fixtures from ${dir}: ${(e as Error).message}`) }
+}
 
 if (cmd === 'compile') {
   const path = argv[1] ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json] [-o out]')
@@ -43,13 +65,18 @@ if (cmd === 'compile') {
   if (program!.residual) process.stderr.write(`\nresidual:\n${program!.residual}\n`)
   for (const d of program!.dropped) process.stderr.write(`dropped: ${d.reason}\n`)
 
+  const emit = flag('emit') ?? 'sdk'
+  if (emit !== 'sdk' && emit !== 'json') {
+    die(`Unknown --emit value "${emit}". Expected sdk or json.`)
+  }
+
   let out: string
-  if (flag('emit') === 'json') {
+  if (emit === 'json') {
     // Amendment: the API is the only thing that used to enforce this (e.g. the 255-option
     // choice ceiling, question-id uniqueness) — run the wire validator locally so a request
     // that would 422 is caught here instead.
     const req = emitJson(program!, '<state>')
-    const reqIssues = validateRequest(req)
+    const reqIssues = validateRequest(req).filter(i => !STATE_DEPENDENT.includes(i.code))
     for (const i of reqIssues) process.stderr.write(`${i.severity}: ${i.path}: ${i.message}\n`)
     if (reqIssues.some(i => i.severity === 'error')) process.exit(1)
     out = JSON.stringify(req, null, 2)
@@ -64,7 +91,7 @@ if (cmd === 'compile') {
 }
 
 if (cmd === 'check') {
-  const fixtures = loadFixtures(flag('fixtures') ?? 'fixtures')
+  const corpus = fixtures(flag('fixtures') ?? 'fixtures')
 
   if (has('live')) {
     // Amendment: --live requires a real API key and must never run as part of `npm test`.
@@ -72,7 +99,9 @@ if (cmd === 'check') {
     if (!process.env.TYPESAFE_API_KEY) {
       die('check --live requires TYPESAFE_API_KEY in the environment.')
     }
-    const report = await checkLive(fixtures)
+    // Network, auth and quota failures are the normal case here, not bugs.
+    const report = await checkLive(corpus)
+      .catch(e => die(`check --live failed: ${(e as Error).message}`))
     for (const row of report.rows) {
       if (row.status === 'stable') continue
       const delta = row.delta === null ? '' : ` delta=${row.delta.toFixed(3)}`
@@ -87,25 +116,25 @@ if (cmd === 'check') {
   }
 
   let failed = 0
-  for (const f of fixtures) {
+  for (const f of corpus) {
     const fails = assertExpectation(f.expect, f.measured.answers)
     if (fails.length) { failed++; process.stdout.write(`FAIL ${f.id}\n  ${fails.join('\n  ')}\n`) }
   }
-  process.stdout.write(`${fixtures.length} fixtures, ${fixtures.length - failed} passing, ${failed} failing\n`)
+  process.stdout.write(`${corpus.length} fixtures, ${corpus.length - failed} passing, ${failed} failing\n`)
   process.exit(failed ? 1 : 0)
 }
 
 if (cmd === 'explain') {
   // The provenance payoff: answer "why does this question exist?"
   const id = argv[1] ?? die('usage: jevc explain <decision-id>')
-  const hits = loadFixtures(flag('fixtures') ?? 'fixtures')
+  const hits = fixtures(flag('fixtures') ?? 'fixtures')
     .flatMap(f => Object.keys(f.questions).includes(id) ? [f] : [])
   if (!hits.length) die(`No decision "${id}" found.`)
   for (const f of hits) {
     const q = f.questions[id]
     process.stdout.write(`${id}  (${f.domain}/${f.id})\n`)
     process.stdout.write(`  type:         ${q.type}\n`)
-    process.stdout.write(`  instructions: ${String(q.instructions)}\n`)
+    process.stdout.write(`  instructions: ${renderEntry(q.instructions)}\n`)
     process.stdout.write(`  provenance:   ${f.provenance}\n`)
     process.stdout.write(`  measured:     ${JSON.stringify(f.measured.answers[id])}\n`)
     process.stdout.write(`  replaces:     ${f.llm_prompt.slice(0, 120)}...\n\n`)
