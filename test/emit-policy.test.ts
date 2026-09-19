@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { parse } from 'yaml'
 import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
 import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
+import { rangeFor } from '../src/emit/capability.js'
 import { runReducer } from '../src/runtime.js'
+import { uncertaintyOf } from '../src/ir.js'
 import type { Program } from '../src/ir.js'
 
 const p: Program = {
@@ -271,12 +273,44 @@ const toolgateVerdict = (doc: any, answers: Record<string, number>): string => {
 const noul = (id: string, extra: object = {}) =>
   ({ id, kind: 'noul' as const, instructions: `Is ${id}?`, ...extra })
 
-/** Every threshold and band edge in the program, a tick either side, plus 0 and 1. */
+const F64 = new DataView(new ArrayBuffer(8))
+/**
+ * The adjacent double. Deliberately a SECOND implementation of capability.ts's `step`:
+ * the grid is the independent check on `rangeFor`, so it must not be built out of the
+ * function it is checking. `nextDown(0)` wraps to NaN rather than throwing, and every
+ * caller here filters on `>= 0 && <= 1`, which NaN fails.
+ */
+const ulpStep = (x: number, up: boolean): number => {
+  F64.setFloat64(0, x)
+  F64.setBigUint64(0, F64.getBigUint64(0) + (up ? 1n : -1n))
+  return F64.getFloat64(0)
+}
+const nextUp = (x: number) => ulpStep(x, true)
+const nextDown = (x: number) => ulpStep(x, false)
+
+/** Every threshold and band edge in the program, a tick and a ULP either side, plus 0 and 1. */
 const gridFor = (prog: Program): number[] => {
   const s = new Set([0, 1])
-  const add = (v: number) => { for (const x of [v - 1e-9, v, v + 1e-9]) if (x >= 0 && x <= 1) s.add(x) }
+  // ±1e-9 is about 4.5 million ULPs at 0.4. It catches a coarse endpoint mismatch — the
+  // exact endpoint is in the grid, so emitting the band verbatim goes red at p = 0.4 —
+  // but it is blind to the ONE-DOUBLE step rangeFor takes to turn jevc's exclusive band
+  // into bouncer's inclusive range. Measured on this tree: a two-ULP inward step emits
+  // "0.40000000000000013..0.5999999999999998" and the ±1e-9 grid stays green, because the
+  // only probabilities that can tell a correct inward step from a two-ULP one are the
+  // adjacent doubles themselves. They are the grid points below.
+  const add = (v: number) => {
+    for (const x of [v - 1e-9, nextDown(v), v, nextUp(v), v + 1e-9]) if (x >= 0 && x <= 1) s.add(x)
+  }
   for (const r of prog.reduce.rules) for (const c of r.when) if ('value' in c && typeof c.value === 'number') add(c.value)
-  for (const d of prog.decisions) if (d.uncertain && 'band' in d.uncertain) { add(d.uncertain.band[0]); add(d.uncertain.band[1]) }
+  // uncertaintyOf, not `d.uncertain`: a noul that OMITS the field still has a band — the
+  // default [0.35, 0.65] — and rangeFor lowers that one exactly like a declared one.
+  // Reading the field directly put no grid point anywhere near 0.35 or 0.65, so on a
+  // default-band program the grid could not see the emitted range at all, at any
+  // resolution: measured, even emitting the band verbatim stayed green.
+  for (const d of prog.decisions) {
+    const u = uncertaintyOf(d)
+    if ('band' in u) { add(u.band[0]); add(u.band[1]) }
+  }
   return [...s].sort((a, b) => a - b)
 }
 
@@ -420,13 +454,54 @@ describe('emitBouncerPolicy lowers an uncertainty band', () => {
     ], otherwise: 'allow' },
   }
 
+  // Was a three-alternative regex over the decimal TEXT. Measured on this tree, it
+  // accepted "0.4..0.6" — the band emitted verbatim, no inward step at all, which is the
+  // single defect this block exists to prevent — and "0.45..0.55", and the two-ULP step.
+  // The only wrong answer it rejected was the outward step, which the grid already
+  // catches. So: parse it the way bouncer parses it and compare the NUMBERS.
   it('emits a range rule rather than refusing', () => {
     const rule = parse(emitBouncerPolicy(banded)).gate.rules[1]
     expect(rule.then).toBe('ask')
-    expect(rule.when.risky.p).toMatch(/^0\.4\d*\.\.0\.5\d*$|^0\.4\d*\.\.0\.6$|^0\.4\d*\.\.0\.59*\d*$/)
+    expect(rule.when.risky.p).toMatch(/^\d*\.?\d+\.\.\d*\.?\d+$/)
+  })
+  it('places each endpoint exactly one double inside the exclusive band', () => {
+    const p = parse(emitBouncerPolicy(banded)).gate.rules[1].when.risky.p
+    const m = /^(\d*\.?\d+)\.\.(\d*\.?\d+)$/.exec(p)!
+    // Both halves matter. The numbers pin the arithmetic: one double INWARD, so
+    // nextUp(0.4) is above 0.4 and nextDown(0.6) below 0.6, and a step of two or a step
+    // the wrong way is a different double. The round trip pins the SERIALISATION: the
+    // endpoint bouncer recovers from the text has to be the endpoint rangeFor computed,
+    // and a threshold written in a notation the consumer reads differently is how this
+    // project shipped a wrong policy before.
+    expect([p, Number(m[1]), Number(m[2])]).toEqual([p, nextUp(0.4), nextDown(0.6)])
+    expect([Number(m[1]) > 0.4, Number(m[2]) < 0.6]).toEqual([true, true])
+    // And the emitter writes the very string canEmit promised was writable — those are
+    // two functions and nothing else holds them together.
+    expect(p).toBe(rangeFor(banded.decisions[0]).p)
   })
   it('agrees with bouncer on the band edges, where inclusive and exclusive differ', () => {
     gridAgrees(banded, emitBouncerPolicy, bouncerVerdict)
+  })
+
+  // The same lowering on a decision that DECLARES no band. uncertaintyOf hands it
+  // [0.35, 0.65], rangeFor steps that one inward exactly as it does a declared band, and
+  // the emitted range is just as load-bearing — but it is the case a reader is least
+  // likely to think of, and the grid was blind to it until gridFor started asking
+  // uncertaintyOf instead of reading `d.uncertain`.
+  const defaulted: Program = {
+    decisions: [noul('vague')], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'vague', op: 'uncertain' }], then: 'ask' },
+    ], otherwise: 'allow' },
+  }
+
+  it('lowers the DEFAULT band too, one double inside each end', () => {
+    const p = parse(emitBouncerPolicy(defaulted)).gate.rules[0].when.vague.p
+    const m = /^(\d*\.?\d+)\.\.(\d*\.?\d+)$/.exec(p)!
+    expect([p, Number(m[1]), Number(m[2])]).toEqual([p, nextUp(0.35), nextDown(0.65)])
+  })
+  it('agrees with bouncer on the default band edges as well', () => {
+    gridAgrees(defaulted, emitBouncerPolicy, bouncerVerdict)
   })
   it('still refuses an uncertainty rule on toolgate, which has no range', () => {
     expect(() => emitToolgatePolicy(banded)).toThrow(/uncertain/)
