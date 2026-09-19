@@ -674,7 +674,7 @@ describe('emitted policies load: hazards', () => {
   const withThreshold = (value: unknown): Program =>
     prog([noul('a')], [{ when: [{ id: 'a', op: 'gte', value } as unknown as Condition], then: 'deny' }])
 
-  it.fails('LIVE BUG: toolgate copies a non-number threshold into the policy file verbatim', () => {
+  it('LIVE BUG: toolgate copies a non-number threshold into the policy file verbatim', () => {
     const escaped: string[] = []
     for (const [what, value] of NON_NUMBER_THRESHOLDS) {
       const p = withThreshold(value)
@@ -757,7 +757,7 @@ describe('refusal conformance: canEmit is the gate the emitter enforces', () => 
    * calls `canEmit` first — so the actionable "this target requires non-empty instructions"
    * message is replaced by a stack trace naming jevc's internals.
    */
-  it.fails('LIVE BUG: canEmit returns issues and never throws, on every program in the corpus', () => {
+  it('LIVE BUG: canEmit returns issues and never throws, on every program in the corpus', () => {
     const threw: string[] = []
     for (const { id, program } of CORPUS) {
       for (const target of ['bouncer', 'toolgate'] as const) {
@@ -771,7 +771,7 @@ describe('refusal conformance: canEmit is the gate the emitter enforces', () => 
     expect(threw).toEqual([])
   })
 
-  it.fails('LIVE BUG: canEmit reports a non-string instructions value instead of throwing on it', () => {
+  it('LIVE BUG: canEmit reports a non-string instructions value instead of throwing on it', () => {
     for (const instructions of [null, 42, { type: 'text', text: 'Is it destructive?' }]) {
       const p = prog([{ id: 'a', kind: 'noul', instructions: instructions as unknown as string }], [
         { when: [gte('a', 0.8)], then: 'deny' },

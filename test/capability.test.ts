@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { canEmit, rangeFor, TARGETS } from '../src/emit/capability.js'
 import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
+import { parseBouncerP } from './helpers/consumers.js'
 import { emitToolgatePolicy } from '../src/emit/policy/toolgate.js'
 import { isUncertain, runReducer } from '../src/runtime.js'
 import type { JevAnswer } from '../src/contract.js'
@@ -455,5 +456,110 @@ describe('rangeFor puts each exclusive band end one double inside the inclusive 
   it('refuses a belowConfidence decision, which a bouncer answer cannot carry', () => {
     const conf: Decision = { id: 'k', kind: 'noul', instructions: 'Is k?', uncertain: { belowConfidence: 0.5 } }
     expect(rangeFor(conf).why).toMatch(/confidence/)
+  })
+})
+
+/**
+ * F3 / bug 2, both directions.
+ *
+ * `step()` returns NaN for x < 0, and `!(NaN <= b)` is true, so EVERY band with an endpoint
+ * outside 0..1 fell into the empty-band branch and was refused with
+ *
+ *   the band [-0.1,0.6] on "k" is empty once its exclusive ends are stepped inside an
+ *   inclusive range.
+ *
+ * That band is not empty — it holds every probability below 0.6 — and the message named a
+ * cause the reader cannot find and offered no remedy. The mirror case is worse and silent:
+ * `[0.5, 1.5]` has a non-negative low end, so it survived the check and serialised to
+ * `p: 0.5000000000000001..1.4999999999999998`, which is outside bouncer's `p` grammar. That
+ * is a LOAD error (target-bouncer.md:9), not a rule that did not match: policy resolution
+ * stops and `on_error: passthrough` leaves no gate at all, at exit 0.
+ *
+ * The lowering now intersects the band with the domain a noul answer actually lives in, so
+ * both are expressible and expressible EXACTLY. Asserted here against the two things that
+ * can disagree: bouncer's own `p` parser, and `isUncertain` over the endpoints that matter.
+ */
+describe('a band endpoint outside 0..1: the right refusal, or the right range', () => {
+  const withBand = (band: unknown[]): Decision =>
+    ({ id: 'k', kind: 'noul', instructions: 'Is k?', uncertain: { band: band as [number, number] } })
+  const askOn = (d: Decision): Program => ({
+    decisions: [d], residual: '', dropped: [],
+    reduce: { kind: 'rules', rules: [{ when: [{ id: d.id, op: 'uncertain' }], then: 'ask' }], otherwise: 'allow' },
+  })
+
+  // Deliberately NOT importing the emitted `p` back through rangeFor: the point is that the
+  // range bouncer reads selects the same answers `isUncertain` does, so the two sides have
+  // to be computed independently. `parseBouncerP` is the transcription of bouncer's own
+  // parseComparison (test/helpers/consumers.ts, cited to target-bouncer.md:55-57).
+  const agreesWithRuntime = (band: unknown[], probes: number[]) => {
+    const d = withBand(band)
+    const { p, why } = rangeFor(d)
+    expect([why, p]).toEqual([undefined, expect.any(String)])
+    const accepts = parseBouncerP(p)
+    expect(accepts, `bouncer refuses to load p: "${p}"`).toBeTypeOf('function')
+    const held = askOn(d)
+    for (const x of probes) {
+      expect(accepts!(x), `p "${p}" at ${x}`)
+        .toBe(isUncertain({ k: { type: 'noul', noul: x } } as Record<string, JevAnswer>, 'k', held))
+    }
+  }
+
+  it('a negative low end is not "empty": the band holds every probability under the high end', () => {
+    // The whole F3 report. -0.1 is unreachable, so the inclusive low end is 0 itself — no
+    // ULP step, because 0 is not excluded by `p > -0.1`.
+    const { p, why } = rangeFor(withBand([-0.1, 0.6]))
+    expect(why).toBeUndefined()
+    expect(p).toBe('0..0.5999999999999999')
+    agreesWithRuntime([-0.1, 0.6], [0, 1e-9, 0.3, 0.5999999999999999, 0.6, 0.9, 1])
+  })
+
+  it('a high end above 1 lowers to 1 rather than to a `p` bouncer cannot parse', () => {
+    expect(rangeFor(withBand([0.5, 1.5])).p).toBe('0.5000000000000001..1')
+    agreesWithRuntime([0.5, 1.5], [0, 0.5, 0.5000000000000001, 0.9, 1])
+    agreesWithRuntime([0.2, 1.2], [0, 0.2, 0.20000000000000004, 0.7, 1])
+    agreesWithRuntime([0.5, 1e21], [0.5, 0.6, 1])
+  })
+
+  it('canEmit clears the program and says the endpoint left 0..1, rather than saying nothing', () => {
+    // Not a refusal — the emitted range selects exactly the answers the Program selects —
+    // but the author wrote a number the gate does not use, and that is worth one line.
+    const issues = canEmit(askOn(withBand([0.5, 1.5])), 'bouncer')
+    expect(issues.filter(i => i.severity === 'error')).toEqual([])
+    const warn = issues.find(i => i.code === 'band_out_of_range')
+    expect(warn?.severity).toBe('warn')
+    expect(warn?.message).toMatch(/outside 0\.\.1/)
+    // And the emitter agrees with the gate: the policy is written and it loads.
+    expect(canEmit(askOn(withBand([0.35, 0.65])), 'bouncer')
+      .some(i => i.code === 'band_out_of_range')).toBe(false)
+  })
+
+  it('a band holding no probability is refused, and NOT as "empty after stepping"', () => {
+    // `p > 1.5 && p < 2` is unsatisfiable for a probability, so this one really is refused —
+    // and the reason is the endpoints, not the width, which is what the message must say.
+    for (const band of [[1.5, 2], [1, 2], [-1, 0], [-2, -1]]) {
+      const { p, why } = rangeFor(withBand(band))
+      expect([band, p]).toEqual([band, undefined])
+      expect(why, `band ${JSON.stringify(band)}`).toMatch(/contains no probability/)
+      expect(why).not.toMatch(/is empty/)
+    }
+  })
+
+  it('an endpoint that is not a number is refused as that, not as an empty band', () => {
+    // `uncertain` is never checked by checkLiftedShape, so a lifted band is live input.
+    for (const band of [[Number.NaN, 0.6], [0.4, Number.NaN], ['0.4', 0.6], [null, 0.6], [0.4, undefined]]) {
+      const { why } = rangeFor(withBand(band))
+      expect(why, `band ${JSON.stringify(band)}`).toMatch(/not a number/)
+    }
+    // And the endpoint is shown as written: JSON.stringify renders NaN as `null`, which
+    // sends the author looking for a value that is not in their file.
+    expect(rangeFor(withBand([Number.NaN, 0.6])).why).toContain('[NaN,0.6]')
+  })
+
+  it('the existing "empty" message still fires for a genuinely inverted band', () => {
+    // The other direction of F3: this message was correct here all along and must not be
+    // collateral damage of giving the out-of-range case its own wording.
+    expect(rangeFor(withBand([0.6, 0.4])).why).toMatch(/is empty once its exclusive ends/)
+    expect(rangeFor(withBand([0.5, 0.5])).why).toMatch(/is empty once its exclusive ends/)
+    expect(rangeFor(withBand([0.6, 0.4])).why).not.toMatch(/contains no probability/)
   })
 })
