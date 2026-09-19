@@ -48,6 +48,17 @@ describe('canEmit', () => {
     expect(canEmit(multi, 'bouncer')[0].code).toBe('reducer_too_complex')
   })
 
+  // toolgate reduces by max over EVERY question against two scalars, so one rule naming
+  // several questions at a shared threshold is its native shape — bouncer's
+  // one-question-per-rule limit must not be applied to it.
+  it('accepts a multi-question rule on toolgate, whose reducer is max-over-questions', () => {
+    const shared: Program = { ...nouls, reduce: { kind: 'rules', rules: [
+      { when: [{ id: 'destructive', op: 'gte', value: 0.85 },
+               { id: 'outside_repo', op: 'gte', value: 0.85 }], then: 'deny' }], otherwise: 'allow' } }
+    expect(canEmit(shared, 'toolgate')).toEqual([])
+    expect(canEmit(shared, 'bouncer')[0].code).toBe('reducer_too_complex')
+  })
+
   it('rejects a threshold outside 0..1 on bouncer, whose p grammar is bounded', () => {
     const p: Program = { ...mixed, decisions: [nouls.decisions[0], mixed.decisions[1]],
       reduce: { kind: 'rules', rules: [

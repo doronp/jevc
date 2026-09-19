@@ -69,7 +69,9 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
 
   if (cap.reducer !== 'code') {
     for (const [i, rule] of p.reduce.rules.entries()) {
-      if (rule.when.length > 1) {
+      // 'thresholds' targets reduce by max over every question, so a rule that names
+      // several questions at one threshold is their NATIVE shape, not too complex.
+      if (cap.reducer === 'single-condition' && rule.when.length > 1) {
         out.push({ code: 'reducer_too_complex', path: `reduce.rules[${i}]`, severity: 'error',
           message: `Target "${target}" allows one question per rule; this rule tests ${rule.when.length}. Split it, or emit to a code target.` })
       }

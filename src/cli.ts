@@ -142,4 +142,35 @@ if (cmd === 'explain') {
   process.exit(0)
 }
 
-die('usage: jevc <compile|check|explain> ...')
+if (cmd === 'emit-policy') {
+  // jev-guard is deliberately absent: its questions are `export const` literals in
+  // src/guard.js and decide() destructures four fixed ids, so there is nothing to emit into.
+  const target = flag('for') ?? die('usage: jevc emit-policy --for <bouncer|toolgate> <program.json> [-o out]')
+  const path = argv.find(a => a.endsWith('.json')) ?? die('supply a compiled program JSON file')
+  let program: Program
+  try {
+    program = JSON.parse(read(path))
+  } catch (e) {
+    die(`${path} is not valid JSON: ${(e as Error).message}`)
+  }
+
+  const { emitBouncerPolicy } = await import('./emit/policy/bouncer.js')
+  const { emitToolgatePolicy } = await import('./emit/policy/toolgate.js')
+  let out: string
+  try {
+    if (target === 'bouncer') out = emitBouncerPolicy(program!)
+    else if (target === 'toolgate') out = emitToolgatePolicy(program!)
+    else die(`Unknown policy target "${target}". Known: bouncer, toolgate. (jev-guard hardcodes its questions in source and cannot be targeted.)`)
+  } catch (e) {
+    // A refusal is the designed outcome for a program a target cannot express; it is a
+    // message for the user, not a jevc crash.
+    die((e as Error).message)
+  }
+
+  const dest = flag('o')
+  if (dest) { writeFileSync(dest, out!); process.stderr.write(`wrote ${dest}\n`) }
+  else process.stdout.write(out!)
+  process.exit(0)
+}
+
+die('usage: jevc <compile|check|explain|emit-policy> ...')
