@@ -25,6 +25,7 @@ replays the corpus offline — no key, no network.
 
 ## Docs
 
+- [examples/sample-project/README.md](https://raw.githubusercontent.com/doronp/jevc/main/examples/sample-project/README.md): the round trip in one directory — a rule scanned out of a project's own `CLAUDE.md`, compiled, and installed back into that project's `.claude/` as a running hook. Includes where the human judgment actually sits.
 - [docs/wiring.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/wiring.md): one runnable recipe per surface — Claude Code `PreToolUse` hook, tool-call guard, router, output verifier.
 - [docs/schema-mapping.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/schema-mapping.md): every JSON Schema construct, what it compiles to, and the rule behind each drop.
 - [docs/validation.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/validation.md): the 25 live probes that returned 200 OK with a wrong answer, and what refuses each one locally.

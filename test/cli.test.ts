@@ -54,7 +54,7 @@ describe('jevc compile', () => {
   // The prose route is lift -> agent returns a Program -> emit. The last step had no
   // implementation: `compile` only ever called `fromJsonSchema`, so a Program was read as a
   // schema with no `properties` and refused at exit 1, while docs/wiring.md,
-  // examples/claude-code-hook/README.md and compile's own `--lift` refusal all told the
+  // examples/sample-project/README.md and compile's own `--lift` refusal all told the
   // user to run exactly this.
   it('compiles an already-lifted Program, not only a JSON Schema', () => {
     const program = {

@@ -354,7 +354,7 @@ if (cmd === 'compile') {
   // `fromJsonSchema` read it as a schema with no `properties`: "The root schema declares no
   // properties to lower (its keys are: decisions, reduce, residual, dropped)", then exit 1.
   // So the last mile of the prose route had no implementation, while three places
-  // documented it: `docs/wiring.md`, `examples/claude-code-hook/README.md`, and this file's
+  // documented it: `docs/wiring.md`, `examples/sample-project/README.md`, and this file's
   // own `--lift` refusal ("Lift first, then run jevc on the Program the agent returns").
   //
   // A `decisions` key is the discriminator, not shape-validity: a file that claims to be a

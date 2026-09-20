@@ -394,6 +394,41 @@ describe('README claims recompute from the repo', () => {
       }
     })
 
+    // The loop the repo claims to close: a rule read out of a project's own CLAUDE.md, and
+    // the compiled gate installed back into that same project. The claim is only true while
+    // the registration points at a file that exists and the program still cites the line it
+    // was lifted from, so both are checked here rather than asserted in prose.
+    it('installs the gate back into the project the rule was read from', () => {
+      const DIR = 'examples/sample-project'
+      const settings = JSON.parse(readFileSync(`${DIR}/.claude/settings.json`, 'utf8'))
+      const hooks = settings.hooks.PreToolUse.flatMap((m: { hooks: { command: string }[] }) => m.hooks)
+      expect(hooks, 'the project registers exactly one gate').toHaveLength(1)
+
+      // `$CLAUDE_PROJECT_DIR` is the project root Claude Code expands at spawn time, which
+      // here is this directory — so the registered path must resolve inside it.
+      const rel = hooks[0].command.replace(/^node \$CLAUDE_PROJECT_DIR\//, '')
+      expect(rel, 'the hook command is not a project-relative node invocation').not.toContain('$')
+      expect(existsSync(`${DIR}/${rel}`), `settings.json registers ${rel}, which does not exist`).toBe(true)
+
+      // Both READMEs print this file to be copied. Compared parsed, not byte for byte: the
+      // root README wraps it tighter, and what has to match is the registration, not the
+      // indentation.
+      for (const md of ['README.md', `${DIR}/README.md`]) {
+        const shown = readFileSync(md, 'utf8')
+          .match(/\n```json\n(\{\n\s*"hooks":[\s\S]*?)\n```/)
+        expect(shown, `${md} no longer shows the registration`).not.toBeNull()
+        expect(JSON.parse(shown![1]), `${md} shows a registration the project does not use`).toEqual(settings)
+      }
+
+      // ...and the program it runs still points back at the sentence it came from.
+      const commit = JSON.parse(readFileSync(`${DIR}/.claude/gates/commit.json`, 'utf8'))
+      const claudeMd = readFileSync(`${DIR}/CLAUDE.md`, 'utf8').split('\n')
+      for (const d of commit.decisions) {
+        expect(d.source.file, `${d.id} was lifted from outside the project`).toBe('CLAUDE.md')
+        expect(claudeMd[d.source.line - 1], `${d.id} cites the wrong line`).toContain(d.source.quote)
+      }
+    })
+
     it('lists exactly the targets that exist, in a table with one row each', async () => {
       const { TARGETS } = await import('../src/index.js')
       for (const name of Object.keys(TARGETS)) {
@@ -655,7 +690,7 @@ describe('README claims recompute from the repo', () => {
       }
       expect(svg).toContain(f.measured.model)
       expect(svg, 'the hero shows a verdict the reducer does not produce')
-        .toContain(`>${runReducer(JSON.parse(readFileSync('examples/claude-code-hook/program.json', 'utf8')), f.measured.answers)}<`)
+        .toContain(`>${runReducer(JSON.parse(readFileSync('examples/sample-project/.claude/gates/commit.json', 'utf8')), f.measured.answers)}<`)
 
       // The first cut of this file arrived with the spaces stripped out of every text node —
       // "WHATYOUALREADYHAVE" — which is the AI-pseudo-text failure a hand-authored diagram

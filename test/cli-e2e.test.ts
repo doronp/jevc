@@ -1166,10 +1166,13 @@ describe('scan, show, and the installable hook', () => {
   // The hook is the one artifact in this repo a reader installs rather than reads, so it is
   // spawned the way Claude Code spawns it: JSON on stdin, JSON on stdout, exit 0 either way.
   describe('the Claude Code hook', () => {
-    const HOOK = join(ROOT, 'examples', 'claude-code-hook')
+    // Installed where a real one lives: inside the project whose CLAUDE.md the rule came
+    // from, so the hook is spawned with that project as cwd, exactly as Claude Code does.
+    const PROJECT = join(ROOT, 'examples', 'sample-project')
+    const HOOK = join(PROJECT, '.claude', 'gates')
     const runHook = (payload: unknown, env: Record<string, string> = {}) => {
       const r = spawnSync(process.execPath, [join(HOOK, 'gate.mjs')], {
-        cwd: HOOK, input: JSON.stringify(payload), encoding: 'utf8',
+        cwd: PROJECT, input: JSON.stringify(payload), encoding: 'utf8',
         env: { ...OFFLINE_ENV, JEVC_REPLAY: '1', ...env }, timeout: 60_000,
       })
       const res: Result = { args: ['gate.mjs'], status: r.status, signal: r.signal, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
@@ -1196,7 +1199,7 @@ describe('scan, show, and the installable hook', () => {
 
     it('is byte-identical to the line both READMEs print', () => {
       const r = runHook(sample())
-      for (const md of ['README.md', join('examples', 'claude-code-hook', 'README.md'), join('docs', 'wiring.md')]) {
+      for (const md of ['README.md', join('examples', 'sample-project', 'README.md'), join('docs', 'wiring.md')]) {
         const text = readFileSync(join(ROOT, md), 'utf8')
         const line = text.split('\n').find(l => l.startsWith('{"hookSpecificOutput"'))
         expect(line, `${md} no longer shows the hook's output`).toBeDefined()

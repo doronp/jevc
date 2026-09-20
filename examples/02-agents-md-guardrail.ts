@@ -78,5 +78,5 @@ if (collapsed.type === 'choice') {
   console.log('  jevc never emits that question; the reducer above replaces it.')
 }
 
-console.log('\nThis program as a gate that actually stops the commit:')
-console.log('  cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json')
+console.log('\nThis program installed in the project the rule came from, stopping the commit:')
+console.log('  cd examples/sample-project && JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json')

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
- * A working Claude Code PreToolUse hook. Not a snippet — this is the file you install.
+ * A working Claude Code PreToolUse hook, installed where a real one lives — this project's
+ * own `.claude/gates/`, registered by the `.claude/settings.json` beside it.
  *
- *   echo "$(cat payload.sample.json)" | JEVC_REPLAY=1 node gate.mjs
+ *   JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
  *
- * It enforces one rule from CLAUDE.md — "NEVER commit unless the user explicitly asks" —
- * by asking three narrow questions and computing the verdict in `program.json`'s reducer.
+ * It enforces one rule from this project's CLAUDE.md — "NEVER commit unless the user
+ * explicitly asks" — by asking three narrow questions and computing the verdict in
+ * `commit.json`'s reducer.
  * The rule itself never reaches a generative model.
  *
  * Set JEVC_REPLAY=1 to answer from the recorded fixture instead of calling the API, which
@@ -13,10 +15,10 @@
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { evaluate, runReducer } from '../../dist/index.js'   // installed: from 'jevc'
+import { evaluate, runReducer } from '../../../../dist/index.js'   // installed: from 'jevc'
 
 const HERE = (p) => fileURLToPath(new URL(p, import.meta.url))
-const program = JSON.parse(readFileSync(HERE('./program.json'), 'utf8'))
+const program = JSON.parse(readFileSync(HERE('./commit.json'), 'utf8'))
 
 /** Fail closed. A gate that disappears when the network does is not a gate. Override with
  *  JEVC_ON_ERROR=allow if you would rather the agent keep working than be stopped. */
@@ -65,8 +67,8 @@ const state = {
 const decide = async () => {
   if (process.env.JEVC_REPLAY) {
     // The recorded answers for exactly this state, from the corpus `npm test` asserts on.
-    const { loadFixtures } = await import('../../dist/check.js')
-    const f = loadFixtures(HERE('../../fixtures'))
+    const { loadFixtures } = await import('../../../../dist/check.js')
+    const f = loadFixtures(HERE('../../../../fixtures'))
       .find(x => x.id === 'commit-only-when-explicitly-asked')
     return { verdict: runReducer(program, f.measured.answers), answers: f.measured.answers }
   }

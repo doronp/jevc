@@ -19,12 +19,15 @@ Pick by where the decision happens:
 
 ## Claude Code PreToolUse hook
 
-The whole thing is in [`examples/claude-code-hook/`](../examples/claude-code-hook/) — a
-runnable `gate.mjs`, its `program.json`, and a sample payload. Run it offline:
+The whole thing is installed in
+[`examples/sample-project/`](../examples/sample-project/) — the project whose `CLAUDE.md`
+the rule was lifted out of in the first place. A runnable `.claude/gates/gate.mjs`, its
+`commit.json`, a sample payload, and the `.claude/settings.json` that registers it. Run it
+offline:
 
 ```bash
-cd examples/claude-code-hook
-JEVC_REPLAY=1 node gate.mjs < payload.sample.json
+cd examples/sample-project
+JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
 ```
 
 ```json
