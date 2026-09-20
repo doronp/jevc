@@ -543,7 +543,11 @@ npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
   does with a field it cannot parse, and therefore why `canEmit` refuses what it refuses.
 - [`fixtures/ATTRIBUTION.md`](fixtures/ATTRIBUTION.md) — every source whose text appears in
   the corpus, with its license. The fixtures quote real rule files on purpose; this is where
-  that debt is paid, including the one source that has no license at all.
+  that debt is paid, and where the Apache-2.0/MIT bar on quoted rule text is stated.
+- [`AGENTS.md`](AGENTS.md) — the instructions for an agent working in this repository. It is
+  also what `jevc scan .` finds here, which is the joke and the point.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — the "measured or it does not ship" standard, and
+  what a change has to respect.
 - [`SECURITY.md`](SECURITY.md) — how to report a defect privately, and what counts as one in
   a tool whose output is someone else's guardrail.
 - [`CHANGELOG.md`](CHANGELOG.md) — including the breaking change in 0.1.0.
