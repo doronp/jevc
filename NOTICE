@@ -21,9 +21,8 @@ Summary of the licenses involved:
   MIT          ghostty-org/ghostty, withastro/astro
   CC-BY-4.0    PolyAI/banking77
   CC-BY-3.0    clinc/clinc_oos (CLINC150)
-  no license   nickbreaton/printable.photos — see the note in
-               fixtures/ATTRIBUTION.md explaining why ~370 characters of its
-               rule text are reproduced verbatim, and how to have it removed
+
+Rule text is quoted only from Apache-2.0 and MIT projects.
 
 Anthropic and TypeSafe product documentation is quoted in a small number of
 fixtures under their own terms; those are commercial documents, not open-licensed
