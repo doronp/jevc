@@ -312,10 +312,13 @@ with the core.
 ```
 jevc emit-policy --for bouncer   AGENTS.md   # -> bouncer YAML
 jevc emit-policy --for toolgate  AGENTS.md   # -> toolgate YAML (static rules + model layer)
-jevc emit-policy --for jev-guard AGENTS.md   # -> jev-guard config
 ```
 
-This is the transpiler applied to their file formats, it is unbuilt, and it inherits
+Both of those shipped. `jev-guard` did not, and deliberately: its questions are `export
+const` literals in its own source, so there is no policy file to emit into and the CLI
+refuses the target by name (`src/cli.ts:546`).
+
+This is the transpiler applied to their file formats, and it inherits
 their calibration harnesses and multi-host adapters for free. `toolgate` is the most
 interesting target because it already has a **static-rule layer that runs before any
 model call** — which is exactly the split §4b prescribes, so a compiled program can be
