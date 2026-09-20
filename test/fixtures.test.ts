@@ -34,8 +34,8 @@ describe('fixture corpus', () => {
     expect(readdirSync('fixtures').filter(f => f.endsWith('.json'))).toHaveLength(5)
   })
 
-  it('loads 60 measured fixtures', () => {
-    expect(fixtures).toHaveLength(60)
+  it('loads 58 measured fixtures', () => {
+    expect(fixtures).toHaveLength(58)
   })
 
   it('every fixture records the natural-language prompt it replaces', () => {

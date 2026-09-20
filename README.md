@@ -27,7 +27,7 @@ npx jevc scan .                               # what this project could enforce
 
 ```console
 $ npx jevc check
-60 fixtures, 60 passing, 0 failing
+58 fixtures, 58 passing, 0 failing
 ```
 
 No API key, no network — not for the tests, the examples, or anything in this README
@@ -228,15 +228,15 @@ npx tsx examples/03-model-router.ts        # route before you spend; level-index
 npx tsx examples/04-policy-emit.ts         # emit a bouncer policy; watch toolgate refuse
 ```
 
-The 60 recorded fixtures are the worked examples — each one a prompt from a real harness,
+The 58 recorded fixtures are the worked examples — each one a prompt from a real harness,
 run once against the live model and recorded. Read one end to end:
 
 ```bash
-npx jevc show                                   # list all 60
+npx jevc show                                   # list all 58
 npx jevc show bash-rm-rf-node-modules-benign    # the prompt it replaces, the questions, the answers
 ```
 
-[`examples/GALLERY.md`](examples/GALLERY.md) is all 60 on one page, generated from
+[`examples/GALLERY.md`](examples/GALLERY.md) is all 58 on one page, generated from
 `fixtures/` by `npm run gallery` so it cannot drift from what the tests assert. Worth
 opening first:
 
@@ -293,7 +293,7 @@ evidence questions in the same call said `request_scope_ambiguous` 0.79 and
 `touches_irreversible_surface` 0.76. Reading the argmax ships a silent downgrade; reducing
 the evidence in code routes it up. (`npx tsx examples/03-model-router.ts`.)
 
-Three rules follow, all enforced by `lintProgram` — three of the seven checks it runs:
+Three rules follow, all enforced by `lintProgram` — three of the six checks it runs:
 
 1. **Never emit a collapsed verdict question.** Emit evidence; compute the verdict in code.
    This one is a hard error.
@@ -318,7 +318,7 @@ Six commands. Every console block in this file is real output from this repo.
 | `jevc scan [dir]` | `--json` | Finds the instruction files a project already has and sorts their rules into decidable, procedure and generation. The intended first command. |
 | `jevc compile <file\|->` | `--lift`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose. `-` reads stdin. |
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
-| `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 60. |
+| `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 58. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
 | `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
 
@@ -560,11 +560,12 @@ The body of this README says what the thing does. This section says where the ed
 
 **Be precise about the claim.** Collapse is not a property of verdict words; it is what
 happens when a collapsed question meets a genuinely borderline input. Across the corpus,
-the 19 verdict-shaped choice heads — option sets that trip the same `VERDICT_WORDS` test
+the 17 verdict-shaped choice heads — option sets that trip the same `VERDICT_WORDS` test
 the linter uses — have a median confidence of 0.93, close to
 the 0.97 median of the other 46 choice heads.
 The separation is in the tail, not the middle: the three least confident
-verdict heads are 0.13, 0.31 and 0.36, each on a genuinely borderline input.
+verdict heads are 0.13, 0.36 and 0.63, each on an input where two rules point
+opposite ways at once.
 
 And the tail is not exclusively theirs. The router's `tier` head measured 0.24, and it is a
 collapsed verdict in everything but vocabulary — the `VERDICT_WORDS` test is a heuristic,
@@ -584,10 +585,11 @@ are the other three checks `lintProgram` runs.
 
 ### The corpus is measured, not written
 
-`fixtures/` holds **60 fixtures** — five domains (security guardrails, cost optimization,
-intent understanding, agent harness rules, output verification), 12 each, 343 questions
-(252 noul, 65 choice, 26 score). Every one was executed live against
-`POST https://api.typesafe.ai/v1/systemone` on 2026-09-18, model `jev-1.13.0`: 60/60 HTTP
+`fixtures/` holds **58 fixtures** across five domains — security guardrails, cost
+optimization, intent understanding and output verification at 12 each, agent harness rules
+at 10 — and 332 questions
+(244 noul, 63 choice, 25 score). Every one was executed live against
+`POST https://api.typesafe.ai/v1/systemone` on 2026-09-18, model `jev-1.13.0`: 58/58 HTTP
 200 on the first attempt, zero dropped. Each fixture carries the real natural-language
 prompt it replaces, its provenance, and its measured response.
 
@@ -595,18 +597,18 @@ Those numbers are a **recording**, and the recording is the only thing this repo
 The key is deliberately not here, so nothing in the repo claims the endpoint answers today
 — `jevc check --live` is the command that finds out.
 
-**Only 24 of the 60 predicted thresholds survived contact with the real model. 36 of 60
+**Only 23 of the 58 predicted thresholds survived contact with the real model. 35 of 58
 were wrong** and were recalibrated to measured values. 60% of the predicted thresholds were wrong, so the corpus is
 measured rather than written.
 
 Answers are near-deterministic but **not bit-identical** — repeated identical calls drift
 by about ±0.01. Every *numeric* assertion in the corpus is therefore a band, never an
-equality: of the **329** `expect` entries across the 60 fixtures, 269 are bands, and the
-remaining **60** assert an equality — but on the *argmax* of a choice, not on a number, and
-52 of those 60 carry a confidence band alongside. Between them those entries pin **331**
-numeric bounds (`noul_gte` 153, `noul_lte` 89, `confidence_gte` 51, `score_gte` 22,
+equality: of the **319** `expect` entries across the 58 fixtures, 260 are bands, and the
+remaining **59** assert an equality — but on the *argmax* of a choice, not on a number, and
+51 of those 59 carry a confidence band alongside. Between them those entries pin **321**
+numeric bounds (`noul_gte` 148, `noul_lte` 86, `confidence_gte` 50, `score_gte` 21,
 `score_lte` 9, `confidence_lte` 7) — more bounds than entries, because a single entry can
-pin both ends. The smallest gap between winner and runner-up anywhere in those 60 is
+pin both ends. The smallest gap between winner and runner-up anywhere in those 59 is
 **0.07** and the median is **0.96**, so the drift does not reach the quantity being pinned.
 Note that 0.07 is the collapsed verdict question from the decomposition law: wide enough
 that the recording is a stable assertion, far too narrow to be a verdict you would ship.
@@ -614,7 +616,7 @@ Those are different questions, and the corpus only answers the first.
 
 `--live` compares the recording against `jev-latest`, and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
-spuriously, while 216 of the 331 numeric bounds in this corpus have less headroom than the
+spuriously, while 210 of the 321 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift
 threshold would otherwise turn most of the corpus red. A band that no longer holds is
 `drifted`, not `broken`, and does not gate the exit. Everything structural still exits 1 on
@@ -839,14 +841,14 @@ JSON in the first place — the deterministic path has no model in it at all).
 
 ---
 
-\* *Latency, which is deliberately absent from everything above: across the 60 calls
-recorded on 2026-09-18, answers came back in a range of min 689 ms, median 778.5 ms, max
+\* *Latency, which is deliberately absent from everything above: across the 58 calls
+recorded on 2026-09-18, answers came back in a range of min 695 ms, median 779 ms, max
 2584 ms. That is an incidental observation from one batch on one day against one endpoint —
 not a benchmark, which would control for question count, payload size, concurrency,
 connection reuse and time of day. Do not plan against it; measure your own. Two things in
 it are still worth knowing. The maximum was the first call recorded in its batch, which is
 consistent with connection setup but was not isolated and measured. And latency looks flat
-in question count rather than linear — the 18 fixtures with 5 questions span 689-993 ms and
+in question count rather than linear — the 17 fixtures with 5 questions span 695-993 ms and
 the 12 with 7 questions span 701-2584 ms — which, together with the fact that questions in
 one request evaluate in parallel, is the argument for batching aggressively. The only reason
 to split a request is the shared token budget.*

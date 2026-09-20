@@ -395,8 +395,8 @@ describe('jevc --version', () => {
 })
 
 describe('jevc check', () => {
-  it('replays the corpus offline and reports 60 fixtures', () => {
-    expect(run(['check'])).toMatch(/60 fixtures/)
+  it('replays the corpus offline and reports 58 fixtures', () => {
+    expect(run(['check'])).toMatch(/58 fixtures/)
   })
 
   // Fix round 1, item 3.
