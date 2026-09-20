@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { fromJsonSchema, type JsonSchema, type SchemaProgram } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
@@ -289,6 +290,14 @@ const fixtures = (dir: string) => {
   try { return loadFixtures(dir) }
   catch (e) { return die(`Cannot load fixtures from ${dir}: ${(e as Error).message}`) }
 }
+// The recorded corpus is part of the package, not of your project, so it is resolved
+// against this module and not against the cwd. `files` ships `fixtures/` next to `dist/`
+// in the tarball (same reasoning as `../package.json` above), so this is the repo's own
+// `fixtures/` in a checkout and the installed copy under `node_modules/jevc/` after
+// `npm i -g jevc`. Defaulting to the bare string "fixtures" made `jevc check` — the first
+// command in the README — fail with ENOENT for everyone who installed it rather than
+// cloned it. `--fixtures <dir>` still points at a corpus of your own.
+const PACKAGED_FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url))
 
 if (cmd === 'compile') {
   const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json|ai-sdk|langchain] [-o out]')
@@ -457,7 +466,7 @@ if (cmd === 'compile') {
 }
 
 if (cmd === 'check') {
-  const corpus = fixtures(flag('fixtures') ?? 'fixtures')
+  const corpus = fixtures(flag('fixtures') ?? PACKAGED_FIXTURES)
 
   if (has('live')) {
     // Amendment: --live requires a real API key and must never run as part of `npm test`.
@@ -493,7 +502,7 @@ if (cmd === 'check') {
 if (cmd === 'explain') {
   // The provenance payoff: answer "why does this question exist?"
   const id = positional() ?? die('usage: jevc explain <decision-id>')
-  const hits = fixtures(flag('fixtures') ?? 'fixtures')
+  const hits = fixtures(flag('fixtures') ?? PACKAGED_FIXTURES)
     .flatMap(f => Object.keys(f.questions).includes(id) ? [f] : [])
   if (!hits.length) die(`No decision "${id}" found.`)
   for (const f of hits) {
@@ -525,7 +534,7 @@ if (cmd === 'show') {
   // `explain` answers "why does this question exist"; `show` answers "what does the whole
   // thing look like end to end", which is the question someone evaluating jevc has.
   const { renderFixture } = await import('./show.js')
-  const corpus = fixtures(flag('fixtures') ?? 'fixtures')
+  const corpus = fixtures(flag('fixtures') ?? PACKAGED_FIXTURES)
   const id = positional()
   if (!id) {
     toStdout(`usage: jevc show <fixture-id>\n\n${corpus.length} recorded fixtures:\n\n`)
