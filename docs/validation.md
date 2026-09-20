@@ -60,5 +60,11 @@ for state plus the longest single question, estimated at the measured ratio of 5
 characters per token. The vendor documentation says 64k; ~45k returns
 `400 max_tokens_exceeded` ([`design.md`](design.md) §3.3 records both, one line
 apart), so a pre-flight check set to the documented number passes requests the API rejects —
-the one outcome the check exists to prevent. Choice takes 2..255 options (reliability
-degrades above ~240); score takes 2..10 levels.
+the one outcome the check exists to prevent. Choice takes 2..255 options; score takes 2..10
+levels. Both bounds are the vendor's documented ones.
+
+When a Choice's options may not cover every input, include an `other` or `none of the above`
+option — that is the vendor's guidance, and jevc does not lint for it because it cannot be
+decided from the program: when the options enumerate a fixed candidate set drawn from the
+source data, coverage is the rule author's responsibility, and the model cannot choose a
+value that was left out.

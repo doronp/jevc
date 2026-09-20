@@ -58,7 +58,7 @@ whose keys are caller-chosen and **not sent to the model**.
 | Type | `criteria` | Bounds | Answer |
 | --- | --- | --- | --- |
 | `noul` | optional `{true?, false?}` | — | `{type, noul: 0..1}` — **no confidence** |
-| `choice` | `map<string, EntryType\|null>` | **2..255** (~240 reliable) | `{type, choice, probabilities, confidence}` |
+| `choice` | `map<string, EntryType\|null>` | **2..255** | `{type, choice, probabilities, confidence}` |
 | `score` | **ordered array** | **2..10** | `{type, score, legend, probabilities, confidence}` |
 
 `EntryType = string | object | array | null`, nested arbitrarily. `instructions` and

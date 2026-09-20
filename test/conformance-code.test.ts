@@ -802,8 +802,10 @@ describe('the json target is a valid request, and a request that answers back', 
     expect(codes(choice(2))).not.toContain('error:choice_too_few_options')
     expect(codes(choice(255))).not.toContain('error:choice_too_many_options')
     expect(codes(choice(256))).toContain('error:choice_too_many_options')
-    expect(codes(choice(241))).toContain('warn:choice_near_limit')
-    expect(codes(choice(240))).not.toContain('warn:choice_near_limit')
+    // 241..255 is clean. The old `choice_near_limit` warn fired here on an unmeasured
+    // "reliability degrades above roughly 240"; the vendor documents 255 and nothing else.
+    expect(codes(choice(241))).not.toContain('warn:choice_near_limit')
+    expect(codes(choice(255))).not.toContain('warn:choice_near_limit')
 
     expect(codes(score(1))).toContain('error:score_too_few_levels')
     expect(codes(score(2))).not.toContain('error:score_too_few_levels')
