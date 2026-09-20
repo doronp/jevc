@@ -19,10 +19,11 @@ Each of these is a short, functional rule statement — the kind of sentence a p
 tell an agent what not to do. They are quoted so the corpus measures real rules rather than
 rules written to be easy.
 
-Rule text is quoted only from projects published under Apache-2.0 or MIT. Fixtures built on
-sources outside that bar were deleted rather than rewritten: a fixture's `state` is the
-recorded model input, so paraphrasing it would leave the corpus asserting measured answers
-for a prompt that was never measured.
+Rule text is quoted only from repositories published under Apache-2.0 or MIT; the one
+non-repository row below is Anthropic's own permissions documentation, quoted under its own
+terms. Fixtures built on sources outside that bar were deleted rather than rewritten: a
+fixture's `state` is the recorded model input, so paraphrasing it would leave the corpus
+asserting measured answers for a prompt that was never measured.
 
 | Source | License | What appears here |
 | --- | --- | --- |
