@@ -129,6 +129,8 @@ const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
   check: new Set(['fixtures', 'live']),
   explain: new Set(['fixtures']),
   'emit-policy': new Set(['for', 'o']),
+  scan: new Set(['json']),
+  show: new Set(['fixtures']),
 }
 const knownFlags = KNOWN_FLAGS[cmd]
 if (knownFlags) {
@@ -468,6 +470,42 @@ if (cmd === 'explain') {
   process.exit(0)
 }
 
+if (cmd === 'scan') {
+  // The entry point for someone who has rules but no schema — which is everyone, the
+  // first time. It reads; it never writes, never calls a model and never decides.
+  const { scanProject, renderScan } = await import('./scan.js')
+  const root = positional() ?? '.'
+  let files
+  try { files = scanProject(root) }
+  catch (e) { die(`Cannot scan ${root}: ${(e as Error).message}`) }
+  if (has('json')) toStdout(`${JSON.stringify(files, null, 2)}\n`)
+  else toStdout(renderScan(root, files!))
+  process.exit(0)
+}
+
+if (cmd === 'show') {
+  // `explain` answers "why does this question exist"; `show` answers "what does the whole
+  // thing look like end to end", which is the question someone evaluating jevc has.
+  const { renderFixture } = await import('./show.js')
+  const corpus = fixtures(flag('fixtures') ?? 'fixtures')
+  const id = positional()
+  if (!id) {
+    toStdout(`usage: jevc show <fixture-id>\n\n${corpus.length} recorded fixtures:\n\n`)
+    const pad = Math.max(...corpus.map(f => f.id.length))
+    for (const f of corpus) toStdout(`  ${f.id.padEnd(pad)}  ${f.title}\n`)
+    process.exit(0)
+  }
+  const hit = corpus.find(f => f.id === id)
+  if (!hit) {
+    // A near miss is the common case (a typo, or half-remembering the id), and printing
+    // 60 rows in answer to one wrong word is not help.
+    const near = corpus.filter(f => f.id.includes(id) || id.includes(f.id)).map(f => f.id)
+    die(`No fixture "${id}".${near.length ? `\nDid you mean: ${near.join(', ')}` : '\nRun `jevc show` with no argument to list them.'}`)
+  }
+  toStdout(`${renderFixture(hit!)}\n`)
+  process.exit(0)
+}
+
 if (cmd === 'emit-policy') {
   // jev-guard is deliberately absent: its questions are `export const` literals in
   // src/guard.js and decide() destructures four fixed ids, so there is nothing to emit into.
@@ -518,4 +556,14 @@ if (cmd === 'emit-policy') {
   process.exit(0)
 }
 
-die('usage: jevc <compile|check|explain|emit-policy> ...')
+die(`usage: jevc <command>
+
+  scan [dir]                    find the instruction files this project already has
+  compile <file|-> --lift       turn a rules document into a lowering request for your agent
+  compile <file|->              turn a JSON Schema into a typed module
+  emit-policy --for <target>    lower a compiled program into bouncer or toolgate YAML
+  show [fixture-id]             one recorded fixture, end to end
+  explain <decision-id>         why a question exists, and what it measured
+  check                         replay the measured corpus
+
+Start with \`jevc scan\`.`)

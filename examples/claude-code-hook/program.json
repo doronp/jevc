@@ -1,0 +1,45 @@
+{
+  "decisions": [
+    {
+      "id": "is_commit_operation",
+      "kind": "noul",
+      "instructions": "Does the pending shell command in tool_input.command create a git commit in this repository?",
+      "source": {
+        "file": "CLAUDE.md",
+        "line": 7,
+        "quote": "NEVER commit unless the user explicitly asks."
+      }
+    },
+    {
+      "id": "user_explicitly_asked_to_commit",
+      "kind": "noul",
+      "instructions": "Looking only at recent_user_turns, did the human explicitly ask for a commit to be created?",
+      "source": {
+        "file": "CLAUDE.md",
+        "line": 7,
+        "quote": "NEVER commit unless the user explicitly asks."
+      }
+    },
+    {
+      "id": "commit_required_by_requested_task",
+      "kind": "noul",
+      "instructions": "Is creating a commit a necessary step of the task the human actually requested in recent_user_turns?",
+      "source": {
+        "file": "CLAUDE.md",
+        "line": 7,
+        "quote": "NEVER commit unless the user explicitly asks."
+      }
+    }
+  ],
+  "reduce": {
+    "kind": "rules",
+    "rules": [
+      { "when": [{ "id": "is_commit_operation", "op": "lte", "value": 0.5 }], "then": "allow" },
+      { "when": [{ "id": "user_explicitly_asked_to_commit", "op": "gte", "value": 0.5 }], "then": "allow" },
+      { "when": [{ "id": "commit_required_by_requested_task", "op": "gte", "value": 0.5 }], "then": "allow" }
+    ],
+    "otherwise": "deny"
+  },
+  "residual": "",
+  "dropped": []
+}

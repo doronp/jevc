@@ -1,0 +1,34 @@
+{
+  "decisions": [
+    {
+      "id": "changelog_covers_billing_changes",
+      "kind": "noul",
+      "instructions": "Does the changelog entry describe every change in the diff that touches src/billing/?",
+      "source": {
+        "file": ".claude/skills/release/SKILL.md",
+        "line": 13,
+        "quote": "The changelog must mention every change touching `src/billing/`."
+      }
+    },
+    {
+      "id": "rfc_covers_this_breaking_change",
+      "kind": "noul",
+      "instructions": "Does the linked RFC describe the breaking change this release actually makes, rather than a different one?",
+      "source": {
+        "file": ".claude/skills/release/SKILL.md",
+        "line": 14,
+        "quote": "Do not bump the major version without an approved RFC."
+      }
+    }
+  ],
+  "reduce": {
+    "kind": "rules",
+    "rules": [
+      { "when": [{ "id": "changelog_covers_billing_changes", "op": "lte", "value": 0.5 }], "then": "deny" },
+      { "when": [{ "id": "rfc_covers_this_breaking_change", "op": "lte", "value": 0.5 }], "then": "deny" }
+    ],
+    "otherwise": "allow"
+  },
+  "residual": "",
+  "dropped": []
+}

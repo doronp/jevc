@@ -1,0 +1,15 @@
+{
+  "session_id": "b1c3e0a2-0f4d-4a7e-9d21-6c8f3b5a1d90",
+  "transcript_path": "/Users/dana/.claude/projects/-Users-dana-src-payments-api/b1c3e0a2.jsonl",
+  "cwd": "/Users/dana/src/payments-api",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git add -A && git commit -m 'fix: handle null response in retry path'",
+    "description": "Commit the retry fix"
+  },
+  "recent_user_turns": [
+    "the retry logic blows up when the upstream returns 204, can you look into it",
+    "yeah that reading looks right, go ahead"
+  ]
+}

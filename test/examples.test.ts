@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { loadFixtures } from '../src/check.js'
 import { VERDICT_WORDS } from '../src/ir.js'
+import { runReducer } from '../src/runtime.js'
 
 // The devDependency binaries directly rather than `npx`: they are already installed, so
 // this resolves deterministically and can never reach the network mid-test.
@@ -149,6 +150,11 @@ describe('README claims recompute from the repo', () => {
   // literal. Collapse runs of whitespace once and assert against that for anything in prose;
   // keep the raw text for anything inside a fenced block, where the line breaks are content.
   const flat = readme.replace(/\s+/g, ' ')
+  // Two reference sections live in `docs/` so the README stays readable in one sitting.
+  // The claims in them are still recomputed here — moving prose out of the README must not
+  // move it out of the checks, or the split becomes a place for numbers to rot.
+  const flatDocs = [readme, readFileSync('docs/schema-mapping.md', 'utf8'),
+    readFileSync('docs/validation.md', 'utf8')].join('\n').replace(/\s+/g, ' ')
   const corpus = loadFixtures('fixtures')
 
   const blocks = [...readme.matchAll(/\n```(\w*)\n([\s\S]*?)\n```/g)]
@@ -233,7 +239,7 @@ describe('README claims recompute from the repo', () => {
       expect(held + wrong, 'some fixture no longer records prediction_held').toBe(corpus.length)
       expect(flat).toContain(`Only ${held} of the ${corpus.length} predicted thresholds survived`)
       expect(flat).toContain(`${wrong} of ${corpus.length}`)
-      expect(flat).toContain(`${Math.round((wrong / corpus.length) * 100)}% of the suite`)
+      expect(flat).toContain(`${Math.round((wrong / corpus.length) * 100)}% of the predicted thresholds`)
     })
 
     it('quotes the verdict-head tail, using the linter\'s own predicate', () => {
@@ -262,7 +268,7 @@ describe('README claims recompute from the repo', () => {
       const scores = corpus.flatMap(f => Object.values(f.measured.answers))
         .filter(a => a.type === 'score') as { score: number }[]
       const fractional = scores.filter(a => !Number.isInteger(a.score)).length
-      expect(flat).toContain(`${fractional} of the ${scores.length} measured score answers`)
+      expect(flatDocs).toContain(`${fractional} of the ${scores.length} measured score answers`)
     })
 
     it('quotes the drift headroom that justifies `drifted` rather than `broken`', () => {
@@ -284,7 +290,7 @@ describe('README claims recompute from the repo', () => {
   describe('the numbers on the first screen', () => {
     const f = () => corpus.find(x => x.id === 'commit-only-when-explicitly-asked')!
 
-    it('quotes every measured answer of the headline fixture, including the unread fourth', () => {
+    it('quotes every measured answer the headline block shows', () => {
       const answers = f().measured.answers
       const noul = (id: string) => {
         const a = answers[id]
@@ -300,27 +306,30 @@ describe('README claims recompute from the repo', () => {
         // rather than `$` because one of these lines carries an inline aside after the value.
         expect(shown, id).toMatch(new RegExp(`^${id}\\s+${lit(noul(id))}(?!\\d)`, 'm'))
       }
-      expect(shown).toMatch(new RegExp(`^latency:\\s+${f().measured.latency_ms} ms\\b`, 'm'))
-      // ...and the fourth, which the README mentions precisely because the example omits it.
-      expect(flat).toContain(`\`command_does_more_than_commit\`, measured ${noul('command_does_more_than_commit')}`)
     })
 
-    it('quotes the measured latency range, not a rounded one', () => {
+    // A latency is an observation from one batch on one day, not a benchmark, so the README
+    // is allowed to record it exactly once and only where a reader has already been told
+    // what it is worth. Anything above that footnote reads as a spec, so nothing above it
+    // may quote a millisecond at all.
+    it('keeps latency out of the body, in one footnote, quoted unrounded', () => {
       const ms = corpus.map(x => x.measured.latency_ms!).sort((a, b) => a - b)
-      expect(flat).toContain(`min ${ms[0]} ms, median ${median(ms)} ms, max ${ms.at(-1)} ms`)
-      expect(flat).toContain(`median of ${median(ms)} ms across the ${corpus.length} calls`)
-      expect(flat).toContain(`(min ${ms[0]} ms, max ${ms.at(-1)} ms)`)
+      const cut = readme.lastIndexOf('\\* *Latency')
+      expect(cut, 'the latency footnote moved or was deleted').toBeGreaterThan(-1)
+      const footnote = readme.slice(cut).replace(/\s+/g, ' ')
+      expect(footnote).toContain(`min ${ms[0]} ms, median ${median(ms)} ms, max ${ms.at(-1)} ms`)
+      expect(readme.slice(0, cut), 'a latency escaped into the body').not.toMatch(/\d\s?ms\b/)
     })
   })
 
   describe('the wire-contract numbers', () => {
     it('quotes the token budgets the code enforces, not the ones the vendor documents', async () => {
       const { TOKEN_BUDGET_TOTAL, TOKEN_BUDGET_SINGLE, estimateTokens } = await import('../src/index.js')
-      expect(flat).toContain(`**${TOKEN_BUDGET_TOTAL.toLocaleString('en-US')} tokens**`)
-      expect(flat).toContain(`**${TOKEN_BUDGET_SINGLE.toLocaleString('en-US')}**`)
+      expect(flatDocs).toContain(`**${TOKEN_BUDGET_TOTAL.toLocaleString('en-US')} tokens**`)
+      expect(flatDocs).toContain(`**${TOKEN_BUDGET_SINGLE.toLocaleString('en-US')}**`)
       // CHARS_PER_TOKEN is module-private, so derive it the way a caller would observe it.
       const ratio = 510 / estimateTokens('x'.repeat(510))
-      expect(flat).toContain(`the measured ratio of ${ratio} characters per token`)
+      expect(flatDocs).toContain(`the measured ratio of ${ratio} characters per token`)
     })
 
     it('counts the lint rules `lintProgram` actually runs', () => {
@@ -354,6 +363,31 @@ describe('README claims recompute from the repo', () => {
       for (const i of issues) expect(shown).toContain(`${i.path}: ${i.message}`)
       // The same program is fine for bouncer; that contrast is the point of the section.
       expect(canEmit(program(), 'bouncer')).toEqual([])
+    })
+
+    // The skill worked example answers "I have a bunch of skills — what is my before and
+    // after?", so its console block has to be the real before and after. Every line the
+    // README shows must come from the emitter, and the two provenance comments must name
+    // lines that actually say what the README claims they say.
+    it('shows a real policy emitted from the release skill, citing real skill lines', async () => {
+      const { emitBouncerPolicy } = await import('../src/index.js')
+      const gate = JSON.parse(readFileSync('examples/sample-project/.claude/gates/release.json', 'utf8'))
+      const emitted = emitBouncerPolicy(gate)
+      const shown = blockWith('console', 'emit-policy --for bouncer examples/sample-project')
+        .split('\n').slice(1)
+
+      for (const line of shown) {
+        if (line === '...') continue
+        expect(emitted, `the README shows a line the emitter does not: ${line}`).toContain(line)
+      }
+      expect(shown.filter(l => l === '...').length, 'exactly one elision, and it is marked').toBe(1)
+
+      // The citations are the whole point of the section: each must quote its own file.
+      const skill = readFileSync('examples/sample-project/.claude/skills/release/SKILL.md', 'utf8').split('\n')
+      for (const d of gate.decisions) {
+        expect(skill[d.source.line - 1], `${d.id} cites the wrong line`).toContain(d.source.quote)
+        expect(shown.join('\n')).toContain(`${d.source.file}:${d.source.line} — ${d.source.quote}`)
+      }
     })
 
     it('lists exactly the targets that exist, in a table with one row each', async () => {
@@ -574,6 +608,64 @@ describe('README claims recompute from the repo', () => {
     it('links only to docs that exist', () => {
       for (const [, target] of readme.matchAll(/\]\((docs\/[^)#]+|CHANGELOG\.md|examples\/[^)#]+)\)/g)) {
         expect(existsSync(target), `README links to ${target}, which is not in the repo`).toBe(true)
+      }
+    })
+
+    // The README moves a reader's caveats to the end and then links back to them, so a
+    // same-page link that resolves to nothing is not a cosmetic miss — it is the reader
+    // being told "the limits are over there" and landing nowhere.
+    it('resolves every same-page link to a heading it actually has', () => {
+      const slug = (h: string) => h.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-')
+      const headings = new Set([...readme.matchAll(/^#+\s+(.+)$/gm)].map(m => slug(m[1])))
+      const targets = [...readme.matchAll(/\]\(#([^)]+)\)/g)].map(m => m[1])
+      expect(targets.length, 'the README stopped cross-linking its own notes').toBeGreaterThan(0)
+      for (const t of targets) expect(headings, `README links to #${t}, which is not a heading`).toContain(t)
+    })
+
+    // The CLI table is the reference a reader works from, so it is derived from the binary's
+    // own usage text rather than maintained by hand beside it.
+    it('documents exactly the commands `jevc` offers, and counts them right', () => {
+      const usage = readFileSync('src/cli.ts', 'utf8').match(/usage: jevc <command>\n([\s\S]*?)\n\nStart with/)
+      expect(usage, 'the CLI usage block moved').not.toBeNull()
+      const commands = new Set([...usage![1].matchAll(/^ {2}(\S+)/gm)].map(m => m[1]))
+      const rows = new Set([...readme.matchAll(/^\| `jevc ([\w-]+)[^|]*\|/gm)].map(m => m[1]))
+      expect(rows).toEqual(commands)
+      expect(readme).toContain(`${['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'][commands.size]} commands.`)
+    })
+
+    // The first thing anyone sees is the hardest thing to keep honest, because nothing
+    // downstream reads it. Every number and identifier drawn in the hero is recomputed from
+    // the fixture and the example's own reducer, so a diagram that quietly goes stale fails
+    // here rather than being believed by every reader of the repo's front page.
+    it('draws a hero whose numbers come from the corpus', () => {
+      const svg = readFileSync('docs/hero.svg', 'utf8')
+      expect(readme.indexOf('](docs/hero.svg)'), 'the hero is not on the first screen').toBeLessThan(200)
+
+      const f = corpus.find(x => x.id === 'commit-only-when-explicitly-asked')!
+      for (const [id, a] of Object.entries(f.measured.answers)) {
+        if (a.type !== 'noul' || !svg.includes(id)) continue
+        // `>` so the id is a whole text node: `is_commit_operation` must not be satisfied by
+        // the longer id that contains it, which is how a three-row table becomes a two-row one.
+        expect(svg, `hero row ${id}`).toContain(`>${id}<`)
+        expect(svg, `hero value for ${id}`).toContain(`>${a.noul}<`)
+      }
+      expect(svg).toContain(f.measured.model)
+      expect(svg, 'the hero shows a verdict the reducer does not produce')
+        .toContain(`>${runReducer(JSON.parse(readFileSync('examples/claude-code-hook/program.json', 'utf8')), f.measured.answers)}<`)
+
+      // The first cut of this file arrived with the spaces stripped out of every text node —
+      // "WHATYOUALREADYHAVE" — which is the AI-pseudo-text failure a hand-authored diagram
+      // exists to avoid, and which is invisible in the markup unless something counts. Any
+      // text node that is nothing but letters is a single word, so a long one is jammed
+      // prose; the longest real one here is `decompose`.
+      const nodes = [...svg.matchAll(/>([^<>]+)</g)].map(m => m[1].trim()).filter(Boolean)
+      for (const w of nodes.filter(t => /^[A-Za-z]+$/.test(t))) {
+        expect(w.length, `run-together text in the hero: "${w}"`).toBeLessThanOrEqual(12)
+      }
+      // ...and the short headings, which are under that cap even when jammed, by value.
+      for (const phrase of ['WHAT YOU ALREADY HAVE', 'WHAT YOU GET', 'no model on this path',
+        'computed in code, never asked of the model']) {
+        expect(nodes, `the hero lost "${phrase}"`).toContain(phrase)
       }
     })
   })

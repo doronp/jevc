@@ -14,8 +14,11 @@ const fixture = loadFixtures(FIXTURES)
 
 console.log('THE RULE, as written in CLAUDE.md:')
 console.log('  "NEVER commit unless the user explicitly asks."\n')
-console.log('The LLM prompt this replaces:', fixture.llm_prompt.length, 'chars of instructions,')
-console.log('  hand-parsed JSON out, and four judgments held in one head.\n')
+console.log('BEFORE — the rule is prose the model weighs against everything else in the file.')
+console.log('  Escalating to a second LLM call trades one unreviewable judgment for another:')
+console.log(' ', fixture.llm_prompt.length, 'chars of instructions, a hand-parsed JSON envelope,')
+console.log('  and four judgments held in one head.\n')
+console.log('AFTER — three narrow questions and a verdict computed in code:\n')
 
 const program: Program = {
   decisions: [
@@ -55,7 +58,6 @@ for (const d of program.decisions) {
 }
 
 console.log('\nVERDICT, computed in code:', runReducer(program, fixture.measured.answers))
-console.log('Latency:', fixture.measured.latency_ms, 'ms')
 
 // The user's last turn was "yeah that reading looks right, go ahead" — a bare approval
 // of a plan, not a request to commit. That is the real-world way surprise commits
@@ -75,3 +77,6 @@ if (collapsed.type === 'choice') {
   console.log(`  (${Object.entries(collapsed.probabilities).map(([k, v]) => `${k} ${v}`).join(' / ')})`)
   console.log('  jevc never emits that question; the reducer above replaces it.')
 }
+
+console.log('\nThis program as a gate that actually stops the commit:')
+console.log('  cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json')
