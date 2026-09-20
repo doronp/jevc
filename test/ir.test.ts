@@ -307,6 +307,38 @@ describe('lintProgram — the decomposition law', () => {
     expect(lintProgram(p).some(i => i.code === 'embedded_pattern')).toBe(true)
   })
 
+  // Rule 7. The exact shape of the one recorded inversion: the id and criteria.true both say
+  // "no effect", the instructions ask whether the effect happens. The id never reaches the
+  // model, so the model answers the instructions and the reducer reads it backwards.
+  it('warns when the id and criteria.true negate what the instructions ask', () => {
+    const p = prog()
+    p.decisions.push({ id: 'edit_would_have_no_runtime_effect', kind: 'noul',
+      instructions: 'Given path_metadata, would changing this file change the behavior of the shipped application?',
+      criteria: { true: 'Application code does not build from or import this path, so the edit cannot affect runtime behavior.',
+                  false: 'Application code builds from or imports this path, so the edit would take effect.' } })
+    expect(lintProgram(p).some(i => i.code === 'polarity_disagreement')).toBe(true)
+  })
+
+  // The three ways this could be noise, all silent. Without them the rule fires 63 times over
+  // the corpus instead of once.
+  it('stays quiet when the negation is incidental, contrastive, or agreed', () => {
+    const quiet = (id: string, instructions: string, t: string) => {
+      const p = prog()
+      p.decisions.push({ id, kind: 'noul', instructions, criteria: { true: t, false: 'Otherwise.' } })
+      return lintProgram(p).every(i => i.code !== 'polarity_disagreement')
+    }
+    // A negation in the instructions that the id does not have — the mirror direction.
+    expect(quiet('adds_new_runtime_dependency',
+      'Does this command add a package that is not already a dependency of this project?',
+      'The package is new to this project.')).toBe(true)
+    // The id negates and the instructions agree, in words that carry no negation token.
+    expect(quiet('missing_time_window', 'Does `request` leave the reporting period unstated?',
+      'No time period is given.')).toBe(true)
+    // A negation substring inside an ordinary word is not a negation.
+    expect(quiet('sends_notification', 'Does this send a notification?',
+      'A notification is sent.')).toBe(true)
+  })
+
   it('does not warn about a carve-out or pattern when the question contains neither', () => {
     const p = prog()
     const codes = lintProgram(p).map(i => i.code)

@@ -339,7 +339,9 @@ describe('README claims recompute from the repo', () => {
       expect(from, 'lintProgram moved').toBeGreaterThan(-1)
       expect(to, 'uncertaintyOf moved — the slice below is no longer lintProgram alone').toBeGreaterThan(from)
       const codes = new Set([...ir.slice(from, to).matchAll(/code: '([a-z_]+)'/g)].map(m => m[1]))
-      expect(flat).toContain(`three of the ${['','one','two','three','four','five','six'][codes.size]} checks it runs`)
+      const word = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'][codes.size]
+      expect(word, `lintProgram runs ${codes.size} checks — past the end of the number words here`).toBeTruthy()
+      expect(flat).toContain(`three of the ${word} checks it runs`)
     })
   })
 

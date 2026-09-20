@@ -293,7 +293,7 @@ evidence questions in the same call said `request_scope_ambiguous` 0.79 and
 `touches_irreversible_surface` 0.76. Reading the argmax ships a silent downgrade; reducing
 the evidence in code routes it up. (`npx tsx examples/03-model-router.ts`.)
 
-Three rules follow, all enforced by `lintProgram` — three of the six checks it runs:
+Three rules follow, all enforced by `lintProgram` — three of the seven checks it runs:
 
 1. **Never emit a collapsed verdict question.** Emit evidence; compute the verdict in code.
    This one is a hard error.
