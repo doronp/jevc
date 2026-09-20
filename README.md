@@ -776,7 +776,8 @@ committed, never logged, and never embedded in a fixture. `.env` is gitignored a
 `.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
 
 The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's
-variable, not jevc's: `@typesafe-ai/ai-sdk-provider` reads `TYPESAFE_AI_API_KEY`, so the
+variable, not jevc's: [`@ai-sdk/typesafe-ai`](https://www.npmjs.com/package/@ai-sdk/typesafe-ai)
+reads `TYPESAFE_AI_API_KEY`, so the
 generated module reads `process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY`
 and works in either environment. The emitted `langchain` backend passes no key at all —
 `langchain-typesafe` reads `TYPESAFE_API_KEY` itself. Nothing jevc generates hard-codes a
