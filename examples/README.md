@@ -19,12 +19,15 @@ npx tsx examples/04-policy-emit.ts
 | [`03-model-router.ts`](03-model-router.ts) | You stop paying for the big model on work the small one handles — decided before either is called. | Two replayed router fixtures — including the one where the collapsed "which tier?" head picked the cheap tier at confidence 0.24 — plus the request JSON and its estimated input cost. |
 | [`04-policy-emit.ts`](04-policy-emit.ts) | Your rules reach a gateway you do not own the source of — or you find out it cannot express them, before you ship. | A complete bouncer policy, toolgate's refusal of the same program with the reason, and `canEmit` rejecting a score decision. |
 
-Two more directories, neither of them a script:
+One more directory, not a script — [`sample-project/`](sample-project/), which is the whole
+loop in one place. A checkout service's `CLAUDE.md`, `AGENTS.md` and release skill, written
+the way real ones are; that is what `jevc scan examples/sample-project` reads. The rule
+lifted out of its `CLAUDE.md` is then installed back into it, as the `PreToolUse` hook its
+own `.claude/settings.json` registers:
 
-| Directory | What it is |
-| --- | --- |
-| [`claude-code-hook/`](claude-code-hook/) | Example 02 as a **running gate** — a Claude Code `PreToolUse` hook that denies the commit offline: `cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json`. |
-| [`sample-project/`](sample-project/) | A checkout service's `CLAUDE.md`, `AGENTS.md` and release skill, written the way real ones are. What `jevc scan examples/sample-project` reads. |
+```bash
+cd examples/sample-project && JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
+```
 
 [`GALLERY.md`](GALLERY.md) is all 58 fixtures on one page — every prompt jevc replaces, with
 the questions and the measured answers. Generated from `fixtures/` by `npm run gallery`.

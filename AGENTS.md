@@ -49,7 +49,7 @@ grid; when an emitter and a target doc disagree, the doc wins until the doc is u
 | `fixtures/` | 58 recorded fixtures across five domains, plus `ATTRIBUTION.md` |
 | `docs/targets/` | the consumer contract each emitter is written against |
 | `docs/history/` | kept unedited for provenance; do not maintain it |
-| `examples/` | runnable end-to-end examples, and `GALLERY.md` (generated) |
+| `examples/` | runnable end-to-end examples, and `GALLERY.md` (generated). `sample-project/` is the round trip: rules scanned out of its `CLAUDE.md`, the compiled gate installed back into its `.claude/` |
 
 ## About this file
 

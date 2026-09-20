@@ -130,8 +130,9 @@ Change a threshold and see which recorded cases move. Add a case and run it. The
 that used to live in a paragraph now lives in three lines and a number you can point at.
 
 ```bash
-npx tsx examples/02-agents-md-guardrail.ts                              # the reasoning
-cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json   # the gate
+npx tsx examples/02-agents-md-guardrail.ts   # the reasoning
+cd examples/sample-project                   # the gate, installed in the project the rule came from
+JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
 ```
 
 ### And for a skill
@@ -180,16 +181,20 @@ The `...` elides the generated header and the tool list, both shown in full unde
 
 ## Wire it in
 
-[`examples/claude-code-hook/`](examples/claude-code-hook/) is a working Claude Code
-`PreToolUse` hook — `gate.mjs`, its `program.json`, a sample payload — that runs offline
-right now and denies the commit above with a reason the agent can read:
+The rule this whole page has been following came out of one file —
+[`examples/sample-project/CLAUDE.md`](examples/sample-project/CLAUDE.md), line 7 — and the
+compiled gate goes back into that same project, which is where the loop closes. The hook
+lives in its `.claude/gates/`, the `.claude/settings.json` beside it registers it, and the
+whole thing runs offline right now:
 
 ```console
-$ JEVC_REPLAY=1 node gate.mjs < payload.sample.json
+$ cd examples/sample-project
+$ JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"CLAUDE.md line 7: commits need an explicit request. …"}}
 ```
 
-Copy it to `.claude/gates/`, change the import to `jevc`, and register it:
+The registration is [that project's `.claude/settings.json`](examples/sample-project/.claude/settings.json),
+which is the whole file:
 
 ```json
 {
@@ -201,6 +206,11 @@ Copy it to `.claude/gates/`, change the import to `jevc`, and register it:
   }
 }
 ```
+
+For your own project: copy that `.claude/` directory, change the import in `gate.mjs` from
+the relative `dist/` path to `jevc`, and set `TYPESAFE_API_KEY` in the environment Claude
+Code runs in. [`examples/sample-project/README.md`](examples/sample-project/README.md) walks
+the round trip — scan, lift, compile, install, run — one command at a time.
 
 [**`docs/wiring.md`**](docs/wiring.md) has one recipe per surface, with the code that
 actually runs:
