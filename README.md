@@ -821,9 +821,16 @@ hand. So `jevc` emits policy *for* them:
   in `src/guard.js` and its `decide()` destructures four fixed ids, so there is nothing to
   emit into. An emitter that could only tweak thresholds would be pretending to work.
 
-It is complementary to schema-first authoring tools (you write the schema, `jevc` lowers
-it) and to repair tools that fix LLM-emitted Jev JSON (`jevc` never asks a model for JSON
-in the first place — the deterministic path has no model in it at all).
+The official [`typesafe-ai/skills`](https://github.com/typesafe-ai/skills) skill (MIT,
+v0.5.7) teaches an agent to *author* Jev questions from scratch — install it with
+`claude plugin install typesafe@typesafe-ai`. `jevc` is the complement, not a competitor:
+it compiles rule files you already have into those questions plus a deterministic reducer,
+so existing policy text becomes a gate without an agent rewriting it. Use the skill for new
+code; use `jevc` for the `CLAUDE.md` you wrote last year.
+
+It is likewise complementary to schema-first authoring tools (you write the schema, `jevc`
+lowers it) and to repair tools that fix LLM-emitted Jev JSON (`jevc` never asks a model for
+JSON in the first place — the deterministic path has no model in it at all).
 
 ---
 
