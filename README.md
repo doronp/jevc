@@ -541,6 +541,11 @@ npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
   [jev-guard](docs/targets/target-jev-guard.md), the one that was cut). These are the
   normative contract each emitter is written against: the consumer's real grammar, what it
   does with a field it cannot parse, and therefore why `canEmit` refuses what it refuses.
+- [`fixtures/ATTRIBUTION.md`](fixtures/ATTRIBUTION.md) — every source whose text appears in
+  the corpus, with its license. The fixtures quote real rule files on purpose; this is where
+  that debt is paid, including the one source that has no license at all.
+- [`SECURITY.md`](SECURITY.md) — how to report a defect privately, and what counts as one in
+  a tool whose output is someone else's guardrail.
 - [`CHANGELOG.md`](CHANGELOG.md) — including the breaking change in 0.1.0.
 - [`docs/history/implementation-plan.md`](docs/history/implementation-plan.md) — the
   original build plan, kept unedited for provenance and not maintained.
