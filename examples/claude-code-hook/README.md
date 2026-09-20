@@ -95,6 +95,9 @@ Then edit the `reduce` block — it decides the verdict; the questions are only 
 - The hook returns `deny` rather than exiting 2. Both stop the tool call; the JSON form
   also carries a reason the agent can read, which is the difference between the agent
   writing the commit message for the human and the agent trying a different shell quoting.
-- The carve-out in the original rule — a commit a requested PR genuinely needs — is the
-  third rule in the reducer. Carve-outs are allowlists, and allowlists belong in code, not
-  inside the text of a question.
+- The third rule — `commit_required_by_requested_task` — is **not** in the rule text. The
+  rule is `NEVER commit unless the user explicitly asks.` and it admits exactly one
+  exception; the third rule adds a second one, for a commit the requested task genuinely
+  needs. That is an interpretation the author made, not a lowering of the sentence, and it
+  is in the reducer rather than inside a question precisely so it can be read, argued with
+  and deleted. Delete it and the gate denies strictly.
