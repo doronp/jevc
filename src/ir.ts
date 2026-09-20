@@ -325,6 +325,15 @@ function lintableText(instructions: unknown): string {
  * as a choice, as a noul, or as a 0-4 severity ladder. */
 const VERDICT_FRAMING = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
 
+/** Negation as whole words, never as substrings: `no` must not match "notification" or
+ * "noop", and no prefix is matched at all because "un-" catches "under", "unless" and
+ * "unique". Used by Rule 7. */
+const NEGATION = /\b(no|not|never|without|none|cannot|cant|neither|nor|non|lacks|lacking|absent|missing|inert)\b/
+
+/** The ways a question legitimately asks about absence with no negation word in it. Rule 7
+ * treats these as agreeing with a negated id, because in this corpus they always do. */
+const ABSENCE = /\brather than\b|\binstead of\b|\bunstated\b|\bzero\b|\bfails? to\b|\bomit|\babsence\b|\bunable\b|\bleaves?\b|\bunspecified\b|\bunset\b|\bempty\b/
+
 export function lintProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
 
@@ -431,6 +440,47 @@ export function lintProgram(p: Program): ValidationIssue[] {
         })
       }
     }
+  }
+
+  // Rule 7 — the id and the `criteria.true` label agree on a negation the instructions do
+  // not carry. This is the one failure in the corpus that is invisible in review and inverts
+  // a gate silently, and the vendor confirms the mechanism: "The key is not sent to the
+  // underlying model and is not used in inference" (docs.typesafe.ai/api.md). So when the id
+  // and the label say "no X" and the instruction asks "does X?", the model answers the
+  // instruction, the reducer reads the answer as if it meant the id, and every threshold in
+  // the program is backwards.
+  //
+  // Measured in fixtures/agent-harness-rules.json, vendored-edit-authorization-ambiguous:
+  // `edit_would_have_no_runtime_effect` — instructions "would changing this file CHANGE the
+  // behavior of the shipped application?", criteria.true "Application code does not build
+  // from or import this path, so the edit cannot affect runtime behavior." Jev returned 0.21
+  // against a ground truth of inert, i.e. it answered the instruction and ignored both the
+  // label and the key.
+  //
+  // The predicate is asymmetric on purpose. Requiring the id AND the label to agree, and
+  // only the instruction to differ, is what makes it precise: over all 60 fixtures / 343
+  // decisions it fires exactly once, on the decision above. The symmetric version — flag any
+  // polarity difference — fires 63 times, and the mirror direction alone (a negation in the
+  // instruction that the id does not have) fires 29 times and is noise every time: an
+  // incidental "not already a dependency" or "without any of them" inside an ordinary
+  // positive question. CONTRAST covers the legitimate way these questions express absence
+  // without a negation word ("rather than", "leaves ... unstated", "zero"), which is how the
+  // other 11 negation-carrying ids in the corpus are phrased.
+  //
+  // `warn`, not `error`: this is a token-cue heuristic over three strings, in the same family
+  // as `embedded_carveout` and `compound_question`, and English can defeat it.
+  for (const d of p.decisions) {
+    if (d.kind !== 'noul' || !d.criteria || Array.isArray(d.criteria)) continue
+    const trueLabel = (d.criteria as { true?: unknown }).true
+    if (typeof trueLabel !== 'string' || trueLabel.trim() === '') continue
+    const instructions = lintableText(d.instructions)
+    if (!NEGATION.test(d.id.replace(/[_-]+/g, ' ').toLowerCase())) continue
+    if (!NEGATION.test(trueLabel.toLowerCase())) continue
+    if (NEGATION.test(instructions) || ABSENCE.test(instructions)) continue
+    out.push({
+      code: 'polarity_disagreement', path: `decisions.${d.id}`, severity: 'warn',
+      message: `"${d.id}" and its \`criteria.true\` both state a negation that the instructions do not: ${JSON.stringify(instructions)}. The id is never sent to the model — "The key is not sent to the underlying model and is not used in inference" — so the model answers the instructions, and a reducer written against the id reads that answer inverted. Measured (fixtures/agent-harness-rules.json, vendored-edit-authorization-ambiguous): edit_would_have_no_runtime_effect asked "would changing this file CHANGE the behavior?" and returned 0.21 where the ground truth was inert — the gate silently flipped. Rewrite the instructions to ask what the id claims, or rename the id and the label to match the question.`,
+    })
   }
 
   // Rule 2 — never emit two questions where one determines the other.
