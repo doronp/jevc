@@ -17,7 +17,7 @@ TARGET B (installed from PyPI into /tmp/jevc-tgtB venv, Python 3.10.10 — note 
 - Files read: `__init__.py`, `_version.py`, `types.py`, `classifier.py`, `client.py`, `_state.py`, `experimental/middleware/{__init__,auto_mode,model_router}.py` (1710 lines total).
 - Verified by execution: `inspect.signature` on both middleware `__init__`s (no `threshold` param; `_PROBABILITY_THRESHOLD == 0.5`), the dead default-`criteria` path resolving to `None`, `ScoreAnswer.legend` required, `NoulAnswer` having no `confidence`, flat `answers` vs derived `nouls`/`choices`/`scores`, `min_length` validation on Choice/Score, and the exact `_payload()`/`_endpoint` output.
 
-jevc repo state read for grounding (not a git repo per environment): `/Users/podoleanu/work/jevc/docs/design.md` §9, `/Users/podoleanu/work/jevc/fixtures/security-guardrails.json` (model `jev-1.13.0`, recorded 2026-09-18), `/Users/podoleanu/work/jevc/.env.example`.
+Grounded against this repository at the time of writing: `docs/design.md` §9, `fixtures/security-guardrails.json` (model `jev-1.13.0`, recorded 2026-09-18), and `.env.example`.
 
 ## File locations
 
@@ -37,7 +37,9 @@ TARGET B (`TypeSafeClassifier(...)`, classifier.py:163-201)
 - Endpoint: `POST {base_url.rstrip('/')}/v1/systemone` (classifier.py:437)
 - LangChain serialization maps the secret via `lc_secrets = {"api_key": "TYPESAFE_API_KEY"}`; namespace `["langchain","classifiers","typesafe"]`.
 
-ENV VAR NAME COLLISION — matters for jevc: A wants `TYPESAFE_AI_API_KEY`, B wants `TYPESAFE_API_KEY`. `/Users/podoleanu/work/jevc/.env.example` currently contains only `TYPESAFE_API_KEY=apikey_...`, which is the native/Target-B name. An emitted Target A artifact will fail with `AI_LoadAPIKeyError` against the current `.env.example` unless jevc emits the alias or passes `apiKey` explicitly. Recommend emitting `apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY` for A.
+ENV VAR NAME COLLISION — matters for jevc: A wants `TYPESAFE_AI_API_KEY`, B wants `TYPESAFE_API_KEY`. This repo's `.env.example` carries only `TYPESAFE_API_KEY`, the native/Target-B name, so an emitted Target A artifact would fail with `AI_LoadAPIKeyError` in an environment set up for jevc itself.
+
+**Resolved.** `src/emit/ai-sdk.ts` emits `apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY`, so either name works; the reason is recorded in a comment there so it survives a refactor of this file.
 
 ## Schema
 
