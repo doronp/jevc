@@ -382,6 +382,18 @@ describe('jevc compile', () => {
   })
 })
 
+describe('jevc --version', () => {
+  // Read from package.json, so the assertion is that the CLI and the manifest agree —
+  // a hardcoded string here would pass while the shipped binary reported the old version.
+  const expected = JSON.parse(readFileSync('package.json', 'utf8')).version
+
+  it('prints the package version for every spelling, at exit 0', () => {
+    for (const spelling of ['--version', '-v', 'version']) {
+      expect(run([spelling]).trim(), spelling).toBe(expected)
+    }
+  })
+})
+
 describe('jevc check', () => {
   it('replays the corpus offline and reports 60 fixtures', () => {
     expect(run(['check'])).toMatch(/60 fixtures/)

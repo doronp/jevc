@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { fromJsonSchema, type JsonSchema, type SchemaProgram } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
@@ -55,6 +56,16 @@ const writeFd = (fd: number, text: string): void => {
 }
 const toStdout = (text: string) => writeFd(1, text)
 const toStderr = (text: string) => writeFd(2, text)
+
+// `--version` fell through to the usage text at exit 1, which is the one thing every bug
+// report opens with. Read from package.json rather than a duplicated constant, because a
+// second copy of the version is a second thing to forget on release day; `files` ships
+// package.json next to `dist/` in the tarball, so `../package.json` resolves installed too.
+if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+  const { version } = createRequire(import.meta.url)('../package.json') as { version: string }
+  toStdout(`${version}\n`)
+  process.exit(0)
+}
 
 const flag = (name: string): string | undefined => {
   // Single-char flags are documented in short form (-o); accept the long form too.
@@ -593,4 +604,4 @@ die(`usage: jevc <command>
   explain <decision-id>         why a question exists, and what it measured
   check                         replay the measured corpus
 
-Start with \`jevc scan\`.`)
+Start with \`jevc scan\`. \`jevc --version\` prints the version.`)
