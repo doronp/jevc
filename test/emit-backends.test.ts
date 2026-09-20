@@ -832,7 +832,7 @@ function runNative(src: string, driver: string[]): unknown {
   }
   const dir = tmp('native')
   writeFileSync(join(dir, 'mod.ts'),
-    src.replaceAll(`from 'jevc'`, `from ${JSON.stringify(JEVC_ENTRY)}`))
+    src.replaceAll(`from 'jev-compiler'`, `from ${JSON.stringify(JEVC_ENTRY)}`))
   const run = join(dir, 'run.ts')
   writeFileSync(run, driver.join('\n'))
   exec('node_modules/.bin/tsc', ['--noEmit', '--strict', '--target', 'es2022',

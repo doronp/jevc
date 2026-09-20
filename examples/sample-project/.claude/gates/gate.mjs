@@ -15,7 +15,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { evaluate, runReducer } from '../../../../dist/index.js'   // installed: from 'jevc'
+import { evaluate, runReducer } from '../../../../dist/index.js'   // installed: from 'jev-compiler'
 
 const HERE = (p) => fileURLToPath(new URL(p, import.meta.url))
 const program = JSON.parse(readFileSync(HERE('./commit.json'), 'utf8'))

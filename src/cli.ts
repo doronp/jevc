@@ -293,8 +293,8 @@ const fixtures = (dir: string) => {
 // The recorded corpus is part of the package, not of your project, so it is resolved
 // against this module and not against the cwd. `files` ships `fixtures/` next to `dist/`
 // in the tarball (same reasoning as `../package.json` above), so this is the repo's own
-// `fixtures/` in a checkout and the installed copy under `node_modules/jevc/` after
-// `npm i -g jevc`. Defaulting to the bare string "fixtures" made `jevc check` — the first
+// `fixtures/` in a checkout and the installed copy under `node_modules/jev-compiler/`
+// after `npm i -g jev-compiler`. Defaulting to the bare string "fixtures" made `jevc check` — the first
 // command in the README — fail with ENOENT for everyone who installed it rather than
 // cloned it. `--fixtures <dir>` still points at a corpus of your own.
 const PACKAGED_FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url))

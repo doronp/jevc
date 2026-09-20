@@ -75,7 +75,7 @@ export function createTypeSafeAi(options) {
 
 /**
  * A scratch TypeScript project whose module resolution satisfies an emitted artifact
- * verbatim: `jevc` -> this repo (so `dist/index.d.ts` at typecheck time and
+ * verbatim: `jev-compiler` -> this repo (so `dist/index.d.ts` at typecheck time and
  * `dist/index.js` at run time), `@ai-sdk/typesafe-ai` -> the stub above.
  */
 function tsProject(tag: string): string {
@@ -84,7 +84,7 @@ function tsProject(tag: string): string {
   mkdirSync(join(nm, '@ai-sdk', 'typesafe-ai'), { recursive: true })
   // A symlink rather than a copy: Node resolves the realpath, so `@typesafe-ai/sdk`
   // (which dist/index.js imports) is found through the repo's own node_modules.
-  symlinkSync(REPO, join(nm, 'jevc'), 'dir')
+  symlinkSync(REPO, join(nm, 'jev-compiler'), 'dir')
   const stub = join(nm, '@ai-sdk', 'typesafe-ai')
   writeFileSync(join(stub, 'package.json'), JSON.stringify(
     { name: '@ai-sdk/typesafe-ai', version: '0.0.0', type: 'module', main: 'index.js', types: 'index.d.ts' }))

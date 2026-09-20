@@ -316,7 +316,7 @@ describe('stdout carries the artifact, stderr carries the diagnostics', () => {
     // The artifact imports the published package name; in-repo that is the source entry.
     const entry = join(ROOT, 'src', 'index.js')
     const mod = p('redirected.ts')
-    writeFileSync(mod, r.out.replaceAll(`from 'jevc'`, `from ${JSON.stringify(entry)}`))
+    writeFileSync(mod, r.out.replaceAll(`from 'jev-compiler'`, `from ${JSON.stringify(entry)}`))
     const tsc = spawnSync(TSC, ['--noEmit', '--strict', '--target', 'es2022', '--module', 'nodenext',
       '--moduleResolution', 'nodenext', '--skipLibCheck', '--allowImportingTsExtensions', mod],
       { cwd: ROOT, encoding: 'utf8' })
@@ -1073,7 +1073,8 @@ describe('the examples, as real processes', () => {
 // ===========================================================================
 // LIVE BUG: `jevc check` resolved its corpus as the bare relative path "fixtures", so it
 // read `$PWD/fixtures` — which exists only in a checkout. Installed from npm the first two
-// lines of the README (`npm install -g jevc` then `jevc check`) died with ENOENT. The
+// lines of the README (`npm install -g jev-compiler` then `jevc check`) died with ENOENT.
+// The
 // fixtures were IN the tarball the whole time; nothing pointed at them. The suite could not
 // see it because `jevc()` above pins `cwd: ROOT` for reproducibility, so every corpus
 // command was only ever run from the one directory where `./fixtures` happens to resolve.
