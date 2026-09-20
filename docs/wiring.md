@@ -103,7 +103,7 @@ The emitted module exports `program`, `programQuestions` and `reduce`. Wire it w
 the tool call is dispatched:
 
 ```ts
-import { evaluate } from 'jevc'
+import { evaluate } from 'jev-compiler'
 import { program } from './gate.js'
 
 async function callTool(name: string, input: unknown, context: AgentContext) {

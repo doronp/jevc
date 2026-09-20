@@ -45,7 +45,7 @@ describe('emitNative', () => {
     const src = emitNative(withIs)
     expect(src).toContain('choiceOf(a, "target") === "build"')
     expect(src).not.toMatch(/\.choice\s*===/)
-    expect(src).toMatch(/import \{ value, isUncertain, choiceOf \} from 'jevc'/)
+    expect(src).toMatch(/import \{ value, isUncertain, choiceOf \} from 'jev-compiler'/)
   })
 
   it('emits a parseable literal when instructions contain a newline', () => {

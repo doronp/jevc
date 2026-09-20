@@ -527,7 +527,7 @@ function tsBatch(sources: Record<string, string>, plan: TsPlan[]):
   const dir = scratch('prop-ts')
   const nm = join(dir, 'node_modules')
   mkdirSync(join(nm, '@ai-sdk', 'typesafe-ai'), { recursive: true })
-  symlinkSync(REPO, join(nm, 'jevc'), 'dir')
+  symlinkSync(REPO, join(nm, 'jev-compiler'), 'dir')
   const stub = join(nm, '@ai-sdk', 'typesafe-ai')
   writeFileSync(join(stub, 'package.json'), JSON.stringify(
     { name: '@ai-sdk/typesafe-ai', version: '0.0.0', type: 'module', main: 'index.js', types: 'index.d.ts' }))

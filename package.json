@@ -1,5 +1,5 @@
 {
-  "name": "jevc",
+  "name": "jev-compiler",
   "version": "0.1.0",
   "description": "Compile natural-language instructions into Jev programs: narrow evidence questions for the model, the verdict computed in code.",
   "keywords": [

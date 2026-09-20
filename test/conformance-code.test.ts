@@ -136,7 +136,7 @@ describe('every condition op and kind, executed against runReducer', () => {
 
   it('sdk: the emitted reduce() agrees with runReducer at every point', () => {
     const got = runTs(emitNative(vocabulary), [
-      `import type { JevAnswer } from 'jevc'`,
+      `import type { JevAnswer } from 'jev-compiler'`,
       `import { reduce } from './mod.ts'`,
       `const A = ${AXES}`,
       `const out: string[] = []`,
@@ -291,7 +291,7 @@ describe('a missing answer', () => {
    */
   it('all four evaluators refuse to decide on a missing answer, and agree on which', () => {
     const sdk = runTs(emitNative(gate), [
-      `import type { JevAnswer } from 'jevc'`,
+      `import type { JevAnswer } from 'jev-compiler'`,
       `import { reduce } from './mod.ts'`,
       `type Have = { destructive?: number; dept?: string; deptConf?: number; radius?: number; radiusConf?: number }`,
       `const HAVE: Have[] = ${HAVE}`,
@@ -492,7 +492,7 @@ describe('hostile text in every channel that reaches a code artifact', () => {
 
   it('sdk: 15 payloads at once still reduce correctly and still ask the declared question', () => {
     const got = runTs(emitNative(many), [
-      `import type { JevAnswer } from 'jevc'`,
+      `import type { JevAnswer } from 'jev-compiler'`,
       `import { reduce, programQuestions } from './mod.ts'`,
       `const HOT = ${JSON.stringify(HOT)}`,
       `const verdicts = HOT.map(hot => reduce(Object.fromEntries(`,
@@ -623,7 +623,7 @@ describe('identifiers and keys', () => {
 
   it('sdk: every awkward name is still asked and still decides', () => {
     const got = runTs(emitNative(awkward), [
-      `import type { JevAnswer } from 'jevc'`,
+      `import type { JevAnswer } from 'jev-compiler'`,
       `import { reduce, programQuestions } from './mod.ts'`,
       `const IDS: string[] = ${IDS}`,
       `const verdicts = IDS.map(hot => reduce(Object.fromEntries(`,
