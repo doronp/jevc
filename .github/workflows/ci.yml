@@ -44,12 +44,12 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node dist/cli.js scan .
-      - run: node dist/cli.js compile examples/claude-code-hook/program.json --emit sdk > /dev/null
-      - name: Run the example gate offline
-        working-directory: examples/claude-code-hook
+      - run: node dist/cli.js compile examples/sample-project/.claude/gates/commit.json --emit sdk > /dev/null
+      - name: Run the example gate offline, from inside the project it is installed in
+        working-directory: examples/sample-project
         env:
           JEVC_REPLAY: '1'
-        run: node gate.mjs < payload.sample.json
+        run: node .claude/gates/gate.mjs < .claude/gates/payload.sample.json
 
   secrets:
     runs-on: ubuntu-latest
