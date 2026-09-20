@@ -20,7 +20,7 @@ reproducible and reviewable.
 
 ```bash
 git clone https://github.com/doronp/jevc && cd jevc
-npm install && npm run build                  # Node >= 22
+npm install && npm run build                  # Node >= 20; >= 22 to run the test suite
 npx jevc check                                # replays the recorded corpus, offline
 npx jevc scan .                               # what this project could enforce
 ```
