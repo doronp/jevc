@@ -60,9 +60,14 @@ jobs:
       # A TypeSafe key is `apikey_` + hex. The only permitted occurrence is the
       # placeholder in .env.example, which has no hex body. Scanning history as well
       # as the tree, because a key that ever landed in a commit is already burned.
+      #
+      # `-i`, because this grep used to be `[0-9a-f]` while every manual audit ran
+      # `[0-9a-fA-F]`: a key with an uppercase hex digit passed the standing guardrail
+      # and failed the one-time check that certified it. The guardrail is the one that
+      # has to be wider — nothing documents the vendor's key alphabet as lowercase.
       - name: Reject a committed API key
         run: |
-          if git grep -nIE 'apikey_[0-9a-f]{16}' $(git rev-list --all) -- 2>/dev/null; then
+          if git grep -nIEi 'apikey_[0-9a-f]{16}' $(git rev-list --all) -- 2>/dev/null; then
             echo "::error::A TypeSafe API key appears in the repository history."
             exit 1
           fi
