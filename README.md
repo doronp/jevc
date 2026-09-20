@@ -586,6 +586,10 @@ intent understanding, agent harness rules, output verification), 12 each, 343 qu
 200 on the first attempt, zero dropped. Each fixture carries the real natural-language
 prompt it replaces, its provenance, and its measured response.
 
+Those numbers are a **recording**, and the recording is the only thing this repo asserts.
+The key is deliberately not here, so nothing in the repo claims the endpoint answers today
+— `jevc check --live` is the command that finds out.
+
 **Only 24 of the 60 predicted thresholds survived contact with the real model. 36 of 60
 were wrong** and were recalibrated to measured values. 60% of the predicted thresholds were wrong, so the corpus is
 measured rather than written.

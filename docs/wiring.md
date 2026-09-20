@@ -126,7 +126,7 @@ jevc compile triage.json --emit ai-sdk -o triage-jev.ts
 ```
 
 ```ts
-import { experimental_evaluate } from 'ai'
+import { experimental_evaluate } from 'ai'   // verified present in ai@7.0.107
 import { model, programQuestions, reduce, confidenceOf } from './triage-jev'
 
 const result  = await experimental_evaluate({ model, state, questions: programQuestions })
