@@ -3,7 +3,7 @@
 Notable changes to jevc. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-09-20
 
 First release, so everything is new. The entries below are the behaviour changes landed by the
 hardening and fix rounds (`1003b96..07fcf9d`) — recorded because artifacts emitted by the earlier
