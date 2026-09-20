@@ -1,6 +1,6 @@
 # Attribution for the recorded corpus
 
-The 60 fixtures in this directory are built from real material: rule files agent harnesses
+The 58 fixtures in this directory are built from real material: rule files agent harnesses
 actually ship, published benchmark datasets, vendor cookbooks, and papers. That is the point
 of them — a corpus of invented rules would prove nothing about rules people write.
 
@@ -19,6 +19,11 @@ Each of these is a short, functional rule statement — the kind of sentence a p
 tell an agent what not to do. They are quoted so the corpus measures real rules rather than
 rules written to be easy.
 
+Rule text is quoted only from projects published under Apache-2.0 or MIT. Fixtures built on
+sources outside that bar were deleted rather than rewritten: a fixture's `state` is the
+recorded model input, so paraphrasing it would leave the corpus asserting measured answers
+for a prompt that was never measured.
+
 | Source | License | What appears here |
 | --- | --- | --- |
 | [supabase/supabase](https://github.com/supabase/supabase) `AGENTS.md` | Apache-2.0 | The generated-files rule and its path list (`never-hand-edit-generated-file`) |
@@ -27,29 +32,11 @@ rules written to be easy.
 | [apache/airflow](https://github.com/apache/airflow) `AGENTS.md` | Apache-2.0 | Two rules that contradict each other on `breeze` vs. direct `pytest` (`self-contradicting-rule-file-host-vs-container`) |
 | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) `AGENTS.md` | MIT | The "Issue and PR Guidelines" rules (`never-create-a-pr-even-when-asked`) |
 | [withastro/astro](https://github.com/withastro/astro) `AGENTS.md` | MIT (`LICENSE`: *MIT, Copyright (c) 2021 Fred K. Schott*; GitHub's detector reports `NOASSERTION`) | The four "Surgical Changes" rules (`surgical-changes-no-drive-by-refactor`) |
-| [nickbreaton/printable.photos](https://github.com/nickbreaton/printable.photos) `repos/AGENTS.md` | **No license file — see the note below** | Five `repos/` rules, in the `state` of `vendor-glob-false-positive` and `vendored-edit-authorization-ambiguous` |
-| [netzstrategen/michi-test-template-clone](https://github.com/netzstrategen/michi-test-template-clone) `.claude/hooks/safety-write.sh` | No license file | Nothing verbatim. Its write-blocker's *behaviour* is described in the provenance of `vendor-glob-false-positive` and `never-commit-secrets-placeholder-discrimination`; the shell it was originally quoted from has been paraphrased out |
 | [code.claude.com/docs/en/permissions](https://code.claude.com/docs/en/permissions) | Anthropic documentation, all rights reserved | One permission-rule split and one table row showing which `git push` spellings a `Bash(git push *)` rule does not match (`commit-only-when-explicitly-asked`, `no-push-to-main-any-spelling`) |
 
-### Note on nickbreaton/printable.photos
-
-That repository is public and carries **no LICENSE file**. Publishing source on GitHub is not
-a grant of a license: GitHub's Terms of Service give every user the right to view a public
-repository and to fork it within GitHub, and nothing more. So the five sentences reproduced
-here — about 370 characters of functional rule text, fully attributed, used as a test input —
-rest on fair use and their own triviality, not on permission. This is the only place in the
-repository where that is true, and it is stated plainly rather than left for a reader to work
-out.
-
-It is quoted rather than paraphrased for one reason: those sentences are the **input** to a
-recorded model response. Rewriting them would leave the corpus asserting measured answers for
-a prompt that is not the prompt they were measured against, which is exactly the kind of
-quiet dishonesty this project exists to make impossible. The choice is to keep the recording
-truthful and be explicit about the source.
-
-**If the author of that repository would prefer it not appear here, open an issue and it will
-be removed and the two fixtures re-recorded against a substitute.** The same offer applies to
-every source on this page.
+**If you are the author of any source on this page and would prefer it not appear here, open
+an issue and the fixtures that quote it will be removed and re-recorded against a
+substitute.**
 
 ## Dataset label names
 
