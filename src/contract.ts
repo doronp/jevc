@@ -82,13 +82,17 @@ export type ValidationIssue = {
 
 // Measured: 29,464 tokens for 150,232 chars.
 const CHARS_PER_TOKEN = 5.1
-// The documentation says 64k total. The measurement says otherwise: "~45k tokens returns
-// `400 max_tokens_exceeded`" (docs/design.md §3.3). The
-// documented number is the one the API rejects requests under, so a pre-flight check set to
-// it passes requests the API refuses — the one outcome this check exists to prevent. Do NOT
-// round this back up to the documented figure without a new measurement to cite; the largest
-// request in fixtures/ is ~1,037 tokens, so nothing real is near either number.
+// The vendor documents 64k tokens total (state + all questions combined) and 32k for state
+// plus the longest question (docs.typesafe.ai/models.md). An undated measurement recorded in
+// docs/design.md §3.3 observed `400 max_tokens_exceeded` at ~45k tokens — an error api.md
+// does not document at all, which is weak corroboration that the enforced limit and the
+// published one differ. Until that measurement is reproduced against the live API, this
+// pre-flight check trusts the observation over the document: a check that passes requests
+// the API refuses is the one outcome it exists to prevent, and the cost of over-rejecting is
+// nil while the largest request in fixtures/ is ~1,037 tokens. If you re-measure and the API
+// accepts up to 64k, raise this constant and cite the new measurement here.
 export const TOKEN_BUDGET_TOTAL = 45_000
+// Matches the documented "32k tokens for `state` plus the longest question" exactly.
 export const TOKEN_BUDGET_SINGLE = 32_000
 
 export function estimateTokens(v: unknown): number {
