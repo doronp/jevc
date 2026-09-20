@@ -35,7 +35,7 @@
     }
   },
   "bin": {
-    "jevc": "./dist/cli.js"
+    "jevc": "dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js"
