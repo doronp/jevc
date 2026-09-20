@@ -51,6 +51,30 @@ describe('jevc compile', () => {
     expect(JSON.parse(out).questions.ok.type).toBe('noul')
   })
 
+  // The prose route is lift -> agent returns a Program -> emit. The last step had no
+  // implementation: `compile` only ever called `fromJsonSchema`, so a Program was read as a
+  // schema with no `properties` and refused at exit 1, while docs/wiring.md,
+  // examples/claude-code-hook/README.md and compile's own `--lift` refusal all told the
+  // user to run exactly this.
+  it('compiles an already-lifted Program, not only a JSON Schema', () => {
+    const program = {
+      decisions: [{ id: 'is_commit', kind: 'noul', instructions: 'Does it commit?' }],
+      reduce: { kind: 'rules', otherwise: 'deny',
+                rules: [{ when: [{ id: 'is_commit', op: 'lte', value: 0.5 }], then: 'allow' }] },
+      residual: '', dropped: [],
+    }
+    const out = run(['compile', '-', '--emit', 'json'], JSON.stringify(program))
+    expect(JSON.parse(out).questions.is_commit.type).toBe('noul')
+    expect(run(['compile', '-', '--emit', 'sdk'], JSON.stringify(program))).toMatch(/is_commit/)
+  })
+
+  it('reports a malformed Program as a Program, not as a schema with no properties', () => {
+    const error = runExpectingFailure(['compile', '-', '--emit', 'json'],
+      JSON.stringify({ decisions: [{ id: '' }] }))
+    expect(error.stderr).toContain('is not a well-formed one')
+    expect(error.stderr).not.toContain('declares no properties')
+  })
+
   it('emits a lift request for a markdown file', () => {
     const dir = mkTmp()
     const f = join(dir, 'AGENTS.md')

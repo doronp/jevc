@@ -189,7 +189,6 @@ const FAILING: Case[] = [
   { label: 'compile a file that is not JSON', args: () => ['compile', NOT_JSON_FILE] },
   { label: 'compile an empty file', args: () => ['compile', EMPTY_FILE] },
   { label: 'compile valid JSON that is not a schema (package.json)', args: () => ['compile', 'package.json'] },
-  { label: 'compile a Program where a schema belongs', args: () => ['compile', PROGRAM_FILE] },
   { label: 'compile empty stdin', args: () => ['compile', '-'] },
   { label: 'emit-policy a file that does not exist', args: () => ['emit-policy', '--for', 'bouncer', MISSING] },
   { label: 'emit-policy a directory', args: () => ['emit-policy', '--for', 'bouncer', p('adir')] },
@@ -240,6 +239,10 @@ const SUCCEEDING: Case[] = [
   { label: 'compile --emit=json (the = form)', args: () => ['compile', SCHEMA_FILE, '--emit=json'] },
   { label: 'compile a schema from stdin', args: () => ['compile', '-'], input: JSON.stringify(SCHEMA) },
   { label: 'compile a prose file with --lift', args: () => ['compile', PROSE_FILE, '--lift'] },
+  // The far end of the --lift route. This used to be in FAILING, which pinned the bug: the
+  // agent returns a Program and there was no command that would emit a module from it.
+  { label: 'compile an already-lifted Program', args: () => ['compile', PROGRAM_FILE] },
+  { label: 'compile a Program --emit json', args: () => ['compile', PROGRAM_FILE, '--emit', 'json'] },
   { label: 'emit-policy --for bouncer', args: () => ['emit-policy', '--for', 'bouncer', PROGRAM_FILE] },
   { label: 'emit-policy --for toolgate', args: () => ['emit-policy', '--for', 'toolgate', PROGRAM_FILE] },
   { label: 'emit-policy from stdin', args: () => ['emit-policy', '--for', 'bouncer', '-'], input: JSON.stringify(PROGRAM) },

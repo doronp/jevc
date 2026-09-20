@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
-import { fromJsonSchema, type SchemaProgram } from './from-schema.js'
+import { fromJsonSchema, type JsonSchema, type SchemaProgram } from './from-schema.js'
 import { buildLiftRequest } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
@@ -337,11 +337,38 @@ if (cmd === 'compile') {
     process.exit(0)
   }
 
-  let program: SchemaProgram | undefined
+  // Two kinds of JSON reach this branch and only one of them used to work. A JSON Schema
+  // lowers through `fromJsonSchema`. A Program — the `{decisions, reduce, residual,
+  // dropped}` object an agent returns from `--lift` — is ALREADY lowered, and handing it to
+  // `fromJsonSchema` read it as a schema with no `properties`: "The root schema declares no
+  // properties to lower (its keys are: decisions, reduce, residual, dropped)", then exit 1.
+  // So the last mile of the prose route had no implementation, while three places
+  // documented it: `docs/wiring.md`, `examples/claude-code-hook/README.md`, and this file's
+  // own `--lift` refusal ("Lift first, then run jevc on the Program the agent returns").
+  //
+  // A `decisions` key is the discriminator, not shape-validity: a file that claims to be a
+  // Program and is malformed must be reported AS a malformed Program, or the user gets the
+  // schema lowerer's "zero decisions" message about a file that has decisions in it.
+  let parsed: unknown
   try {
-    program = fromJsonSchema(JSON.parse(text))
+    parsed = JSON.parse(text)
   } catch {
-    die(`${path} is not JSON Schema. For prose, use: jevc compile ${path} --lift`)
+    die(`${path} is not JSON. For prose, use: jevc compile ${path} --lift`)
+  }
+  let program: SchemaProgram | undefined
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && 'decisions' in parsed) {
+    const shape = checkProgramShape(parsed, path)
+    if (shape.length) {
+      for (const i of shape) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
+      die(`${path} has a \`decisions\` key, so it was read as a jevc program — and it is not a well-formed one. Expected { decisions, reduce, residual, dropped }, the shape \`jevc compile <file> --lift\` asks the agent to produce.`)
+    }
+    program = parsed as SchemaProgram
+  } else {
+    try {
+      program = fromJsonSchema(parsed as JsonSchema)
+    } catch {
+      die(`${path} is not JSON Schema. For prose, use: jevc compile ${path} --lift`)
+    }
   }
 
   const issues = [...validateProgram(program!), ...lintProgram(program!)]
