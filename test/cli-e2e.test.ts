@@ -1071,6 +1071,39 @@ describe('the examples, as real processes', () => {
 //    pinning is that the output the README prints is the output the repo produces — not
 //    a plausible transcript of it, which is the failure this project exists to remove.
 // ===========================================================================
+// LIVE BUG: `jevc check` resolved its corpus as the bare relative path "fixtures", so it
+// read `$PWD/fixtures` — which exists only in a checkout. Installed from npm the first two
+// lines of the README (`npm install -g jevc` then `jevc check`) died with ENOENT. The
+// fixtures were IN the tarball the whole time; nothing pointed at them. The suite could not
+// see it because `jevc()` above pins `cwd: ROOT` for reproducibility, so every corpus
+// command was only ever run from the one directory where `./fixtures` happens to resolve.
+// These spawn from somewhere else on purpose. `show` and `explain` default the same way.
+describe('the packaged corpus is found from any cwd, not just a checkout', () => {
+  const elsewhere = (args: string[]) => spawnSync(process.execPath, [CLI, ...args], {
+    cwd: tmpdir(), input: '', encoding: 'utf8', env: OFFLINE_ENV, timeout: 30_000,
+  })
+
+  it('check replays all 58 from a foreign cwd', () => {
+    const r = elsewhere(['check'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('58 fixtures, 58 passing, 0 failing')
+  })
+
+  it('show and explain read the corpus from a foreign cwd', () => {
+    expect(elsewhere(['show']).status, 'show').toBe(0)
+    const e = elsewhere(['explain', 'user_explicitly_asked_to_commit'])
+    expect(e.status, e.stderr).toBe(0)
+    expect(e.stdout).toContain('user_explicitly_asked_to_commit')
+  })
+
+  it('--fixtures still overrides, and still reports the directory it was handed', () => {
+    expect(elsewhere(['check', '--fixtures', join(ROOT, 'fixtures')]).status).toBe(0)
+    const bad = elsewhere(['check', '--fixtures', 'no-such-dir'])
+    expect(bad.status).toBe(1)
+    expect(bad.stderr).toContain('no-such-dir')
+  })
+})
+
 describe('scan, show, and the installable hook', () => {
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
   /** The one fenced block containing `needle`, located by content so reordering the README
