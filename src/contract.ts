@@ -186,10 +186,11 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
       if (n > 255) {
         err('choice_too_many_options', `${at}.criteria`, `Choice has ${n} options; the maximum is 255.`)
       }
-      if (n > 240) {
-        out.push({ code: 'choice_near_limit', path: `${at}.criteria`, severity: 'warn',
-          message: `Choice has ${n} options; reliability degrades above roughly 240.` })
-      }
+      // There used to be a `choice_near_limit` warn above 240 options, saying "reliability
+      // degrades above roughly 240". Nothing in this repo measured that and the vendor
+      // documents 255 with no degradation note at any count, so it asserted a fact nobody
+      // established — and a warn threshold reads as one. The documented 255 ceiling above is
+      // the guardrail; it is an error, and it is the vendor's own number.
     }
 
     if (q.type === 'noul') {

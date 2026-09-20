@@ -205,15 +205,15 @@ describe('validateRequest', () => {
     expect(issues.map(i => i.code)).toContain('score_level_undescribed')
   })
 
-  it('warns when a choice is near the 240-option reliability limit', () => {
+  // The replacement for the old 240-option "reliability degrades" warn: a count between the
+  // invented threshold and the documented ceiling is clean, because no measurement here ever
+  // said otherwise.
+  it('says nothing about a choice between 240 options and the documented 255 maximum', () => {
     const criteria: Record<string, null> = {}
     for (let i = 0; i < 241; i++) criteria[`opt${i}`] = null
     const issues = validateRequest({ ...base, questions: {
       c: { type: 'choice', instructions: 'x', criteria } } })
-    expect(issues).toEqual([{
-      code: 'choice_near_limit', path: 'questions.c.criteria', severity: 'warn',
-      message: expect.stringContaining('241'),
-    }])
+    expect(issues).toEqual([])
   })
 
   it('rejects a choice over the 255-option maximum', () => {
