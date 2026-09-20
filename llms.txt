@@ -1,0 +1,39 @@
+# jevc
+
+> Compiles natural-language rules — a `CLAUDE.md` line, an `AGENTS.md` constraint, a
+> guardrail prompt — into a **Jev program**: a few narrow typed questions answered by
+> TypeSafe's System One model (`jev-1.13.0`; non-generative, returns probabilities, never
+> text), plus a reducer that computes the verdict in ordinary code. Apache-2.0, TypeScript,
+> Node >= 20.
+
+The load-bearing claim is measured, not argued: asking the model for a collapsed verdict
+returns a mushy answer, while asking the evidence questions separately in the same call
+returns sharp ones. Across the 58 recorded fixtures, `commit-only-when-explicitly-asked`
+folds "NEVER commit unless the user explicitly asks" into one head and gets 0.18 on `allow`
+at confidence 0.64, while the carve-out asked as its own question is 0.06 in that same call.
+So jevc never asks for the verdict; the reducer computes it.
+
+Every fixture in `fixtures/` is a recording of a real call, not a written example, and every
+number in the README is recomputed from those recordings by the test suite. `npx jevc check`
+replays the corpus offline — no key, no network.
+
+## Start here
+
+- [README.md](https://raw.githubusercontent.com/doronp/jevc/main/README.md): the spec. What it does, the wiring recipes, the corpus statistics, and the limits.
+- [AGENTS.md](https://raw.githubusercontent.com/doronp/jevc/main/AGENTS.md): how to work in this repository — commands, invariants, layout.
+- [examples/GALLERY.md](https://raw.githubusercontent.com/doronp/jevc/main/examples/GALLERY.md): all 58 fixtures on one page — every prompt jevc replaces, the questions it compiles to, and the measured answers.
+
+## Docs
+
+- [docs/wiring.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/wiring.md): one runnable recipe per surface — Claude Code `PreToolUse` hook, tool-call guard, router, output verifier.
+- [docs/schema-mapping.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/schema-mapping.md): every JSON Schema construct, what it compiles to, and the rule behind each drop.
+- [docs/validation.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/validation.md): the 25 live probes that returned 200 OK with a wrong answer, and what refuses each one locally.
+- [docs/design.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/design.md): the design spec and the fullest argument for the decomposition law.
+- [docs/targets/](https://github.com/doronp/jevc/tree/main/docs/targets): the normative contract behind each emit target — the consumer's real grammar, and therefore why `canEmit` refuses what it refuses.
+
+## Optional
+
+- [fixtures/ATTRIBUTION.md](https://raw.githubusercontent.com/doronp/jevc/main/fixtures/ATTRIBUTION.md): every source whose text appears in the corpus, with its license.
+- [CONTRIBUTING.md](https://raw.githubusercontent.com/doronp/jevc/main/CONTRIBUTING.md): the "measured or it does not ship" standard, and what a change has to respect.
+- [SECURITY.md](https://raw.githubusercontent.com/doronp/jevc/main/SECURITY.md): how to report a defect privately, and what counts as one in a tool whose output is someone else's guardrail.
+- [CHANGELOG.md](https://raw.githubusercontent.com/doronp/jevc/main/CHANGELOG.md): version history.
