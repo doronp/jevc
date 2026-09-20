@@ -29,6 +29,28 @@ jobs:
       # key, and it is never wired into CI.
       - run: npm test
 
+  # `engines.node` is `>=20` because that is the floor of the SDK this package wraps, and
+  # nothing in src/ uses a Node 22 API. The only dependency that needs 22 is vitest, which
+  # a consumer never installs — so the test matrix above cannot prove the claimed floor.
+  # This job does: it builds and runs the shipped CLI and the offline example on Node 20.
+  node20:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node dist/cli.js scan .
+      - run: node dist/cli.js compile examples/claude-code-hook/program.json --emit sdk > /dev/null
+      - name: Run the example gate offline
+        working-directory: examples/claude-code-hook
+        env:
+          JEVC_REPLAY: '1'
+        run: node gate.mjs < payload.sample.json
+
   secrets:
     runs-on: ubuntu-latest
     steps:
