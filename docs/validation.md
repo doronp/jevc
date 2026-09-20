@@ -49,7 +49,7 @@ The response crosses the same boundary in the other direction, and used to be a 
 `res.answers as Record<string, JevAnswer>`. `validateResponse(program, res)` checks it
 against the program that asked: every declared decision answered, answered as the kind it was
 asked as, numbers that are numbers and in range, and a `choice` that picked a declared
-option. Score answers are *not* required to be integers — 23 of the 26 measured score answers
+option. Score answers are *not* required to be integers — 22 of the 25 measured score answers
 in `fixtures/` are fractional, because the answer is the probability-weighted expectation over
 the level indices. `evaluate()` throws rather than reduce a response it cannot read;
 `askModel()` returns the identical issue list instead of throwing, which is how

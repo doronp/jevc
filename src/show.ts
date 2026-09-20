@@ -6,7 +6,7 @@ import type { Fixture } from './check.js'
  * replaces, the state it ran against, the questions jevc asks instead, what the model
  * actually answered, and the verdict the reducer computed from those answers.
  *
- * The 60 fixtures are the best examples in the repo — each is a real prompt from a real
+ * The 58 fixtures are the best examples in the repo — each is a real prompt from a real
  * harness, run once against the real model and recorded — and until now they were only
  * reachable as `jevc check` pass/fail rows. This is the renderer behind `jevc show` and
  * behind `examples/GALLERY.md`, so the gallery is generated from the same recordings the

@@ -1,7 +1,7 @@
 # jevc — a transpiler from LLM prompts to Jev decisions
 
 **Status:** approved design, 2026-09-18
-**Repo:** `jevc` (private)
+**Repo:** [`doronp/jevc`](https://github.com/doronp/jevc)
 
 ---
 
@@ -352,9 +352,9 @@ reports drift. This is how a TypeSafe model bump gets caught: `jev-latest` is an
 that moves under you, so a changed answer distribution should surface as a diff in a
 calibration report rather than as a production incident.
 
-The corpus is already built and measured: **60 fixtures across five domains, 60/60
-executed successfully against the live API, 0 dropped**. Notably only **24 of 60**
-predicted thresholds survived contact with the real model — the other 36 were
+The corpus is already built and measured: **58 fixtures across five domains, 58/58
+executed successfully against the live API, 0 dropped**. Notably only **23 of 58**
+predicted thresholds survived contact with the real model — the other 35 were
 recalibrated to measured values. Had the corpus been written from predictions instead of
 measurements, 60% of the suite would have encoded fiction.
 

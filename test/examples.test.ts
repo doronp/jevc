@@ -226,11 +226,13 @@ describe('README claims recompute from the repo', () => {
       const domains = [...new Set(corpus.map(f => f.domain))]
       expect(flat).toContain(`**${corpus.length} fixtures**`)
       expect(flat).toContain(`${questions.length} questions (${of('noul')} noul, ${of('choice')} choice, ${of('score')} score)`)
-      // "five domains ..., 12 each" is only true while every domain has the same count.
-      const per = [...new Set(domains.map(d => corpus.filter(f => f.domain === d).length))]
+      // The domains stopped being evenly sized when two fixtures were removed for licensing
+      // reasons, so the README names both sizes and both are recomputed here.
+      const size = (d: string) => corpus.filter(f => f.domain === d).length
+      const per = [...new Set(domains.map(size))].sort((a, b) => b - a)
       expect(domains).toHaveLength(5)
-      expect(per, 'the domains are no longer evenly sized, so "12 each" is wrong').toEqual([12])
-      expect(flat).toContain(`, ${per[0]} each,`)
+      expect(per, 'a third domain size appeared — the README sentence needs rewriting').toHaveLength(2)
+      expect(flat).toContain(`at ${per[0]} each, agent harness rules at ${size('agent-harness-rules')}`)
     })
 
     it('quotes the prediction-vs-measurement split that motivates the corpus', () => {

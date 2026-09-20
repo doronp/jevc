@@ -307,38 +307,6 @@ describe('lintProgram — the decomposition law', () => {
     expect(lintProgram(p).some(i => i.code === 'embedded_pattern')).toBe(true)
   })
 
-  // Rule 7. The exact shape of the one recorded inversion: the id and criteria.true both say
-  // "no effect", the instructions ask whether the effect happens. The id never reaches the
-  // model, so the model answers the instructions and the reducer reads it backwards.
-  it('warns when the id and criteria.true negate what the instructions ask', () => {
-    const p = prog()
-    p.decisions.push({ id: 'edit_would_have_no_runtime_effect', kind: 'noul',
-      instructions: 'Given path_metadata, would changing this file change the behavior of the shipped application?',
-      criteria: { true: 'Application code does not build from or import this path, so the edit cannot affect runtime behavior.',
-                  false: 'Application code builds from or imports this path, so the edit would take effect.' } })
-    expect(lintProgram(p).some(i => i.code === 'polarity_disagreement')).toBe(true)
-  })
-
-  // The three ways this could be noise, all silent. Without them the rule fires 63 times over
-  // the corpus instead of once.
-  it('stays quiet when the negation is incidental, contrastive, or agreed', () => {
-    const quiet = (id: string, instructions: string, t: string) => {
-      const p = prog()
-      p.decisions.push({ id, kind: 'noul', instructions, criteria: { true: t, false: 'Otherwise.' } })
-      return lintProgram(p).every(i => i.code !== 'polarity_disagreement')
-    }
-    // A negation in the instructions that the id does not have — the mirror direction.
-    expect(quiet('adds_new_runtime_dependency',
-      'Does this command add a package that is not already a dependency of this project?',
-      'The package is new to this project.')).toBe(true)
-    // The id negates and the instructions agree, in words that carry no negation token.
-    expect(quiet('missing_time_window', 'Does `request` leave the reporting period unstated?',
-      'No time period is given.')).toBe(true)
-    // A negation substring inside an ordinary word is not a negation.
-    expect(quiet('sends_notification', 'Does this send a notification?',
-      'A notification is sent.')).toBe(true)
-  })
-
   it('does not warn about a carve-out or pattern when the question contains neither', () => {
     const p = prog()
     const codes = lintProgram(p).map(i => i.code)
@@ -604,7 +572,7 @@ describe('validateProgram — a noul criteria key that is neither true nor false
     expect(validateProgram(withCriteria(['yes', 'no'])).map(i => i.code)).toEqual(['criteria_shape'])
   })
 
-  it('costs the corpus nothing: 252 nouls, and every key is true or false', () => {
+  it('costs the corpus nothing: 244 nouls, and every key is true or false', () => {
     const keys = new Set<string>()
     let nouls = 0
     for (const f of corpus) {
@@ -614,7 +582,7 @@ describe('validateProgram — a noul criteria key that is neither true nor false
         for (const k of Object.keys(q.criteria ?? {})) keys.add(k)
       }
     }
-    expect(nouls).toBe(252)
+    expect(nouls).toBe(244)
     expect([...keys].sort()).toEqual(['false', 'true'])
   })
 })
@@ -647,7 +615,7 @@ describe('lintProgram — the collapsed verdict is not a choice-only defect', ()
 
   // The measurement the widening was gated on. If this number moves, the corpus changed
   // and the rule has to be re-argued rather than quietly kept.
-  it('newly refuses nothing in the 60-fixture corpus: every firing is still a choice', () => {
+  it('newly refuses nothing in the 58-fixture corpus: every firing is still a choice', () => {
     const fired: string[] = []
     for (const f of corpus) {
       // The same pass-through buildProgram performs, inlined so this measurement does not
@@ -665,7 +633,7 @@ describe('lintProgram — the collapsed verdict is not a choice-only defect', ()
         fired.push(`${f.id}.${i.path}:${kindOf.get(i.path.replace('decisions.', ''))}`)
       }
     }
-    expect(fired).toHaveLength(29)
+    expect(fired).toHaveLength(27)
     expect(fired.filter(x => !x.endsWith(':choice'))).toEqual([])
   })
 })
@@ -673,7 +641,7 @@ describe('lintProgram — the collapsed verdict is not a choice-only defect', ()
 describe('lintProgram — advisory code must never throw', () => {
   // `Decision.instructions` is typed `string` and is not one at runtime: the wire contract
   // allows the structured form, check.ts's buildProgram passes it through with `as never`,
-  // and 10 decisions across 2 of this repo's own 60 fixtures use it.
+  // and 10 decisions across 2 of this repo's own 58 fixtures use it.
   const objectForm = (instructions: unknown): Program => {
     const p = prog()
     p.decisions.push({ id: 'claim_1', kind: 'noul', instructions: instructions as never })
@@ -760,12 +728,12 @@ describe('lintProgram — a score whose levels describe nothing', () => {
     expect(lintProgram(program).map(i => i.code)).toContain('score_levels_undescribed')
   })
 
-  it('leaves the corpus clean: 0 of its 26 recorded scores are placeholders', () => {
+  it('leaves the corpus clean: 0 of its 25 recorded scores are placeholders', () => {
     // The measurement the predicate was chosen on. A rule that fires on real level prose is
     // a rule nobody will read, and this is what says it does not.
     const scores = corpus.flatMap(f => Object.entries(f.questions)
       .flatMap(([id, q]) => q.type === 'score' ? [[f.id, id, q.criteria] as const] : []))
-    expect(scores).toHaveLength(26)
+    expect(scores).toHaveLength(25)
     const fired = scores.filter(([, , criteria]) =>
       codes(criteria as unknown[]).includes('score_levels_undescribed'))
     expect(fired.map(([fid, id]) => `${fid}.${id}`)).toEqual([])
@@ -833,9 +801,9 @@ describe('lintProgram — a score whose levels describe nothing', () => {
   })
 })
 
-// This is the assertion the 60-fixture corpus leaves out. `jevc check` replays the fixtures
+// This is the assertion the 58-fixture corpus leaves out. `jevc check` replays the fixtures
 // and reports "stable", but the numbers lint's messages quote are, for the two most-cited of
-// them, in no `expect` clause at all — so "60 fixtures stable" never covered them. A lint
+// them, in no `expect` clause at all — so "58 fixtures stable" never covered them. A lint
 // message is the most-read prose in this codebase; a number in it that no recording backs is
 // the exact failure this project exists to stop shipping.
 describe('lint prose — every measurement a message cites is recorded in fixtures/', () => {
@@ -898,7 +866,7 @@ describe('lint prose — every measurement a message cites is recorded in fixtur
       ? fired[(fired.length - 1) / 2]
       : (fired[fired.length / 2 - 1] + fired[fired.length / 2]) / 2
 
-    expect(fired).toHaveLength(29)
+    expect(fired).toHaveLength(27)
     expect(median).toBe(0.86)                 // not near-uniform, and not close to it
     expect(fired.filter(c => c < 0.3)).toHaveLength(1)
 
@@ -941,18 +909,14 @@ describe('lint prose — every measurement a message cites is recorded in fixtur
     expect(commit.probabilities.allow).toBe(0.18)
     expect(noul('commit-only-when-explicitly-asked', 'user_explicitly_asked_to_commit')).toBe(0.06)
 
-    const vendored = choice('vendored-edit-authorization-ambiguous', 'decision')
-    expect(vendored.confidence).toBe(0.31)
-    expect(vendored.probabilities).toMatchObject({ allow: 0.54, ask: 0.38 })
-    expect(noul('vendored-edit-authorization-ambiguous', 'user_explicitly_authorized_editing_vendored_code')).toBe(0.28)
-    expect(noul('vendored-edit-authorization-ambiguous', 'authorization_is_inferred_not_explicit')).toBe(0.78)
+    // This message cited a second fixture until that fixture was removed from the corpus
+    // for licensing reasons. A message may only quote what the shipped fixtures record, so
+    // the citation shrank with the evidence rather than outliving it.
+    expect(m).not.toContain('vendored-edit-authorization-ambiguous')
+    expect(corpus.some(f => f.id === 'vendored-edit-authorization-ambiguous')).toBe(false)
 
-    for (const n of ['0.18', '0.64', '0.54', '0.38', '0.31', '0.06', '0.28', '0.78']) {
-      expect(m, n).toContain(n)
-    }
-    for (const id of ['commit-only-when-explicitly-asked', 'vendored-edit-authorization-ambiguous']) {
-      expect(m).toContain(id)
-    }
+    for (const n of ['0.18', '0.64', '0.06']) expect(m, n).toContain(n)
+    expect(m).toContain('commit-only-when-explicitly-asked')
   })
 
   it('embedded_pattern — the six numbers it is entitled to, each from a named head', () => {

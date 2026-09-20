@@ -26,5 +26,5 @@ Two more directories, neither of them a script:
 | [`claude-code-hook/`](claude-code-hook/) | Example 02 as a **running gate** — a Claude Code `PreToolUse` hook that denies the commit offline: `cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json`. |
 | [`sample-project/`](sample-project/) | A checkout service's `CLAUDE.md`, `AGENTS.md` and release skill, written the way real ones are. What `jevc scan examples/sample-project` reads. |
 
-[`GALLERY.md`](GALLERY.md) is all 60 fixtures on one page — every prompt jevc replaces, with
+[`GALLERY.md`](GALLERY.md) is all 58 fixtures on one page — every prompt jevc replaces, with
 the questions and the measured answers. Generated from `fixtures/` by `npm run gallery`.

@@ -676,7 +676,7 @@ describe('identifiers and keys', () => {
    * earlier round reached.
    *
    * Reachable without malice: `Decision.instructions` is typed `string` but is not one
-   * (src/ir.ts:274-279 says so, and lintProgram exists because 2 of 60 fixtures carry an
+   * (src/ir.ts:274-279 says so, and lintProgram exists because 2 of 58 fixtures carry an
    * object there); src/check.ts passes a wire `instructions` straight through with a cast,
    * and both fixtures/output-verification.json and fixtures/cost-optimization.json use the
    * object form today. The same class as the historical `__proto__` bug, one level deeper.

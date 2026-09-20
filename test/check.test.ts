@@ -295,7 +295,7 @@ describe('assertExpectation — a right-typed answer with no measurement in it',
 
   it('still passes every expectation the recorded corpus actually holds', () => {
     // The no-false-rejection guard for the clause above: offline `jevc check` runs exactly
-    // this over all 60 fixtures and exits 1 on any failure.
+    // this over all 58 fixtures and exits 1 on any failure.
     for (const f of loadFixtures('fixtures')) {
       const fails = assertExpectation(f.expect, f.measured.answers)
       expect(fails, `${f.id}: ${fails.join('; ')}`).toEqual([])
@@ -339,10 +339,10 @@ describe('checkLive — which model answered', () => {
 // hand-made fixtures: replay every recorded answer back at checkLive and the report must be
 // silent. It also pins that all 60 programs clear the validateProgram/validateRequest gates
 // askModel now runs before spending a call — a program those refuse becomes a `broken` row.
-describe('checkLive — the 60-fixture corpus replayed against itself', () => {
+describe('checkLive — the 58-fixture corpus replayed against itself', () => {
   it('reports nothing broken and nothing drifted', async () => {
     const corpus = loadFixtures('fixtures')
-    expect(corpus).toHaveLength(60)
+    expect(corpus).toHaveLength(58)
     // checkLive awaits one fixture at a time, so request order is corpus order.
     let i = 0
     const client = { systemOne: async () => wire(corpus[i++]!.measured.answers) } as unknown as TypeSafeClient

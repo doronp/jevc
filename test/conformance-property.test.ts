@@ -1020,9 +1020,9 @@ describe('violation class 1: canEmit is the gate, so a clean canEmit must mean t
   })
 })
 
-describe('the corpus is a property source: 60 measured fixtures', () => {
+describe('the corpus is a property source: 58 measured fixtures', () => {
   it('found the corpus', () => {
-    expect(corpus.length).toBe(60)
+    expect(corpus.length).toBe(58)
   })
 
   /**

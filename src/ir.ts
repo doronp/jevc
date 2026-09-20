@@ -300,7 +300,7 @@ export function validateProgram(p: Program): ValidationIssue[] {
  * `Decision.instructions` is TYPED `string` and is not one at runtime: the wire contract
  * allows the structured `EntryType` form, `check.ts`'s `buildProgram` passes it through with
  * `as never`, and 10 decisions across 2 fixtures in this repo's own corpus use it — so
- * `d.instructions.toLowerCase()` threw a TypeError on 2 of 60 fixtures. lintProgram is
+ * `d.instructions.toLowerCase()` threw a TypeError on 2 of 58 fixtures. lintProgram is
  * advisory and must never throw.
  *
  * Flattening to the string leaves rather than skipping, because skipping is the failure this
@@ -324,15 +324,6 @@ function lintableText(instructions: unknown): string {
  * kind: "what should the harness do?" is the same collapsed question whether it is offered
  * as a choice, as a noul, or as a 0-4 severity ladder. */
 const VERDICT_FRAMING = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
-
-/** Negation as whole words, never as substrings: `no` must not match "notification" or
- * "noop", and no prefix is matched at all because "un-" catches "under", "unless" and
- * "unique". Used by Rule 7. */
-const NEGATION = /\b(no|not|never|without|none|cannot|cant|neither|nor|non|lacks|lacking|absent|missing|inert)\b/
-
-/** The ways a question legitimately asks about absence with no negation word in it. Rule 7
- * treats these as agreeing with a negated id, because in this corpus they always do. */
-const ABSENCE = /\brather than\b|\binstead of\b|\bunstated\b|\bzero\b|\bfails? to\b|\bomit|\babsence\b|\bunable\b|\bleaves?\b|\bunspecified\b|\bunset\b|\bempty\b/
 
 export function lintProgram(p: Program): ValidationIssue[] {
   const out: ValidationIssue[] = []
@@ -364,7 +355,7 @@ export function lintProgram(p: Program): ValidationIssue[] {
       // corpus does show is that the verdict head is the one you cannot gate on.
       out.push({
         code: 'collapsed_verdict', path: `decisions.${d.id}`, severity: 'error',
-        message: `"${d.id}" asks the model for the verdict itself${opts.length ? ` (${opts.join('/')})` : ''}. Measured (fixtures/security-guardrails.json, bash-rm-rf-node-modules-benign): the verdict head returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13 — a third of the mass on blocking a routine \`rm -rf node_modules\` — while the narrow heads in the SAME call were decisive: only_regenerable_artifacts 0.93, and blast_radius put 0.98 on level 1. And the failure is not detectable from the answer: across the 29 verdict-shaped heads in fixtures/, correct answers came back at confidences from 0.13 to 1.00, so no confidence floor separates a verdict from a coin flip. Ask for evidence; the reducer computes the verdict, and its thresholds can be re-tuned without a new call.`,
+        message: `"${d.id}" asks the model for the verdict itself${opts.length ? ` (${opts.join('/')})` : ''}. Measured (fixtures/security-guardrails.json, bash-rm-rf-node-modules-benign): the verdict head returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13 — a third of the mass on blocking a routine \`rm -rf node_modules\` — while the narrow heads in the SAME call were decisive: only_regenerable_artifacts 0.93, and blast_radius put 0.98 on level 1. And the failure is not detectable from the answer: across the 27 verdict-shaped heads in fixtures/, correct answers came back at confidences from 0.13 to 1.00, so no confidence floor separates a verdict from a coin flip. Ask for evidence; the reducer computes the verdict, and its thresholds can be re-tuned without a new call.`,
       })
     }
 
@@ -388,11 +379,15 @@ export function lintProgram(p: Program): ValidationIssue[] {
     // The citation used to be the glob-evasion numbers (0.25/0.10/0.14 vs 0.96/0.87/0.85).
     // Those are real and measured, but they are about deny-PATTERNS missing evasive
     // spellings and say nothing about carve-outs; they belong to Rule 5 below and only
-    // there. The two corpus questions that genuinely embed a carve-out are cited instead.
+    // there. The corpus question that genuinely embeds a carve-out is cited instead.
+    //
+    // It used to be two. The second, vendored-edit-authorization-ambiguous, was removed
+    // from the corpus for licensing reasons, and a message may only cite what the shipped
+    // fixtures still record — test/ir.test.ts enforces exactly that.
     if (/\b(except|unless|other than|aside from)\b/.test(text)) {
       out.push({
         code: 'embedded_carveout', path: `decisions.${d.id}`, severity: 'warn',
-        message: `"${d.id}" appears to embed a carve-out or exception in the question text. Measured (fixtures/agent-harness-rules.json): both corpus questions that do this are mushy. commit-only-when-explicitly-asked folds "NEVER commit unless the user explicitly asks" into one head and puts 0.18 on allow at confidence 0.64; vendored-edit-authorization-ambiguous folds in "unless explicitly asked" and returns allow 0.54 / ask 0.38 at confidence 0.31. The same carve-out asked as its own noul is sharp in both calls: user_explicitly_asked_to_commit 0.06, and user_explicitly_authorized_editing_vendored_code 0.28 alongside authorization_is_inferred_not_explicit 0.78. Carve-outs are allowlists — ask them separately and combine them in \`reduce\`.`,
+        message: `"${d.id}" appears to embed a carve-out or exception in the question text. Measured (fixtures/agent-harness-rules.json): commit-only-when-explicitly-asked folds "NEVER commit unless the user explicitly asks" into one head, and the head goes mushy — 0.18 on allow at confidence 0.64. The same carve-out asked as its own noul is sharp in the same call: user_explicitly_asked_to_commit 0.06. Carve-outs are allowlists — ask them separately and combine them in \`reduce\`.`,
       })
     }
 
@@ -442,46 +437,6 @@ export function lintProgram(p: Program): ValidationIssue[] {
     }
   }
 
-  // Rule 7 — the id and the `criteria.true` label agree on a negation the instructions do
-  // not carry. This is the one failure in the corpus that is invisible in review and inverts
-  // a gate silently, and the vendor confirms the mechanism: "The key is not sent to the
-  // underlying model and is not used in inference" (docs.typesafe.ai/api.md). So when the id
-  // and the label say "no X" and the instruction asks "does X?", the model answers the
-  // instruction, the reducer reads the answer as if it meant the id, and every threshold in
-  // the program is backwards.
-  //
-  // Measured in fixtures/agent-harness-rules.json, vendored-edit-authorization-ambiguous:
-  // `edit_would_have_no_runtime_effect` — instructions "would changing this file CHANGE the
-  // behavior of the shipped application?", criteria.true "Application code does not build
-  // from or import this path, so the edit cannot affect runtime behavior." Jev returned 0.21
-  // against a ground truth of inert, i.e. it answered the instruction and ignored both the
-  // label and the key.
-  //
-  // The predicate is asymmetric on purpose. Requiring the id AND the label to agree, and
-  // only the instruction to differ, is what makes it precise: over all 60 fixtures / 343
-  // decisions it fires exactly once, on the decision above. The symmetric version — flag any
-  // polarity difference — fires 63 times, and the mirror direction alone (a negation in the
-  // instruction that the id does not have) fires 29 times and is noise every time: an
-  // incidental "not already a dependency" or "without any of them" inside an ordinary
-  // positive question. CONTRAST covers the legitimate way these questions express absence
-  // without a negation word ("rather than", "leaves ... unstated", "zero"), which is how the
-  // other 11 negation-carrying ids in the corpus are phrased.
-  //
-  // `warn`, not `error`: this is a token-cue heuristic over three strings, in the same family
-  // as `embedded_carveout` and `compound_question`, and English can defeat it.
-  for (const d of p.decisions) {
-    if (d.kind !== 'noul' || !d.criteria || Array.isArray(d.criteria)) continue
-    const trueLabel = (d.criteria as { true?: unknown }).true
-    if (typeof trueLabel !== 'string' || trueLabel.trim() === '') continue
-    const instructions = lintableText(d.instructions)
-    if (!NEGATION.test(d.id.replace(/[_-]+/g, ' ').toLowerCase())) continue
-    if (!NEGATION.test(trueLabel.toLowerCase())) continue
-    if (NEGATION.test(instructions) || ABSENCE.test(instructions)) continue
-    out.push({
-      code: 'polarity_disagreement', path: `decisions.${d.id}`, severity: 'warn',
-      message: `"${d.id}" and its \`criteria.true\` both state a negation that the instructions do not: ${JSON.stringify(instructions)}. The id is never sent to the model — "The key is not sent to the underlying model and is not used in inference" — so the model answers the instructions, and a reducer written against the id reads that answer inverted. Measured (fixtures/agent-harness-rules.json, vendored-edit-authorization-ambiguous): edit_would_have_no_runtime_effect asked "would changing this file CHANGE the behavior?" and returned 0.21 where the ground truth was inert — the gate silently flipped. Rewrite the instructions to ask what the id claims, or rename the id and the label to match the question.`,
-    })
-  }
 
   // Rule 2 — never emit two questions where one determines the other.
   for (const d of p.decisions) {
