@@ -1,72 +1,79 @@
+![jevc compiles natural-language rules into typed questions plus a reducer in ordinary code](docs/hero.svg)
+
 # jevc
 
-**A transpiler from natural-language LLM instructions to typed Jev decisions.**
+**Turn the rules your agent keeps ignoring into gates you can test.**
 
-A JSON Schema, an `AGENTS.md` rule, a system prompt — `jevc` lowers it into a *Jev
-program*: a set of narrow typed questions answered by TypeSafe's System One model
-(`jev-1.13.0`), plus a reducer that computes the verdict in ordinary code. What used to
-be an LLM judgment becomes a deterministic, typed, auditable one.
+Your `CLAUDE.md` says *NEVER commit unless the user explicitly asks*, and the agent commits
+anyway — because a markdown rule is a suggestion the model re-reads fresh every turn.
+`jevc` compiles a rule like that into a **Jev program**: a few narrow typed questions
+answered by TypeSafe's System One model (`jev-1.13.0` — non-generative, returns
+probabilities, never text), plus a reducer that computes the verdict in ordinary code. The
+rule stops being prose the model weighs and becomes an invariant you can read, diff and
+unit-test.
 
-A rule written in markdown is a suggestion. The same rule expressed as a typed question
-against a System One model is an invariant that cannot produce a schema error, and that
-answered in a median of 778.5 ms across the 60 calls recorded in `fixtures/` (min 689 ms,
-max 2584 ms).
+It is for anyone shipping a gate an LLM currently judges — a Claude Code `PreToolUse` hook,
+a tool-call guard, a model router, an output verifier — who needs that decision to be
+reproducible and reviewable.
 
-It is for anyone shipping a gate an LLM currently judges — a Claude Code `PreToolUse`
-hook, a tool-call guard, a model router, an output verifier — who needs that gate's
-decision to be reproducible and reviewable.
+## Start here
 
 ```bash
 git clone https://github.com/doronp/jevc && cd jevc
 npm install && npm run build                  # Node >= 22
-npx jevc check                                # 60 fixtures, 60 passing, 0 failing
-npx tsx examples/02-agents-md-guardrail.ts    # the rule below, enforced
+npx jevc check                                # replays the recorded corpus, offline
+npx jevc scan .                               # what this project could enforce
 ```
 
-Nothing above needs an API key, and neither does anything else in this README except
-`jevc check --live`.
+```console
+$ npx jevc check
+60 fixtures, 60 passing, 0 failing
+```
+
+No API key, no network — not for the tests, the examples, or anything in this README
+except `jevc check --live`.
 
 ---
 
-## The before and after
+## Your rules are already in the repo
 
-This rule is in thousands of `CLAUDE.md` files, and agents still break it:
+Point `jevc scan` at a project. It finds the instruction files agent harnesses actually
+read — `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`,
+`.github/copilot-instructions.md`, `.claude/skills/**`, `.claude/agents/**` — and sorts
+what it finds into what can be enforced and what cannot:
 
-```markdown
-NEVER commit unless the user explicitly asks.
+```console
+$ npx jevc scan examples/sample-project
+examples/sample-project
+
+  CLAUDE.md                          13 rules     7 decidable     4 procedure     2 generation
+  AGENTS.md                           7 rules     5 decidable     2 procedure     0 generation
+  .claude/skills/release/SKILL.md    12 rules     4 decidable     6 procedure     2 generation
+
+32 rules across 3 files. 16 look decidable — those are the ones that can become typed Jev questions.
+
+Start with CLAUDE.md, which has the most:
+
+     7  NEVER commit unless the user explicitly asks. Produce the message; let the human ru…
+     8  Never delete tracked files. If something looks unused, say so and stop.
+     9  Do not push to `main`. Open a branch and a PR.
+    10  Ask before adding a dependency. We audit the lockfile by hand every release.
+    11  Migrations under `db/migrations/` are append-only once merged. Write a new one inst…
+        … and 2 more
+
+Next:
+
+  jevc compile examples/sample-project/CLAUDE.md --lift
+
+  Hand the request it prints to the agent you already have open. No second API key.
+...
 ```
 
-Enforcing it today means a second LLM call carrying 1,089 characters of instructions,
-four judgments held in one head, a hand-parsed JSON envelope, and no way to tell which
-judgment moved when the hook misfires. (That prompt is real — it is
-`fixtures/agent-harness-rules.json`, `commit-only-when-explicitly-asked`.)
+The `...` is one elided paragraph: `scan`'s own note that this classification is a text
+heuristic and the list is worth reading rather than the counts
+([why that is fine here](#jevc-scan-is-a-heuristic-and-the-only-one-here)).
 
-Compiled, it is four typed questions and a reducer. Measured on the fixture's state — a
-user who said *"yeah that reading looks right, go ahead"* and an agent that decided to
-commit — the three that decide this state came back:
-
-```
-is_commit_operation                 0.96
-user_explicitly_asked_to_commit     0.06     <- a bare approval is not consent
-commit_required_by_requested_task   0.16
-
-verdict, computed in code:          deny
-latency:                            731 ms
-```
-
-(The fourth question, `command_does_more_than_commit`, measured 0.04. The reducer in
-`examples/02-agents-md-guardrail.ts` does not read it, so the example prints the three
-above.)
-
-The carve-out ("a commit that a requested PR requires is fine") is an allowlist, so it
-lives in the reducer, in code, where it can be read and tested. Run it:
-`npx tsx examples/02-agents-md-guardrail.ts`.
-
----
-
-## What compiles, and the honest limit
-
-A natural-language prompt braids three different things together:
+A prompt braids three different things together, and only one of them compiles:
 
 | Part | Example | Compiles? |
 | --- | --- | --- |
@@ -74,27 +81,198 @@ A natural-language prompt braids three different things together:
 | **Generation** | "write a summary", "explain your reasoning" | **never** — Jev emits no text |
 | **Procedure** | "read the file before editing it" | **no** — that is control flow; it belongs in code |
 
-A transpiler that claims to turn a prompt into an equivalent Jev prompt is lying. `jevc`
-**separates** them. Every compilation emits three artifacts:
+No tool can turn a whole prompt into an equivalent Jev program.
+`jevc` separates them, and every compilation emits all three parts: the decision set, the
+**residual prompt** for whatever genuinely still needs a generative model, and the wiring
+that evaluates the first and calls the LLM only for the second. A compilation that produces
+no decisions is a valid answer — that prompt had no System One content, and `jevc` says so
+instead of inventing questions.
 
-1. **the decision set** — real Jev questions, with thresholds and actions
-2. **the residual prompt** — what genuinely still needs a generative model, now smaller
-3. **the wiring** — code that evaluates (1) and calls the LLM only for (2)
+`jevc compile <file> --lift` prints a lowering request for the agent you already have open
+(Claude Code, Codex, Cursor), which returns candidate decisions as JSON. No second API key,
+no second bill. JSON Schema is still a first-class input — it is just no longer the front
+door, because your existing files are.
 
-`program.residual` is a first-class output, not a failure mode. A compilation that
-produces an empty decision set is a valid answer: this prompt had no System One content,
-and `jevc` says so instead of inventing questions.
+### Before and after, for one rule
+
+**Before.** The rule lives in `CLAUDE.md` and the model weighs it against everything else
+in the file. It usually holds. When it does not, there is nothing to inspect: no record of
+which part was weighed, no way to write a test, and the only available fix is to make the
+sentence louder. Escalating to a second LLM call — *"you are a policy checker, return
+JSON"* — trades one unreviewable judgment for another and bills you for it. That prompt is
+real, and it is in this repo: 1,089 characters of instructions, four judgments held in one
+head, a hand-parsed JSON envelope (`fixtures/agent-harness-rules.json`,
+`commit-only-when-explicitly-asked`).
+
+**After.** Three typed questions. Measured against the fixture's state — a user who said
+*"yeah that reading looks right, go ahead"* and an agent that decided to commit:
+
+```
+is_commit_operation                 0.96
+user_explicitly_asked_to_commit     0.06     <- a bare approval is not consent
+commit_required_by_requested_task   0.16
+
+verdict, computed in code:          deny
+```
+
+And the verdict is a block you can read in a pull request:
+
+```json
+"rules": [
+  { "when": [{ "id": "is_commit_operation",               "op": "lte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "user_explicitly_asked_to_commit",   "op": "gte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "commit_required_by_requested_task", "op": "gte", "value": 0.5 }], "then": "allow" }
+],
+"otherwise": "deny"
+```
+
+Change a threshold and see which recorded cases move. Add a case and run it. The judgment
+that used to live in a paragraph now lives in three lines and a number you can point at.
+
+```bash
+npx tsx examples/02-agents-md-guardrail.ts                              # the reasoning
+cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json   # the gate
+```
+
+### And for a skill
+
+`scan` above found `.claude/skills/release/SKILL.md — 12 rules, 4 decidable`. Those four
+gates are the reason the skill exists, and they are not all the same kind of thing:
+
+| Gate in the skill | Becomes |
+| --- | --- |
+| A release must never go out with a failing test. | **code** — `npm test` has an exit code. Nothing to judge |
+| Never release on a Friday after 16:00 local time. | **code** — a clock |
+| The changelog must mention every change touching `src/billing/`. | **a Jev question** — whether prose covers a diff has no exit code |
+| Do not bump the major version without an approved RFC. | **both** — semver in code, "does the RFC cover *this* change?" in Jev |
+
+Two of the four leave the model entirely. That is the win: most of what reads like judgment
+in a skill is a fact nobody bothered to look up. The two that remain are
+[`examples/sample-project/.claude/gates/release.json`](examples/sample-project/.claude/gates/release.json),
+and here is the whole gate — including the line each question came from, carried into the
+policy as a comment:
+
+```console
+$ npx jevc emit-policy --for bouncer examples/sample-project/.claude/gates/release.json
+# changelog_covers_billing_changes: .claude/skills/release/SKILL.md:13 — The changelog must mention every change touching `src/billing/`.
+# rfc_covers_this_breaking_change: .claude/skills/release/SKILL.md:14 — Do not bump the major version without an approved RFC.
+...
+  rules:
+    - when:
+        changelog_covers_billing_changes:
+          p: <=0.5
+      then: deny
+    - when:
+        rfc_covers_this_breaking_change:
+          p: <=0.5
+      then: deny
+    - default: allow
+```
+
+Before: a page the agent re-reads each time and mostly follows. After: a Friday 16:05
+release is stopped by an `if`, and a changelog that skipped the billing change is stopped
+by a number — with the skill line that asked for it printed beside the rule.
+
+The `...` elides the generated header and the tool list, both shown in full under
+[Emitting a policy](#emitting-a-policy).
 
 ---
 
-## The decomposition law
+## Wire it in
 
-This is the most useful thing in the repo, and it constrains every code path.
+[`examples/claude-code-hook/`](examples/claude-code-hook/) is a working Claude Code
+`PreToolUse` hook — `gate.mjs`, its `program.json`, a sample payload — that runs offline
+right now and denies the commit above with a reason the agent can read:
+
+```console
+$ JEVC_REPLAY=1 node gate.mjs < payload.sample.json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"CLAUDE.md line 7: commits need an explicit request. …"}}
+```
+
+Copy it to `.claude/gates/`, change the import to `jevc`, and register it:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }] }
+    ]
+  }
+}
+```
+
+[**`docs/wiring.md`**](docs/wiring.md) has one recipe per surface, with the code that
+actually runs:
+
+| Where the decision happens | Recipe |
+| --- | --- |
+| Claude Code stops a tool call | `PreToolUse` hook |
+| Claude Code runs the compiler for you | a `.claude/commands/jev.md` slash command |
+| Your own TypeScript agent loop | `--emit sdk` |
+| A Vercel AI SDK app | `--emit ai-sdk` |
+| A Python agent — LangChain, LangGraph, your own | `--emit langchain`, or subprocess the gate |
+| A gateway whose source you do not own | `emit-policy --for bouncer` / `--for toolgate` |
+| Anything that can POST | `--emit json` |
+
+---
+
+## Examples
+
+Four runnable examples, plus the corpus itself. All offline.
+
+```bash
+npx tsx examples/01-schema-to-jev.ts       # schema -> Jev, with the residual left visible
+npx tsx examples/02-agents-md-guardrail.ts # a CLAUDE.md rule, enforced
+npx tsx examples/03-model-router.ts        # route before you spend; level-index scores
+npx tsx examples/04-policy-emit.ts         # emit a bouncer policy; watch toolgate refuse
+```
+
+The 60 recorded fixtures are the worked examples — each one a prompt from a real harness,
+run once against the live model and recorded. Read one end to end:
+
+```bash
+npx jevc show                                   # list all 60
+npx jevc show bash-rm-rf-node-modules-benign    # the prompt it replaces, the questions, the answers
+```
+
+[`examples/GALLERY.md`](examples/GALLERY.md) is all 60 on one page, generated from
+`fixtures/` by `npm run gallery` so it cannot drift from what the tests assert. Worth
+opening first:
+
+| Domain | Fixture |
+| --- | --- |
+| agent-harness-rules | `commit-only-when-explicitly-asked` — the one above |
+| security-guardrails | `bash-rm-rf-node-modules-benign` — the decomposition law's adversarial negative |
+| cost-optimization | `tier-router-ambiguous-scope-error-handling` — the 0.24-confidence tier head |
+| intent-understanding | `instructor-multilabel-is-n-nouls` — an array of enum becomes one noul per label |
+| output-verification | `agent-neutered-the-test-instead-of-fixing` — "done" is a claim, not a fact |
+
+`jevc explain` answers the other question — why does this particular question exist:
+
+```console
+$ npx jevc explain user_explicitly_asked_to_commit
+user_explicitly_asked_to_commit  (agent-harness-rules/commit-only-when-explicitly-asked)
+  type:         noul
+  instructions: Looking only at recent_user_turns, did the human explicitly ask for a commit to be created?
+  provenance:   Claude Code permissions docs ship this exact split as their worked example: ...
+  measured:     {"type":"noul","noul":0.06}
+  replaces:     You are a policy checker running inside our Claude Code PreToolUse hook. We keep getting surprise commits from the agent...
+```
+
+The `...` on `replaces:` is the CLI's own truncation; the one on `provenance:` is this
+README's — `explain` prints the whole citation.
+
+---
+
+## Why it works: the decomposition law
+
+Every lint rule below comes from one measurement.
 
 **Jev answers narrow evidence questions decisively and collapsed verdict questions
-near-randomly.** All five numbers below come from **one** recorded call evaluating
-`rm -rf node_modules` (`fixtures/security-guardrails.json`,
-`bash-rm-rf-node-modules-benign`, jev-1.13.0, 720 ms):
+near-randomly — on borderline inputs, which are the ones a gate exists for.** Every number
+below comes from **one** recorded call evaluating `rm -rf node_modules`
+(`fixtures/security-guardrails.json`, `bash-rm-rf-node-modules-benign`, jev-1.13.0):
 
 | Question in that call | Answer | Confidence |
 | --- | --- | --- |
@@ -103,11 +281,10 @@ near-randomly.** All five numbers below come from **one** recorded call evaluati
 | `only_regenerable_artifacts` — noul | 0.93 | — (a noul has none) |
 
 The decomposed heads are right and certain. The verdict head put `allow` 0.07 ahead of
-`block` at confidence 0.13 — the smallest margin between a winner and a runner-up
-anywhere in the corpus, and seven times the ±0.01 that repeated identical calls drift
-by. The evidence heads in the very same call sit at 0.93 and 0.97. A guard that flips to
-`block` on `rm -rf node_modules` is not a guard, it is an outage, and 0.07 is all that
-stands between this one and that.
+`block` — the smallest winner/runner-up margin anywhere in the corpus, and only seven times
+the ±0.01 that repeated identical calls drift by. A 0.07 margin is all that
+keeps this gate from blocking `rm -rf node_modules`, which would not be a guard, it would
+be an outage.
 
 The same shape shows up where it costs money rather than uptime. In
 `tier-router-ambiguous-scope-error-handling`, the collapsed "which model tier?" question
@@ -116,25 +293,7 @@ evidence questions in the same call said `request_scope_ambiguous` 0.79 and
 `touches_irreversible_surface` 0.76. Reading the argmax ships a silent downgrade; reducing
 the evidence in code routes it up. (`npx tsx examples/03-model-router.ts`.)
 
-**Be precise about the claim.** Collapse is not a property of verdict words, it is what
-happens when a collapsed question meets a genuinely borderline input. Across the whole
-corpus, the 19 verdict-shaped choice heads — option sets that trip the same
-`VERDICT_WORDS` test the linter uses — have a median confidence of 0.93, close to the
-0.97 median of the other 46 choice heads. The separation is in the tail, not the middle:
-the three least confident verdict heads are 0.13, 0.31 and 0.36, each on a genuinely
-borderline input — precisely the case a gate exists for.
-
-And the tail is not exclusively theirs. Two non-verdict heads sit in it too. The router's
-`tier` head measured 0.24, and it is a collapsed verdict in everything but vocabulary —
-the `VERDICT_WORDS` test is a heuristic and `powerful`/`fast`/`balanced` are not in it.
-The other is honest uncertainty rather than collapse: in
-`agent-command-referent-disambiguation` the four-way "which of `candidate_ids` does
-*that* refer to?" head measured 0.23, because the command genuinely was ambiguous. The
-decomposed noul in the same call said so plainly — `referent_is_ambiguous` 0.68 — which
-is the shape a program should branch on, and why `uncertain` is part of the IR.
-
-Three rules follow, all enforced by `lintProgram` — three of the six checks it runs; the
-other three are the two pattern/carve-out warnings below and `score_levels_undescribed`:
+Three rules follow, all enforced by `lintProgram` — three of the six checks it runs:
 
 1. **Never emit a collapsed verdict question.** Emit evidence; compute the verdict in code.
    This one is a hard error.
@@ -146,19 +305,38 @@ other three are the two pattern/carve-out warnings below and `score_levels_undes
    measured 0.59 — the wrong side of 0.5 — on a command whose deletions were partly
    authorized, because it anchored on the authorized half.
 
-Carve-outs ("except `rm -rf node_modules`") are allowlists and belong in `reduce`
-(`embedded_carveout`). A separate warning, `embedded_pattern`, covers the other half:
-asking Jev whether a declared glob or deny pattern matched. Those questions measured
-0.25 / 0.10 / 0.14 across three tool families — push, PR, edit — while the semantic
-question on the same input answered 0.96 / 0.87 / 0.85. Keep pattern matching in code;
-ask Jev only what a pattern cannot express.
-
 ---
 
-## Compiling
+## Reference
 
-Every console block below is real output, and every input it names is shown with it, so
-each one can be reproduced in a clean clone. Compile a schema — `triage.json`:
+### The CLI
+
+Six commands. Every console block in this file is real output from this repo.
+
+| Command | Flags | Does |
+| --- | --- | --- |
+| `jevc scan [dir]` | `--json` | Finds the instruction files a project already has and sorts their rules into decidable, procedure and generation. The intended first command. |
+| `jevc compile <file\|->` | `--lift`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose. `-` reads stdin. |
+| `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
+| `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 60. |
+| `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
+| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
+
+`bouncer` and `toolgate` are reached only through `emit-policy`, never through `--emit`:
+they are policy documents, not modules.
+
+```console
+$ npx jevc check --live
+check --live requires TYPESAFE_API_KEY in the environment.
+```
+
+`--live` is the only command that touches the network, and it refuses before reaching it if
+there is no key. `jev-latest` is an alias that moves under you, so a TypeSafe model bump
+should surface as a diff in a drift report rather than as a production incident.
+
+### Compiling a schema
+
+Given `triage.json`:
 
 ```json
 {
@@ -196,8 +374,7 @@ export function reduce(a: Record<string, JevAnswer>): string {
 The `...` elides one declaration and its doc comment: `export const program =
 JSON.parse("…") as unknown as Program`, the serialised `Program` the emitted `isUncertain`
 resolves each decision's band against. The blank line inside `reduce` is real — this schema
-declares no rules, so the body is the `otherwise` alone. Real stdout also repeats the
-residual as a trailing comment block, so the generated file carries it too.
+declares no rules, so the body is the `otherwise` alone.
 
 The part that cannot compile is reported on stderr rather than invented:
 
@@ -208,10 +385,9 @@ The following still require a generative model:
 dropped: "frustration" is 1..5, but a score answer is a level index 0..4: every threshold written in the schema's numbers would fire 1 level(s) early, and neither the level labels nor validateProgram record the offset. Re-base it to 0..4 — the one range where the two spaces coincide — or bucket it into described levels.
 ```
 
-Compile prose. `jevc` ships the lift *protocol*, not a second model: `--lift` prints a
-request for the agent you are already talking to (Claude Code, Codex, Cursor), which
-returns candidate decisions as JSON. No second API key, no second bill. Given an
-`AGENTS.md` whose third line is `Never delete tracked files. Stay inside the repo root.`:
+### Lifting prose
+
+Given an `AGENTS.md` whose third line is `Never delete tracked files. Stay inside the repo root.`:
 
 ```console
 $ npx jevc compile AGENTS.md --lift
@@ -223,104 +399,8 @@ Lower the natural-language rules below into a jevc Program (JSON only, no prose)
    evidence questions on the SAME input reached 0.93-0.97. ...
 ```
 
-The agent's answer is a **hypothesis until measured**: `parseLiftResponse` puts it through
-the same validator the deterministic path uses, and checks all three fields of every
-decision's `source`, not just the quote. Any issue at `severity: "error"` — an unverifiable
-citation included — comes back with the **empty** `Program`, not with a usable one that has
-a warning attached. A fabricated citation used to survive all the way into an emitted
-bouncer policy at exit 0, carrying the invented `file:line — quote` as a provenance
-comment: an audit trail that lies about its own source, which is worse than no audit trail,
-because it turns "I should check this" into "someone already did." A warn-severity issue —
-the right quote at the wrong line — still returns the `Program` intact.
-
-- `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
-  re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing
-  even when it does occur: taking phrases from an instruction file and asking how often
-  they turn up anyway in a document that never contained them, the coincidence rate is 90%
-  at ≤3 characters, 30% at 6-7, 9% at 10-11, and 1.8% by 17-20 (the measurement is recorded
-  at `src/from-prompt.ts:4-13`). Real rule sentences run a median of 50 characters; the
-  sub-12 units in real instruction files are headings and code fences, not rules.
-- `file` must be the one document that was lifted. A name that was never supplied cannot be
-  checked, and the `// from <file>:<line>` comment the emitter writes would send a reviewer
-  somewhere unrelated.
-- `line` must be a line of that document, and one the quote actually spans. Outside the file
-  it is invented, and an error; inside the file but off the quote it is a repairable
-  mis-citation, so it warns and names the right line.
-
-The document itself is fenced with a run of dashes long enough not to occur in it, because
-an instruction file can contain the delimiter — by accident or on purpose — and two
-terminators in one prompt is how text after the fake one gets read as instructions.
-
----
-
-## The CLI
-
-Four commands. Output below is real, from this repo.
-
-| Command | Flags | Does |
-| --- | --- | --- |
-| `jevc compile <file\|->` | `--lift`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lift request for prose. `-` reads stdin. |
-| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
-| `jevc explain <decision-id>` | `--fixtures <dir>` | Why does this question exist — its provenance, the prompt it replaced, and what it measured. |
-| `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
-
-`bouncer` and `toolgate` are reached only through `emit-policy`, never through `--emit`:
-they are policy documents, not modules. Every flag is strict. An unknown option
-(`--output` is **not** an alias for `-o`), a repeated one (`--emit sdk --emit json`), a
-valued one with no value, and `--lift --emit` together are each exit 1 with a named reason
-rather than a silent default — `-o a.ts -o b.ts` used to write `a.ts` and leave a stale
-`b.ts` live while the operator believed it had been replaced, and `--output out.ts` used to
-be dropped entirely, sending the artifact to stdout while the named file kept its old
-contents.
-
-```console
-$ npx jevc check
-60 fixtures, 60 passing, 0 failing
-```
-
-```console
-$ npx jevc check --live
-check --live requires TYPESAFE_API_KEY in the environment.
-```
-
-`--live` is the only command that touches the network, and it refuses before reaching it
-if there is no key. `jev-latest` is an alias that moves under you, so a TypeSafe model bump
-should surface as a diff in a drift report rather than as a production incident.
-
-A drift row compares **both** numbers a `choice` or `score` answer carries, and renders them
-as `value@confidence`: a winner that holds while its confidence falls 0.95 → 0.15 is drift,
-not stability. A `noul` keeps the single comparison, having no confidence field. Each
-fixture's own `expect` bands are then re-checked against the live answers — a band that no
-longer holds is `drifted`, not `broken`, and is reported without gating the exit. The two
-commands are not running the same predicate: offline `jevc check` compares a recording
-against itself and cannot fail spuriously, while `--live` compares it against a moving
-alias, and 216 of the 331 numeric bounds in this corpus have less headroom than the 0.15
-the drift threshold itself allows. A benign recalibration smaller than one drift threshold
-would otherwise turn most of the corpus red. Everything structural still exits 1 on its own
-row: a vanished id, a changed answer type, an unreadable payload and a fixture that cannot
-be measured at all are each `broken`.
-
-```console
-$ npx jevc explain user_explicitly_asked_to_commit
-user_explicitly_asked_to_commit  (agent-harness-rules/commit-only-when-explicitly-asked)
-  type:         noul
-  instructions: Looking only at recent_user_turns, did the human explicitly ask for a commit to be created?
-  provenance:   Claude Code permissions docs ship this exact split as their worked example: ...
-  measured:     {"type":"noul","noul":0.06}
-  replaces:     You are a policy checker running inside our Claude Code PreToolUse hook. We keep getting surprise commits from the agent...
-```
-
-The `...` on `replaces:` is the CLI's own truncation; the one on `provenance:` is this
-README's — `explain` prints the whole citation.
-
-`emit-policy` reads a `Program` as JSON — the shape `--lift` asks the agent to produce.
-There is a route from a lift response to a policy, but it runs through the library and
-only for a caller who checks `issues` first: JSON that is not a `Program` is rejected by
-name (`<path> is not a jevc program. Expected { decisions, reduce, residual, dropped }`)
-rather than reaching `ir.ts` as a `TypeError`.
-
-Here is the agent's answer to the lift request above, saved as `program.json` — two
-evidence questions, each citing the line it came from, and the verdict in `reduce`:
+The agent's answer is a **hypothesis until measured**. Here it is, saved as `program.json` —
+two evidence questions, each citing the line it came from, and the verdict in `reduce`:
 
 ```json
 {
@@ -343,6 +423,13 @@ evidence questions, each citing the line it came from, and the verdict in `reduc
   "residual": "", "dropped": []
 }
 ```
+
+`parseLiftResponse` puts that through the same validator the deterministic path uses and
+checks all three fields of every `source`. The citation rules are in
+[Notes](#lift-citation-rules); the short version is that any error-severity issue returns
+the **empty** `Program`, never a usable one with a warning attached.
+
+### Emitting a policy
 
 ```console
 $ npx jevc emit-policy --for bouncer program.json
@@ -385,116 +472,35 @@ gate:
     - default: allow
 ```
 
----
+The same program refused by the other target, because toolgate reduces by
+`max(probability)` over every question and cannot express a per-question rule:
 
-## What compiles from a schema, and what does not
+```console
+$ npx jevc emit-policy --for toolgate program.json
+Cannot emit a toolgate policy:
+  reduce.rules: questions outside_repo have no deny rule, but max-over-questions applies the deny threshold to them anyway. toolgate reduces by max(probability) over all questions, then two scalars (deny, ask). Express the reducer as one shared deny threshold and one shared ask threshold over every question, or emit to a code target.
+  reduce.rules: questions deletes_tracked_files have no ask rule, but max-over-questions applies the ask threshold to them anyway. toolgate reduces by max(probability) over all questions, then two scalars (deny, ask). Express the reducer as one shared deny threshold and one shared ask threshold over every question, or emit to a code target.
+```
 
-`fromJsonSchema` is pure and property-tested — no model, no network. Zod, Anthropic tool
-`input_schema`, OpenAI strict `json_schema` and MCP `inputSchema` all normalize to JSON
-Schema first, so there is one mapper.
+Both directions are reported, not just the first, and the exit code is 1. A policy that
+parses and means something else is worse than no policy.
 
-| Schema construct | Maps to | Note |
-| --- | --- | --- |
-| `boolean` | `noul` | `description` becomes the instructions |
-| `string` + `enum` | `choice` | enum members become criteria keys, with no per-member description (`null`). A non-string member is rendered with `JSON.stringify`, so `{a: 1}` becomes the option name `{"a":1}`; two members that render to the same name are **dropped**, not merged |
-| `oneOf`/`anyOf` of `const` | `choice` | a const union is an enum, and each member's own `description` becomes that option's criteria value — the one spelling that carries per-option prose |
-| `allOf` | merged, then mapped | members compose into one effective schema, which is what a `$ref` plus local overrides becomes once resolved |
-| `anyOf`/`oneOf` of `[X, null]`, or `type: ["X", "null"]` | mapped as `X` | the Pydantic v2 and OpenAI strict spelling of an optional field; a union of two *decidable* branches names no single decision and stays **dropped** |
-| `integer` + `minimum: 0`/`maximum`, span 2..10 | `score` | one level per value, labelled `<dotted id> = i` (`a.risk = 0`) — `i` is both the schema's value and the answer's level index. Those labels carry no meaning, and `lintProgram` says so on every one of them: `score_levels_undescribed`, a warning, with the two schema shapes that carry per-level prose instead. The draft-6+ numeric `exclusiveMinimum`/`exclusiveMaximum` are honoured, so `{minimum: 0, maximum: 5, exclusiveMaximum: 5}` is a 5-level score, not 6 |
-| `integer` + `minimum` other than `0`, span 2..10 | **dropped** | a score answer is a level index `0..n-1`, so a threshold written in the schema's numbers fires `minimum` levels early and nothing in the `Program` records the offset; re-base the range, or bucket it into described levels |
-| `integer` with gapped or unreadable bounds — `multipleOf` other than 1, or the draft-04 *boolean* `exclusiveMinimum`/`exclusiveMaximum` | **dropped** | a score's levels are the contiguous indices `0..n-1`, so a gap or a bound this mapper cannot read would offer the model a level the schema forbids |
-| `array` of `enum` | **one `noul` per member** (`field.member`) | several labels may apply at once, and each noul answers its own label exactly once — which is why `uniqueItems` is ignored |
-| `array` of `enum` with `minItems > 0` or `maxItems <` member count | **dropped** | one independent noul per label records no cardinality, so a declared single-select would ship as an unarbitrated multi-select. Spell a single-select as a plain `enum` |
-| nested `object` | recurse; ids flattened dotted (`a.b`) | the questions map is flat, and the dotted id is load-bearing rather than cosmetic: it is what scopes the generated question text, and therefore what makes two sibling `risk` fields distinguishable to the model |
-| a root with no `properties` — a `$ref` root, a bare-enum root, an array root, `{}` | **dropped, exit 1** | `$ref` is not resolved, and the drop names what it found rather than returning a silently empty `Program` |
-| `string` (free) | **residual** | text generation |
-| `array` of `object` | **residual** | unbounded extraction |
-| `number` (any) | **dropped** | a continuous range has no discrete-level equivalent; bucket it, or model a 0..1 probability as a noul |
-| `integer` spanning > 10 values | **dropped** | a score takes at most 10 levels |
-| `null` | **dropped** | no decision to make |
-| `const` | ignored | no decision to make, whatever it is attached to — `{type: 'boolean', const: true}` and `{enum: […], const: 'a'}` compile to nothing, not to a question with one answer |
-| two things claiming one id — a property named `"a.b"` beside a nested `a: {b}`, or enum members `1` and `"1"` | **both dropped, exit 1** | the intent is unrepresentable as written rather than unsupported; renaming one of them fixes it |
+Four rows cover almost every real schema:
 
-`required` and `default` are ignored: Jev answers every question in the map, always.
+| Schema construct | Maps to |
+| --- | --- |
+| `boolean` | `noul` |
+| `string` + `enum`, or a `oneOf` of `const` | `choice` |
+| `integer` 0..n, span 2..10 | `score` — answered as a level index `0..n-1` |
+| free `string`, `array` of `object` | **residual** — text generation, left for your LLM |
 
-A **dropped** cell means one of two exit codes. An *unsupported* drop — no Jev equivalent —
-prints as `dropped:` on stderr and the compile still succeeds at exit 0; the artifact is
-everything Jev can represent of what you wrote, and the `dropped:` block above is one. A
-*collision* drop prints as `error:` and exits 1 without writing anything, however many
-other decisions survived, because there is no artifact that asks what the schema asked. So
-does a schema that compiles to no decisions at all. `fromJsonSchema` returns a
-`SchemaProgram`, whose `dropped` entries carry `kind: 'collision' | 'unsupported'`; branch
-on `kind`, never on the reason prose.
+The other twenty constructs, and the exact rule for every drop, are in
+[`docs/schema-mapping.md`](docs/schema-mapping.md). `fromJsonSchema` is pure and
+property-tested — no model, no network — and Zod, Anthropic tool `input_schema`, OpenAI
+strict `json_schema` and MCP `inputSchema` all normalize to JSON Schema first, so there is
+one mapper.
 
-A two-member enum whose values are yes/no-shaped *could* collapse to a `noul`. That
-heuristic is **off by default** (`collapseBooleanEnums`) — silently changing a declared
-output's shape is exactly the class of surprise this project exists to remove.
-
----
-
-## The validator earns its keep
-
-The API returns **200 OK** for each of these, with an answer that is wrong or meaningless.
-The `API result` column is quoted from 25 live probe requests against `jev-1.13.0` on
-2026-09-18, transcribed in [`docs/design.md`](docs/design.md) §3 and not reproducible
-offline. The `Caught by` column is: every row is pinned by `test/contract.test.ts` and
-refused locally by `validateRequest` or `validateProgram`.
-
-| Probe | API result | Consequence | Caught by |
-| --- | --- | --- | --- |
-| `score` with 1 level | 200 — `score: 0.0, confidence: 1.0` | the documented 2-level minimum is not enforced server-side; you get a meaningless constant | `score_too_few_levels` |
-| `choice` with 1 option | 200 — `confidence: 1.0` | degenerate certainty; always "right" | `choice_too_few_options` |
-| duplicate question id | 200 — last definition silently wins | a JSON object cannot hold duplicate keys, so one question vanishes before it is sent | `duplicate_id`, in the IR |
-| unknown field (`temperature`, `weight`) | 200 — silently ignored | a typo like `criterion` never errors; emitted keys must be whitelisted | `unknown_field` |
-| nonexistent `` `backtick.path` `` | 200 — answered from the whole state | a typo'd path never errors, it silently degrades | `path_unresolved` — an **error** against a structured state, where the path is provably absent; a **warning** against a string state, where backticks are ordinary prose markup (`` `sys.exit` `` in a question about a source file) and no path can resolve |
-| empty `state: ""` | 200 | the model answers from no evidence | `state_empty` |
-
-The whitelist reaches one level further down than the probe did. A noul `criteria` key that
-is neither `true` nor `false` — `criteria: { treu: … }` — raises `unknown_field` on both the
-wire path (`validateRequest`) and the program path (`validateProgram`); it was not probed
-live, but the description the author wrote for that outcome demonstrably never reaches the
-model, and `emit-policy` used to write it away at exit 0.
-
-Two more the wire types pin: `score` answers come back in **level-index space** (3 levels
-→ 0.0..2.0, 10 levels → 0.0..9.0), which is the most likely integration bug — a team's
-habitual 0..1 threshold either never fires or always does. And a `noul` carries **no
-confidence field**; its probability *is* the answer, so its uncertainty rule is a band
-around the middle (default `[0.35, 0.65]`), and `validateProgram` rejects
-`belowConfidence` on a noul rather than ignoring it.
-
-`Program` is obtained from untrusted JSON by a cast in three places, so both closed
-vocabularies a cast cannot enforce are checked too: a `kind` outside noul/choice/score (which
-`toQuestion` would ship as a *choice*), and a condition `op` outside gte/lte/is/uncertain.
-`runReducer` used to execute that one as `lte` — the inverse of the rule, at exit 0 — and now
-refuses it by name, but the code emitters still inline the same two-way comparison
-(`value(a, id) ${op === 'gte' ? '>=' : '<='} …`) into the files they generate, so the IR check
-is the only thing standing between an unknown op and an inverted generated gate.
-`evaluate()` runs `validateProgram` before it spends a call, which it did not
-before: a duplicate decision id used to collapse into one question inside `emitJson` before
-the wire validator could count it, and the verdict came back computed from an answer to a
-question the program did not contain.
-
-The response crosses the same boundary in the other direction, and used to be a bare
-`res.answers as Record<string, JevAnswer>`. `validateResponse(program, res)` checks it
-against the program that asked: every declared decision answered, answered as the kind it was
-asked as, numbers that are numbers and in range, and a `choice` that picked a declared
-option. Score answers are *not* required to be integers — 23 of the 26 measured score answers
-in `fixtures/` are fractional, because the answer is the probability-weighted expectation over
-the level indices. `evaluate()` throws rather than reduce a response it cannot read;
-`askModel()` returns the identical issue list instead of throwing, which is how
-`check --live` reports a dropped answer rather than dying on it.
-
-Budget: `validateRequest` refuses at **45,000 tokens** for the whole request and **32,000**
-for state plus the longest single question, estimated at the measured ratio of 5.1
-characters per token. The vendor documentation says 64k; ~45k returns
-`400 max_tokens_exceeded` ([`docs/design.md`](docs/design.md) §3.3 records both, one line
-apart), so a pre-flight check set to the documented number passes requests the API rejects —
-the one outcome the check exists to prevent. Choice takes 2..255 options (reliability
-degrades above ~240); score takes 2..10 levels.
-
----
-
-## Emit targets: a capability model, not a syntax adapter
+### Emit targets
 
 Targets differ in what they can **express**. `canEmit(program, target)` refuses rather than
 silently dropping what a target cannot carry — the authoritative table is
@@ -509,10 +515,155 @@ silently dropping what a target cannot carry — the authoritative table is
 | `bouncer` | **noul only** | **one question per rule** | **0..1, plain decimal; a band lowers to `LOW..HIGH`** | **allow/ask/deny** | no | no |
 | `toolgate` | **noul only** | **max over questions, two scalars** | **0..1 (YAML number)** | **deny/ask** | no | no |
 
-The `ai-sdk` row costs the caller one extra argument. Its emitted reducer is
-`reduce(answers, confidence)`, not `reduce(answers)`, because the AI SDK carries confidence
-in `providerMetadata` rather than on the answer — `confidenceOf(result)` extracts it, and
-the call is `reduce(result.answers, confidenceOf(result))`. The second parameter is
+---
+
+## Development
+
+```bash
+npm run typecheck    # tsc over src + test
+npm run build        # -> dist/
+npm test             # offline: no key, no network, no quota
+npm run gallery      # regenerate examples/GALLERY.md from fixtures/
+npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
+```
+
+- [`docs/wiring.md`](docs/wiring.md) — one recipe per surface, with runnable code.
+- [`docs/schema-mapping.md`](docs/schema-mapping.md) — every JSON Schema construct, what it
+  compiles to, and the exact rule behind each drop.
+- [`docs/validation.md`](docs/validation.md) — the 25 live probes that returned 200 OK with
+  a wrong answer, and what refuses each one locally.
+- [`docs/design.md`](docs/design.md) — the approved design spec, and the fullest argument
+  for why the decomposition law is the product rather than a detail of it.
+- [`docs/targets/`](docs/targets/) — one file per emit target
+  ([bouncer](docs/targets/target-bouncer.md),
+  [toolgate](docs/targets/target-toolgate.md),
+  [ai-sdk and langchain](docs/targets/target-ai-sdk-and-langchain.md),
+  [jev-guard](docs/targets/target-jev-guard.md), the one that was cut). These are the
+  normative contract each emitter is written against: the consumer's real grammar, what it
+  does with a field it cannot parse, and therefore why `canEmit` refuses what it refuses.
+- [`CHANGELOG.md`](CHANGELOG.md) — including the breaking change in 0.1.0.
+- [`docs/history/implementation-plan.md`](docs/history/implementation-plan.md) — the
+  original build plan, kept unedited for provenance and not maintained.
+
+---
+
+## Notes, limits and caveats
+
+The body of this README says what the thing does. This section says where the edges are.
+
+### The decomposition law, precisely
+
+**Be precise about the claim.** Collapse is not a property of verdict words; it is what
+happens when a collapsed question meets a genuinely borderline input. Across the corpus,
+the 19 verdict-shaped choice heads — option sets that trip the same `VERDICT_WORDS` test
+the linter uses — have a median confidence of 0.93, close to
+the 0.97 median of the other 46 choice heads.
+The separation is in the tail, not the middle: the three least confident
+verdict heads are 0.13, 0.31 and 0.36, each on a genuinely borderline input.
+
+And the tail is not exclusively theirs. The router's `tier` head measured 0.24, and it is a
+collapsed verdict in everything but vocabulary — the `VERDICT_WORDS` test is a heuristic,
+and `powerful`/`fast`/`balanced` are not in it. The other is honest uncertainty rather than
+collapse: in `agent-command-referent-disambiguation` the four-way "which of `candidate_ids`
+does *that* refer to?" head measured 0.23, because the command genuinely was ambiguous. The
+decomposed noul in the same call said so plainly — `referent_is_ambiguous` 0.68 — which is
+the shape a program should branch on, and why `uncertain` is part of the IR.
+
+Carve-outs ("except `rm -rf node_modules`") are allowlists and belong in `reduce`
+(`embedded_carveout`). A separate warning, `embedded_pattern`, covers the other half:
+asking Jev whether a declared glob or deny pattern matched. Those questions measured
+0.25 / 0.10 / 0.14 across three tool families — push, PR, edit — while the semantic
+question on the same input answered 0.96 / 0.87 / 0.85. Keep pattern matching in code; ask
+Jev only what a pattern cannot express. Those two warnings and `score_levels_undescribed`
+are the other three checks `lintProgram` runs.
+
+### The corpus is measured, not written
+
+`fixtures/` holds **60 fixtures** — five domains (security guardrails, cost optimization,
+intent understanding, agent harness rules, output verification), 12 each, 343 questions
+(252 noul, 65 choice, 26 score). Every one was executed live against
+`POST https://api.typesafe.ai/v1/systemone` on 2026-09-18, model `jev-1.13.0`: 60/60 HTTP
+200 on the first attempt, zero dropped. Each fixture carries the real natural-language
+prompt it replaces, its provenance, and its measured response.
+
+**Only 24 of the 60 predicted thresholds survived contact with the real model. 36 of 60
+were wrong** and were recalibrated to measured values. 60% of the predicted thresholds were wrong, so the corpus is
+measured rather than written.
+
+Answers are near-deterministic but **not bit-identical** — repeated identical calls drift
+by about ±0.01. Every *numeric* assertion in the corpus is therefore a band, never an
+equality: of the **329** `expect` entries across the 60 fixtures, 269 are bands, and the
+remaining **60** assert an equality — but on the *argmax* of a choice, not on a number, and
+52 of those 60 carry a confidence band alongside. Between them those entries pin **331**
+numeric bounds (`noul_gte` 153, `noul_lte` 89, `confidence_gte` 51, `score_gte` 22,
+`score_lte` 9, `confidence_lte` 7) — more bounds than entries, because a single entry can
+pin both ends. The smallest gap between winner and runner-up anywhere in those 60 is
+**0.07** and the median is **0.96**, so the drift does not reach the quantity being pinned.
+Note that 0.07 is the collapsed verdict question from the decomposition law: wide enough
+that the recording is a stable assertion, far too narrow to be a verdict you would ship.
+Those are different questions, and the corpus only answers the first.
+
+`--live` compares the recording against `jev-latest`, and the two commands are not running
+the same predicate: offline `check` compares a recording against itself and cannot fail
+spuriously, while 216 of the 331 numeric bounds in this corpus have less headroom than the
+0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift
+threshold would otherwise turn most of the corpus red. A band that no longer holds is
+`drifted`, not `broken`, and does not gate the exit. Everything structural still exits 1 on
+its own row: a vanished id, a changed answer type, an unreadable payload and a fixture that
+cannot be measured at all are each `broken`. Drift rows compare **both** numbers a `choice`
+or `score` answer carries and render them as `value@confidence` — a winner that holds while
+its confidence falls 0.95 → 0.15 is drift, not stability. A `noul` keeps the single
+comparison, having no confidence field.
+
+### What the validator catches
+
+Every failure this project guards against is the same shape: **the API returns 200 OK and
+the answer is wrong or meaningless.** Never a crash. A `score` with one level answers
+`0.0` at confidence `1.0`; a duplicate question id silently loses one question; a typo'd
+`` `backtick.path` `` is answered from the whole state instead of erroring. Six such probes
+are refused locally by `score_too_few_levels`, `choice_too_few_options`, `duplicate_id`,
+`unknown_field`, `path_unresolved` and `state_empty`, each pinned by
+`test/contract.test.ts`.
+
+[`docs/validation.md`](docs/validation.md) has the probe table with what the API actually
+returned, plus the response-side checks, the two closed vocabularies a TypeScript cast
+cannot enforce, and the token budget.
+
+### Lift citation rules
+
+Every decision in a lift response carries a `source`, and all three of its fields are
+checked. A fabricated citation used to survive all the way into an emitted bouncer policy at
+exit 0, carrying the invented `file:line — quote` as a provenance comment — and a fabricated
+citation is worse than none, because it turns "I should check this" into "someone already
+did."
+
+- `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
+  re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing
+  even when it does occur: taking phrases from an instruction file and asking how often
+  they turn up anyway in a document that never contained them, the coincidence rate is 90%
+  at ≤3 characters, 30% at 6-7, 9% at 10-11, and 1.8% by 17-20 (the measurement is recorded
+  at `src/from-prompt.ts:4-13`). Real rule sentences run a median of 50 characters; the
+  sub-12 units in real instruction files are headings and code fences, not rules.
+- `file` must be the one document that was lifted. A name that was never supplied cannot be
+  checked, and the `// from <file>:<line>` comment the emitter writes would send a reviewer
+  somewhere unrelated.
+- `line` must be a line of that document, and one the quote actually spans. Outside the file
+  it is invented, and an error; inside the file but off the quote it is a repairable
+  mis-citation, so it warns and names the right line.
+
+Any issue at `severity: "error"` comes back with the **empty** `Program`, not with a usable
+one that has a warning attached. A warn-severity issue — the right quote at the wrong line —
+still returns the `Program` intact. The document itself is fenced with a run of dashes long
+enough not to occur in it, because an instruction file can contain the delimiter — by
+accident or on purpose — and two terminators in one prompt is how text after the fake one
+gets read as instructions.
+
+### Emit-target limits
+
+The `ai-sdk` row of the capability table costs the caller one extra argument. Its emitted
+reducer is `reduce(answers, confidence)`, not `reduce(answers)`, because the AI SDK carries
+confidence in `providerMetadata` rather than on the answer — `confidenceOf(result)` extracts
+it, and the call is `reduce(result.answers, confidenceOf(result))`. The second parameter is
 required on purpose: defaulting it to `{}` silently evaluated every confidence rule against
 the top-minus-runner-up margin instead, and on the verdict answer above the margin is 0.07
 while the reported confidence is 0.13 — opposite sides of a 0.10 threshold.
@@ -568,7 +719,7 @@ comparison, and `deny: null` satisfied toolgate's own `0 <= ask <= deny <= 1` an
 denied every gated tool call), `instructions_not_string`, `id_empty` on the targets that
 put ids on the wire, and `band_out_of_range`.
 
-That last one is a warning, not a refusal, and the difference is worth being precise about.
+That last one is a warning, not a refusal.
 jevc's uncertainty band is **exclusive** at both ends (`runtime.isUncertain` is
 `lo < p < hi`) and bouncer's `p: LOW..HIGH` is **inclusive** at both, so each endpoint is
 stepped one representable double inward: the default `[0.35, 0.65]` emits
@@ -580,107 +731,67 @@ at all (`[1.2, 1.5]`), one that is empty once stepped inward (`[0.5, 0.5]`), and
 stepped endpoint serialises with an exponent (`[0, 1]` → `5e-324`) are each refused outright
 as `uncertain_unsupported`, rather than emitted as a range bouncer cannot parse.
 
-A refusal is the designed outcome, not a crash. The plan's original toolgate emitter wrote
-a per-question threshold map; toolgate has no such key — it takes `max(probability)` over
-**every** question and compares it to two scalars, so that file would have loaded cleanly,
-ignored the map, and run at toolgate's own 0.85 / 0.55 defaults. A policy that parses and
-means something else is worse than no policy, so `jevc` says:
+**Unanswered questions** are handled differently by the two kinds of target, and the
+difference is not a choice jevc gets to make. All four code targets now **throw**:
+`No answer for decision "<id>"`. This is a **breaking change** in 0.1.0 — `ai-sdk` and
+`langchain` used to return `allow` where `sdk` and `runReducer` threw, so the same Program
+with the same missing answer gave two different verdicts, and the pair that disagreed was
+the pair that **failed open on a deny rule**. The two policy targets cannot throw, because
+a policy language has no exceptions: bouncer **skips** a rule whose question went
+unanswered and falls through to `default`; toolgate's `max(probability)` is taken over the
+questions that did answer, with `fail_mode` (default `passthrough`) covering an empty
+backend. Neither is wrong for its host, and neither is what the code targets do, so a
+Program lowered to both will disagree with itself on a dropped answer. Both behaviours are
+recorded in [`docs/targets/`](docs/targets/).
 
-```console
-$ npx jevc emit-policy --for toolgate program.json
-Cannot emit a toolgate policy:
-  reduce.rules: questions outside_repo have no deny rule, but max-over-questions applies the deny threshold to them anyway. toolgate reduces by max(probability) over all questions, then two scalars (deny, ask). Express the reducer as one shared deny threshold and one shared ask threshold over every question, or emit to a code target.
-  reduce.rules: questions deletes_tracked_files have no ask rule, but max-over-questions applies the ask threshold to them anyway. toolgate reduces by max(probability) over all questions, then two scalars (deny, ask). Express the reducer as one shared deny threshold and one shared ask threshold over every question, or emit to a code target.
-```
+### CLI strictness
 
-Both directions are reported, not just the first, and the exit code is 1. The same
-`program.json` emits a bouncer policy without complaint, which is the point of a
-capability model: the refusal names the target that cannot carry the reducer, not a
-defect in the program.
+Every flag is strict. An unknown option (`--output` is **not** an alias for `-o`), a
+repeated one (`--emit sdk --emit json`), a valued one with no value, and `--lift --emit`
+together are each exit 1 with a named reason rather than a silent default — `-o a.ts -o
+b.ts` used to write `a.ts` and leave a stale `b.ts` live while the operator believed it had
+been replaced, and `--output out.ts` used to be dropped entirely, sending the artifact to
+stdout while the named file kept its old contents.
 
-### One limitation the capability table cannot express
+### `jevc scan` is a heuristic, and the only one here
 
-An **unanswered question** is handled differently by the two kinds of target, and the
-difference is not a choice jevc gets to make.
+`scan` classifies a rule by its head verb: a rule asking for written output is
+`generation`, one describing an order of steps is `procedure`, and everything else with a
+directive word in it is `decidable`. That is text matching, and it is wrong sometimes. It
+is acceptable here and nowhere else in this repo, because nothing downstream consumes the
+classification — `scan` calls no model, writes no files and decides nothing. A human reads
+the list and picks a file to lift, and the lift step is where a model and then a human
+decide what actually becomes a question.
 
-All four code targets now **throw**. `runReducer`, the `sdk` module, the `ai-sdk` reducer
-and the `langchain` classifier agree: `No answer for decision "<id>"`, and nothing is
-returned. This is a **breaking change** — `ai-sdk` and `langchain` used to return `allow`
-where `sdk` and `runReducer` threw, so the same Program with the same missing answer gave
-two different verdicts, and the pair that disagreed was the pair that **failed open on a
-deny rule**. An unanswered question read as "the condition did not hold" makes a deny rule
-silently not fire and the reducer fall through to `otherwise`. Callers relying on the old
-`allow` will now see an exception; that is the intended upgrade path, not a regression.
+### Cost
 
-The two policy targets cannot do this, because a policy language has no exceptions. bouncer
-**skips** a rule whose question went unanswered — absence of evidence, not evidence of
-absence — and falls through to `default`; toolgate's `max(probability)` is taken over the
-questions that did answer, and its `fail_mode` (default `passthrough`) covers the case
-where the backend returned nothing at all. Neither is wrong for its host, and neither is
-what the code targets do, so a Program lowered to both will disagree with itself on a
-dropped answer. Both behaviours are recorded in
-[`docs/targets/`](docs/targets/) — `target-bouncer.md` §"missing answer skips the rule" and
-`target-toolgate.md` on `fail_mode`.
+From TypeSafe's published pricing as of 2026-09-18: **$0.042 per million input tokens,
+output free.** Re-check it before you plan a budget around it — it is the one number here
+that no test can pin, because it is not in the repo.
 
----
+### Security
 
-## Calibration: the corpus is measured, not written
+`jevc` itself reads one variable, `TYPESAFE_API_KEY`. It is never written to a file, never
+committed, never logged, and never embedded in a fixture. `.env` is gitignored and
+`.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
 
-`fixtures/` holds **60 fixtures** — five domains (security guardrails, cost optimization,
-intent understanding, agent harness rules, output verification), 12 each, 343 questions
-(252 noul, 65 choice, 26 score). Every one was executed live against
-`POST https://api.typesafe.ai/v1/systemone` on 2026-09-18, model `jev-1.13.0`: 60/60 HTTP
-200 on the first attempt, zero dropped. Each fixture carries the real natural-language
-prompt it replaces, its provenance, and its measured response.
+The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's
+variable, not jevc's: `@typesafe-ai/ai-sdk-provider` reads `TYPESAFE_AI_API_KEY`, so the
+generated module reads `process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY`
+and works in either environment. The emitted `langchain` backend passes no key at all —
+`langchain-typesafe` reads `TYPESAFE_API_KEY` itself. Nothing jevc generates hard-codes a
+key.
 
-**Only 24 of the 60 predicted thresholds survived contact with the real model. 36 of 60
-were wrong** and were recalibrated to measured values. Had the corpus been written from
-predictions, 60% of the suite would have encoded fiction — which is the entire argument for
-measuring it.
+Nothing in `npm test`, and nothing in `examples/`, requires a key or touches the network —
+the example suite runs with `TYPESAFE_API_KEY` explicitly emptied to prove it.
 
-Measured latency across those 60 calls: **min 689 ms, median 778.5 ms, max 2584 ms**. The
-maximum was the first call recorded in its batch, which is consistent with connection
-setup but was not isolated and measured; latency is flat in question
-count, not linear — the 18 fixtures with 5 questions span 689-993 ms
-and the 12 with 7 questions span 701-2584 ms.
-Questions evaluate in parallel, so batch aggressively; the only reason to split a request
-is the shared token budget.
+The `422` error envelope **echoes the whole request body**, state included. `evaluate()`
+therefore rebuilds `APIError` with a redacted body and a fixed message rather than mutating
+the error it caught: the SDK derives `.message` from `.body` inside its own constructor, and
+Node derives `.stack` from that message immediately after, so reassigning `.body` in a catch
+block cannot retroactively scrub a message that already contains your state.
 
-Answers are near-deterministic but **not bit-identical** — repeated identical calls drift
-by about ±0.01. Every *numeric* assertion in the corpus is therefore a band, never an
-equality: of the **329** `expect` entries across the 60 fixtures, 269 are bands, and the
-remaining **60** assert an equality — but on the *argmax* of a choice, not on a number, and
-52 of those 60 carry a confidence band alongside. Between them those entries pin **331**
-numeric bounds (`noul_gte` 153, `noul_lte` 89, `confidence_gte` 51, `score_gte` 22,
-`score_lte` 9, `confidence_lte` 7) — more bounds than entries, because a single entry can
-pin both ends. The smallest gap between winner and runner-up anywhere in those 60 is
-**0.07** and the median is **0.96**, so the drift does not reach the quantity being
-pinned. Note that 0.07 is the collapsed verdict question from the top of this README:
-wide enough that the recording is a stable assertion, far too narrow to be a verdict you
-would ship. Those are different questions, and the corpus only answers the first.
-Stability is a measured property of the model, not defensive padding.
-
-Cost, from TypeSafe's published pricing as of 2026-09-18: **$0.042 per million input
-tokens, output free.** Re-check it before you plan a budget around it — it is the one
-number here that no test can pin, because it is not in the repo.
-
----
-
-## Examples
-
-All four run offline against the recorded corpus — no key, no network. See
-[`examples/README.md`](examples/README.md).
-
-```bash
-npx tsx examples/01-schema-to-jev.ts       # schema -> Jev, with the residual left visible
-npx tsx examples/02-agents-md-guardrail.ts # a CLAUDE.md rule, enforced
-npx tsx examples/03-model-router.ts        # route before you spend; level-index scores
-npx tsx examples/04-policy-emit.ts         # emit a bouncer policy; watch toolgate refuse
-```
-
----
-
-## Where this sits in the ecosystem
+### Where this sits in the ecosystem
 
 `jevc` depends on [`@typesafe-ai/sdk`](https://www.npmjs.com/package/@typesafe-ai/sdk)
 (`^0.6.0`) and does not reimplement it: the client, retry with backoff, `retry-after`
@@ -711,48 +822,14 @@ in the first place — the deterministic path has no model in it at all).
 
 ---
 
-## Security
-
-`jevc` itself reads one variable, `TYPESAFE_API_KEY`. It is never written to a file, never
-committed, never logged, and never embedded in a fixture. `.env` is gitignored and
-`.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
-
-The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's
-variable, not jevc's: `@typesafe-ai/ai-sdk-provider` reads `TYPESAFE_AI_API_KEY`, so the
-generated module reads `process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY`
-and works in either environment. The emitted `langchain` backend passes no key at all —
-`langchain-typesafe` reads `TYPESAFE_API_KEY` itself. Nothing jevc generates hard-codes a
-key.
-
-Nothing in `npm test`, and nothing in `examples/`, requires a key or touches the network —
-the example suite runs with `TYPESAFE_API_KEY` explicitly emptied to prove it.
-
-The `422` error envelope **echoes the whole request body**, state included. `evaluate()`
-therefore rebuilds `APIError` with a redacted body and a fixed message rather than mutating
-the error it caught: the SDK derives `.message` from `.body` inside its own constructor, and
-Node derives `.stack` from that message immediately after, so reassigning `.body` in a catch
-block cannot retroactively scrub a message that already contains your state.
-
----
-
-## Development
-
-```bash
-npm run typecheck    # tsc over src + test
-npm run build        # -> dist/
-npm test             # offline: no key, no network, no quota
-npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
-```
-
-- [`docs/design.md`](docs/design.md) — the approved design spec, and the fullest argument
-  for why the decomposition law is the product rather than a detail of it.
-- [`docs/targets/`](docs/targets/) — one file per emit target
-  ([bouncer](docs/targets/target-bouncer.md),
-  [toolgate](docs/targets/target-toolgate.md),
-  [ai-sdk and langchain](docs/targets/target-ai-sdk-and-langchain.md),
-  [jev-guard](docs/targets/target-jev-guard.md), the one that was cut). These are the
-  normative contract each emitter is written against: the consumer's real grammar, what it
-  does with a field it cannot parse, and therefore why `canEmit` refuses what it refuses.
-- [`CHANGELOG.md`](CHANGELOG.md) — including the breaking change in 0.1.0.
-- [`docs/history/implementation-plan.md`](docs/history/implementation-plan.md) — the
-  original build plan, kept unedited for provenance and not maintained.
+\* *Latency, which is deliberately absent from everything above: across the 60 calls
+recorded on 2026-09-18, answers came back in a range of min 689 ms, median 778.5 ms, max
+2584 ms. That is an incidental observation from one batch on one day against one endpoint —
+not a benchmark, which would control for question count, payload size, concurrency,
+connection reuse and time of day. Do not plan against it; measure your own. Two things in
+it are still worth knowing. The maximum was the first call recorded in its batch, which is
+consistent with connection setup but was not isolated and measured. And latency looks flat
+in question count rather than linear — the 18 fixtures with 5 questions span 689-993 ms and
+the 12 with 7 questions span 701-2584 ms — which, together with the fact that questions in
+one request evaluate in parallel, is the argument for batching aggressively. The only reason
+to split a request is the shared token budget.*

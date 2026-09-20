@@ -12,9 +12,19 @@ npx tsx examples/03-model-router.ts
 npx tsx examples/04-policy-emit.ts
 ```
 
-| Example | Demonstrates | Prints |
+| Example | What you get | Prints |
 | --- | --- | --- |
-| [`01-schema-to-jev.ts`](01-schema-to-jev.ts) | The deterministic path: a 4-field JSON Schema lowered to Jev with no model in the loop. | The 3 compiled questions, the emitted TypeScript, the `reply` field left in the residual, and the lint result. |
-| [`02-agents-md-guardrail.ts`](02-agents-md-guardrail.ts) | A `CLAUDE.md` rule enforced instead of hoped for: evidence questions plus a reducer in code. | The measured answers for `commit-only-when-explicitly-asked` (jev-1.13.0, 731 ms), the verdict computed from them, and the collapsed verdict head the program deliberately omits. |
-| [`03-model-router.ts`](03-model-router.ts) | Cost routing decided before either model is called, and score answers in level-index space. | Two replayed router fixtures — including the one where the collapsed "which tier?" head picked the cheap tier at confidence 0.24 — plus the request JSON and its estimated input cost. |
-| [`04-policy-emit.ts`](04-policy-emit.ts) | Emitting policy for incumbent guardrails, and refusing when a target cannot express the program. | A complete bouncer policy, toolgate's refusal of the same program with the reason, and `canEmit` rejecting a score decision. |
+| [`01-schema-to-jev.ts`](01-schema-to-jev.ts) | Your existing output schema becomes a testable gate, with no model call anywhere in the compile. | The 3 compiled questions, the emitted TypeScript, the `reply` field left in the residual, and the lint result. |
+| [`02-agents-md-guardrail.ts`](02-agents-md-guardrail.ts) | The `CLAUDE.md` rule your agent keeps ignoring, enforced instead of hoped for. | The prompt it replaces, the measured answers for `commit-only-when-explicitly-asked` (jev-1.13.0), the verdict computed from them, and the collapsed verdict head the program deliberately omits. |
+| [`03-model-router.ts`](03-model-router.ts) | You stop paying for the big model on work the small one handles — decided before either is called. | Two replayed router fixtures — including the one where the collapsed "which tier?" head picked the cheap tier at confidence 0.24 — plus the request JSON and its estimated input cost. |
+| [`04-policy-emit.ts`](04-policy-emit.ts) | Your rules reach a gateway you do not own the source of — or you find out it cannot express them, before you ship. | A complete bouncer policy, toolgate's refusal of the same program with the reason, and `canEmit` rejecting a score decision. |
+
+Two more directories, neither of them a script:
+
+| Directory | What it is |
+| --- | --- |
+| [`claude-code-hook/`](claude-code-hook/) | Example 02 as a **running gate** — a Claude Code `PreToolUse` hook that denies the commit offline: `cd examples/claude-code-hook && JEVC_REPLAY=1 node gate.mjs < payload.sample.json`. |
+| [`sample-project/`](sample-project/) | A checkout service's `CLAUDE.md`, `AGENTS.md` and release skill, written the way real ones are. What `jevc scan examples/sample-project` reads. |
+
+[`GALLERY.md`](GALLERY.md) is all 60 fixtures on one page — every prompt jevc replaces, with
+the questions and the measured answers. Generated from `fixtures/` by `npm run gallery`.

@@ -19,3 +19,6 @@ export { emitToolgatePolicy } from './emit/policy/toolgate.js'
 // ./dist/index.js, no subpaths) gives them no way to reach.
 export { value, choiceOf, isUncertain, runReducer, askModel, evaluate } from './runtime.js'
 export type { Verdict, AskResult, EvaluateOptions } from './runtime.js'
+export { scanProject, scanText, renderScan, countBy } from './scan.js'
+export type { ScannedFile, ScannedRule, RuleKind } from './scan.js'
+export { renderFixture, renderFixtureMarkdown, renderGallery } from './show.js'

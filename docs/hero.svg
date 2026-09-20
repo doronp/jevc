@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600"
+     font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <title>jevc compiles natural-language rules into typed questions plus a reducer in code</title>
+  <desc>A CLAUDE.md rule and a JSON Schema go in. jevc splits them into narrow typed questions answered by a non-generative model, a residual prompt for anything that genuinely needs generated text, and a reducer that computes the verdict in ordinary code.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b93a1"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="600" fill="#f7f8fa"/>
+
+  <!-- ============ LEFT: what you already have ============ -->
+  <g font-size="13" font-weight="700" fill="#6b7280" letter-spacing="0.09em">
+    <text x="40" y="46">WHAT YOU ALREADY HAVE</text>
+    <text x="700" y="46">WHAT YOU GET</text>
+  </g>
+
+  <g fill="#ffffff" stroke="#d8dee6" stroke-width="1.5">
+    <rect x="40" y="62" width="300" height="104" rx="10"/>
+    <rect x="40" y="180" width="300" height="86" rx="10"/>
+    <rect x="40" y="280" width="300" height="86" rx="10"/>
+    <rect x="40" y="380" width="300" height="86" rx="10"/>
+    <rect x="700" y="62" width="460" height="166" rx="10"/>
+    <rect x="700" y="242" width="460" height="76" rx="10"/>
+    <rect x="700" y="332" width="460" height="150" rx="10"/>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#111827">
+    <text x="56" y="84">CLAUDE.md</text>
+    <text x="56" y="202">AGENTS.md</text>
+    <text x="56" y="302">.claude/skills/*/SKILL.md</text>
+    <text x="56" y="402">triage.json</text>
+  </g>
+
+  <g font-size="13" fill="#374151">
+    <text x="56" y="107">NEVER commit unless the user</text>
+    <text x="56" y="125">explicitly asks.</text>
+    <text x="56" y="225">Never delete tracked files.</text>
+    <text x="56" y="243">Stay inside the repo root.</text>
+    <text x="56" y="325">Ask before adding a dependency.</text>
+    <text x="56" y="343">Do not push to main.</text>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#374151">
+    <text x="56" y="425">"is_urgent":  { "type": "boolean" }</text>
+    <text x="56" y="443">"department": { "enum": [ ... ] }</text>
+  </g>
+
+  <g font-size="12" fill="#6b7280">
+    <text x="56" y="150">A rule in markdown is a suggestion.</text>
+    <text x="40" y="502">Today these are enforced by a second LLM call that holds every</text>
+    <text x="40" y="520">judgment in one head and returns hand-parsed JSON.</text>
+  </g>
+
+  <!-- ============ MIDDLE: jevc ============ -->
+  <line x1="348" y1="220" x2="418" y2="220" stroke="#8b93a1" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="426" y="140" width="188" height="176" rx="12" fill="#111827"/>
+  <text x="520" y="188" text-anchor="middle" font-size="30" font-weight="700" fill="#ffffff"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">jevc</text>
+  <g text-anchor="middle" font-size="13" fill="#c7cdd6">
+    <text x="520" y="218">decompose</text>
+    <text x="520" y="240">lower</text>
+    <text x="520" y="262">verify provenance</text>
+  </g>
+  <text x="520" y="294" text-anchor="middle" font-size="12" fill="#8b93a1">no model on this path</text>
+  <g text-anchor="middle" font-size="12" fill="#6b7280">
+    <text x="520" y="354">One rule becomes narrow</text>
+    <text x="520" y="372">questions — never one</text>
+    <text x="520" y="390">collapsed verdict question.</text>
+  </g>
+  <line x1="622" y1="220" x2="692" y2="220" stroke="#8b93a1" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ============ RIGHT: what you get ============ -->
+  <g font-size="11" font-weight="700" fill="#6b7280" letter-spacing="0.05em">
+    <text x="716" y="84">1 — TYPED QUESTIONS, ANSWERED BY A NON-GENERATIVE MODEL</text>
+    <text x="716" y="264">2 — RESIDUAL PROMPT</text>
+    <text x="716" y="354">3 — THE VERDICT, IN ORDINARY CODE</text>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#374151">
+    <text x="716" y="110">is_commit_operation</text>
+    <text x="716" y="134">user_explicitly_asked_to_commit</text>
+    <text x="716" y="158">commit_required_by_requested_task</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" text-anchor="end">
+    <text x="1144" y="110" fill="#15803d">0.96</text>
+    <text x="1144" y="134" fill="#b91c1c">0.06</text>
+    <text x="1144" y="158" fill="#b91c1c">0.16</text>
+  </g>
+
+  <g font-size="12" fill="#6b7280">
+    <text x="716" y="186">A bare "go ahead" is not consent — and the number says so.</text>
+    <text x="716" y="210">Measured once against jev-1.13.0, recorded in fixtures/.</text>
+    <text x="716" y="464">Readable, testable, reviewable in a pull request.</text>
+  </g>
+
+  <g font-size="13" fill="#374151">
+    <text x="716" y="290">Whatever genuinely needs generated text, kept separate</text>
+    <text x="716" y="308">and now smaller. Jev emits no strings, and says so.</text>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#374151">
+    <text x="716" y="382">if (a.is_commit_operation               &lt;= 0.5) return 'allow'</text>
+    <text x="716" y="400">if (a.user_explicitly_asked_to_commit   &gt;= 0.5) return 'allow'</text>
+    <text x="716" y="418">if (a.commit_required_by_requested_task &gt;= 0.5) return 'allow'</text>
+    <text x="716" y="436">return 'deny'</text>
+  </g>
+
+  <rect x="700" y="496" width="460" height="56" rx="10" fill="#111827"/>
+  <text x="722" y="522" font-size="13" fill="#8b93a1"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">verdict</text>
+  <text x="722" y="540" font-size="12" fill="#8b93a1">computed in code, never asked of the model</text>
+  <text x="1138" y="532" text-anchor="end" font-size="22" font-weight="700" fill="#f87171"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">deny</text>
+
+  <text x="40" y="578" font-size="12" fill="#6b7280">Emits to: TypeScript SDK · JSON wire request · Vercel AI SDK · LangChain (Python) · bouncer · toolgate</text>
+</svg>

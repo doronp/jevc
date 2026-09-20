@@ -972,8 +972,11 @@ describe('the examples, as real processes', () => {
     const out = runExample('02-agents-md-guardrail.ts').stdout
     const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
 
-    expect(out).toContain(`The LLM prompt this replaces: ${f.llm_prompt.length} chars`)
-    expect(out).toContain(`Latency: ${f.measured.latency_ms} ms`)
+    expect(out).toContain(`${f.llm_prompt.length} chars of instructions`)
+    // No latency here on purpose: one recorded call is not a benchmark, and printing it
+    // beside the evidence invites a reader to treat it as one. It lives in one README
+    // footnote, pinned by test/examples.test.ts.
+    expect(out, 'a latency escaped back into the example').not.toMatch(/\d\s?ms\b/)
 
     const noul = (id: string) => {
       const a = f.measured.answers[id]
@@ -1054,5 +1057,168 @@ describe('the examples, as real processes', () => {
       { when: { outside_repo: { p: '>=0.6' } }, then: 'ask' },
       { default: 'allow' },
     ])
+  })
+})
+
+// ===========================================================================
+// 8. The front door, and the gate at the other end of it.
+//
+//    `scan` and `show` are what a reader runs first, and the hook is what they install
+//    last. All three are console-shaped rather than artifact-shaped, so the thing worth
+//    pinning is that the output the README prints is the output the repo produces — not
+//    a plausible transcript of it, which is the failure this project exists to remove.
+// ===========================================================================
+describe('scan, show, and the installable hook', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  /** The one fenced block containing `needle`, located by content so reordering the README
+   *  cannot silently repoint the assertion at a different block. */
+  const readmeBlock = (needle: string) => {
+    const hits = [...readme.matchAll(/\n```\w*\n([\s\S]*?)\n```/g)].map(m => m[1]).filter(b => b.includes(needle))
+    expect(hits.length, `README should have exactly one block containing "${needle}"`).toBe(1)
+    return hits[0]
+  }
+
+  describe('jevc scan', () => {
+    it('prints, for the sample project, exactly what the README says it prints', () => {
+      const r = jevc(['scan', 'examples/sample-project'])
+      expect(r.status, r.stderr).toBe(0)
+
+      // The README elides scan's trailing heuristic note with `...`; everything above that
+      // marker must match byte for byte, because a reader will run this command.
+      const shown = readmeBlock('$ npx jevc scan examples/sample-project')
+      const body = shown.replace(/^\$ npx jevc scan examples\/sample-project\n/, '')
+      const [quoted, ...rest] = body.split('\n...')
+      expect(rest.length, 'the README block should elide exactly once').toBe(1)
+      expect(r.stdout.startsWith(quoted), `scan output drifted from the README:\n${r.stdout}`).toBe(true)
+
+      // And the elision really is only the caveat — nothing load-bearing is being hidden.
+      expect(r.stdout.slice(quoted.length)).toMatch(/heuristic/)
+    })
+
+    it('counts every rule it finds, and files each one exactly once', () => {
+      const r = jevc(['scan', 'examples/sample-project', '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const files = JSON.parse(r.stdout) as Array<{ path: string; rules: Array<{ line: number; kind: string }> }>
+      expect(files.length).toBe(3)
+      for (const f of files) {
+        expect(f.rules.length, `${f.path} matched nothing`).toBeGreaterThan(0)
+        // Two rules on one line means the splitter double-counted; a kind outside the three
+        // means `classify` grew a branch the README's table does not describe.
+        expect(new Set(f.rules.map(x => x.line)).size).toBe(f.rules.length)
+        for (const x of f.rules) expect(['decidable', 'procedure', 'generation']).toContain(x.kind)
+      }
+    })
+
+    // The rule the whole README is built on. If the classifier files this as `procedure`
+    // again — it did, because the sentence contains "run" — the front door recommends the
+    // wrong file and the reader's first command is a dead end.
+    it('files the commit rule as decidable, not as procedure', () => {
+      const r = jevc(['scan', 'examples/sample-project', '--json'])
+      const files = JSON.parse(r.stdout) as Array<{ path: string; rules: Array<{ text: string; kind: string }> }>
+      const rule = files.flatMap(f => f.rules).find(x => x.text.startsWith('NEVER commit unless'))
+      expect(rule, 'the sample project lost its headline rule').toBeDefined()
+      expect(rule!.kind).toBe('decidable')
+    })
+
+    it('says so plainly rather than printing an empty table when a directory has no rules', () => {
+      // Its own directory, not the shared scratch DIR, which by this point in the file is
+      // full of artifacts earlier cases wrote.
+      const empty = mkdtempSync(join(tmpdir(), 'jevc-scan-'))
+      try {
+        const r = jevc(['scan', empty])
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout + r.stderr).toMatch(/No instruction files/i)
+        // And it names somewhere to go, rather than leaving the reader at a dead end.
+        expect(r.stdout + r.stderr).toContain('--lift')
+      } finally { rmSync(empty, { recursive: true, force: true }) }
+    })
+  })
+
+  describe('jevc show', () => {
+    const corpus = loadFixtures(join(ROOT, 'fixtures'))
+
+    it('lists every fixture, with no argument', () => {
+      const r = jevc(['show'])
+      expect(r.status, r.stderr).toBe(0)
+      for (const f of corpus) expect(r.stdout, `${f.id} is missing from the list`).toContain(f.id)
+    })
+
+    it('prints the prompt, the questions and the measured answers of one fixture', () => {
+      const f = corpus.find(x => x.id === 'commit-only-when-explicitly-asked')!
+      const r = jevc(['show', f.id])
+      expect(r.status, r.stderr).toBe(0)
+      for (const id of Object.keys(f.questions)) expect(r.stdout, `question ${id}`).toContain(id)
+      const a = f.measured.answers.user_explicitly_asked_to_commit
+      if (a.type !== 'noul') throw new Error('fixture shape changed')
+      expect(r.stdout, 'a measured answer no fixture produced').toContain(String(a.noul))
+    })
+
+    it('exits non-zero on an id that does not exist', () => {
+      const r = jevc(['show', 'no-such-fixture'])
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toBe('')
+    })
+  })
+
+  // The hook is the one artifact in this repo a reader installs rather than reads, so it is
+  // spawned the way Claude Code spawns it: JSON on stdin, JSON on stdout, exit 0 either way.
+  describe('the Claude Code hook', () => {
+    const HOOK = join(ROOT, 'examples', 'claude-code-hook')
+    const runHook = (payload: unknown, env: Record<string, string> = {}) => {
+      const r = spawnSync(process.execPath, [join(HOOK, 'gate.mjs')], {
+        cwd: HOOK, input: JSON.stringify(payload), encoding: 'utf8',
+        env: { ...OFFLINE_ENV, JEVC_REPLAY: '1', ...env }, timeout: 60_000,
+      })
+      const res: Result = { args: ['gate.mjs'], status: r.status, signal: r.signal, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+      assertNoCrashLeak(res)
+      return res
+    }
+    const sample = () => JSON.parse(readFileSync(join(HOOK, 'payload.sample.json'), 'utf8')) as Record<string, unknown>
+
+    it('denies the sample commit, with the decision shape Claude Code parses', () => {
+      const r = runHook(sample())
+      expect(r.status, r.stderr).toBe(0)
+      const out = JSON.parse(r.stdout) as {
+        hookSpecificOutput: { hookEventName: string; permissionDecision: string; permissionDecisionReason: string }
+      }
+      expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse')
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
+      // The reason must carry the evidence, not just a refusal: an agent told only "denied"
+      // retries with different shell quoting instead of writing the message for the human.
+      const a = loadFixtures(join(ROOT, 'fixtures'))
+        .find(x => x.id === 'commit-only-when-explicitly-asked')!.measured.answers.user_explicitly_asked_to_commit
+      if (a.type !== 'noul') throw new Error('fixture shape changed')
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain(a.noul.toFixed(2))
+    })
+
+    it('is byte-identical to the line both READMEs print', () => {
+      const r = runHook(sample())
+      for (const md of ['README.md', join('examples', 'claude-code-hook', 'README.md'), join('docs', 'wiring.md')]) {
+        const text = readFileSync(join(ROOT, md), 'utf8')
+        const line = text.split('\n').find(l => l.startsWith('{"hookSpecificOutput"'))
+        expect(line, `${md} no longer shows the hook's output`).toBeDefined()
+        // The two short forms elide the tail of the reason with an ellipsis; the long one
+        // prints it whole. Either way the prefix must be what the process actually wrote.
+        const quoted = line!.replace(/ …"\}\}$/, '')
+        expect(r.stdout.startsWith(quoted), `${md} drifted:\n  shown:  ${quoted}\n  actual: ${r.stdout}`).toBe(true)
+      }
+    })
+
+    it('stays out of the way of tools the rule cannot apply to', () => {
+      const r = runHook({ ...sample(), tool_name: 'Read', tool_input: { file_path: '/etc/hosts' } })
+      expect(r.status).toBe(0)
+      expect(r.stdout, 'a gate that opines on every tool call spends calls to learn nothing').toBe('')
+    })
+
+    // The property that matters more than the verdict: when the gate cannot decide, it must
+    // not disappear. `JEVC_REPLAY` is dropped so the API path runs with no key and throws.
+    it('fails closed to `ask` when it cannot reach a verdict', () => {
+      const { JEVC_REPLAY: _drop, ...offline } = { ...OFFLINE_ENV, JEVC_REPLAY: '' }
+      const r = spawnSync(process.execPath, [join(HOOK, 'gate.mjs')], {
+        cwd: HOOK, input: JSON.stringify(sample()), encoding: 'utf8', env: offline, timeout: 60_000,
+      })
+      expect(r.status).toBe(0)
+      expect(JSON.parse(r.stdout ?? '').hookSpecificOutput.permissionDecision).toBe('ask')
+    })
   })
 })
