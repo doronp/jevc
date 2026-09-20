@@ -1,0 +1,33 @@
+jevc
+Copyright 2026 Doron Podoleanu
+
+This product includes software developed by Doron Podoleanu.
+Licensed under the Apache License, Version 2.0 — see LICENSE.
+
+------------------------------------------------------------------------------
+Third-party material in the recorded corpus
+------------------------------------------------------------------------------
+
+The fixtures under fixtures/ quote short passages of rule text from real public
+repositories, and use label names from published benchmark datasets. Every such
+source is listed with its URL and license in:
+
+    fixtures/ATTRIBUTION.md
+
+Summary of the licenses involved:
+
+  Apache-2.0   supabase/supabase, cloudflare/workers-sdk, openai/codex,
+               apache/airflow
+  MIT          ghostty-org/ghostty, withastro/astro
+  CC-BY-4.0    PolyAI/banking77
+  CC-BY-3.0    clinc/clinc_oos (CLINC150)
+  no license   nickbreaton/printable.photos — see the note in
+               fixtures/ATTRIBUTION.md explaining why ~370 characters of its
+               rule text are reproduced verbatim, and how to have it removed
+
+Anthropic and TypeSafe product documentation is quoted in a small number of
+fixtures under their own terms; those are commercial documents, not open-licensed
+works, and are cited in the provenance field of each fixture that uses them.
+
+If you are the author of anything listed in fixtures/ATTRIBUTION.md and would
+prefer it not appear here, open an issue and it will be removed.
