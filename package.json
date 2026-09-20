@@ -25,7 +25,7 @@
   "homepage": "https://github.com/doronp/jevc#readme",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "devEngines": {
     "runtime": {
