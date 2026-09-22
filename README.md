@@ -317,6 +317,9 @@ Three rules follow, all enforced by `lintProgram` — three of the six checks it
    measured 0.59 — the wrong side of 0.5 — on a command whose deletions were partly
    authorized, because it anchored on the authorized half.
 
+Longer write-up of this measurement and what follows from it:
+[*Your policy prompt is a vibe check. Compile it.*](https://www.linkedin.com/pulse/your-policy-prompt-vibe-check-compile-doron-podoleanu-h63af)
+
 ---
 
 ## Reference
