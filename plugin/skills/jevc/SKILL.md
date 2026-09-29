@@ -48,8 +48,9 @@ If the user named one rule, return decisions for that rule only. Save it as `pro
 
 `jevc compile program.json` checks shape, validation and lint, not citations: a
 paraphrased quote or a wrong line compiles at exit 0, and the artifact prints the false
-citation as its audit comment. (The library's `parseLiftResponse` checks them; the CLI does
-not call it.) For each decision, this must print the line the decision cites:
+citation as its audit comment. (The library's `parseLiftResponse` checks them; the CLI calls
+it only for `jevc compile --source`, which `jev-compiler` 0.1.0 does not have.) For each
+decision, this must print the line the decision cites:
 
 ```bash
 grep -nF -f /dev/stdin <file> <<'EOF'

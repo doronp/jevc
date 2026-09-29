@@ -38,11 +38,14 @@ const program: Program = {
   ],
   // The verdict is computed here, not asked of the model (spec §4b, rule 1). The
   // carve-outs — "a commit needed by a PR the user asked for is fine" — are allowlist
-  // logic, so they live in these rules rather than inside a question's text.
+  // logic, so they live in these rules rather than inside a question's text. When the
+  // model cannot tell whether the human asked, the human is asked: an uncertain consent
+  // answer is `ask`, before either carve-out can allow it.
   reduce: {
     kind: 'rules',
     rules: [
       { when: [{ id: 'is_commit_operation', op: 'lte', value: 0.5 }], then: 'allow' },
+      { when: [{ id: 'user_explicitly_asked_to_commit', op: 'uncertain' }], then: 'ask' },
       { when: [{ id: 'user_explicitly_asked_to_commit', op: 'gte', value: 0.5 }], then: 'allow' },
       { when: [{ id: 'commit_required_by_requested_task', op: 'gte', value: 0.5 }], then: 'allow' },
     ],

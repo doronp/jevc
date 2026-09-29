@@ -35,6 +35,7 @@
     "kind": "rules",
     "rules": [
       { "when": [{ "id": "is_commit_operation", "op": "lte", "value": 0.5 }], "then": "allow" },
+      { "when": [{ "id": "user_explicitly_asked_to_commit", "op": "uncertain" }], "then": "ask" },
       { "when": [{ "id": "user_explicitly_asked_to_commit", "op": "gte", "value": 0.5 }], "then": "allow" },
       { "when": [{ "id": "commit_required_by_requested_task", "op": "gte", "value": 0.5 }], "then": "allow" }
     ],

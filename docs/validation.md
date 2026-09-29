@@ -55,6 +55,19 @@ the level indices. `evaluate()` throws rather than reduce a response it cannot r
 `askModel()` returns the identical issue list instead of throwing, which is how
 `check --live` reports a dropped answer rather than dying on it.
 
+It also checks who answered, because the request naming `jev-1.13.0` proves nothing about the
+reply: the SDK honours `TYPESAFE_BASE_URL`, so anything that speaks the wire format can answer.
+The corpus, and every threshold and band it records, was measured on `jev-1.13.0` and must be
+re-measured for any other model. `model_unexpected` is an error when `res.model` is missing, not a string, or not a
+`jev-*` build; a warning when it is another Jev build; nothing at all on `jev-1.13.0`.
+`JEVC_ALLOW_MODEL` (comma-separated exact IDs, trimmed, read on every call) is the one opt-in: a
+listed non-Jev ID becomes a warning, and no other ID is affected. It is passed to
+`validateResponse(program, res, allowedModels)` by `askModel`, so the validator itself reads no
+environment. `check --live` turns the issue into a `<fixture>.model` row, `broken` or `drifted`
+by the same severity. Its `live` column is the ID the reply named, or `none` when the reply
+named no model (missing, empty, or not a string, which is never printed); a `none` row is
+always `broken`.
+
 Budget: `validateRequest` refuses at **45,000 tokens** for the whole request and **32,000**
 for state plus the longest single question, estimated at the measured ratio of 5.1
 characters per token. The vendor documentation says 64k; ~45k returns

@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { JevAnswer, JevQuestion, JevRequest } from './contract.js'
+import { MODELS, type JevAnswer, type JevModel, type JevQuestion, type JevRequest } from './contract.js'
 import { askModel, type EvaluateOptions } from './runtime.js'
 import type { Program } from './ir.js'
 
@@ -277,9 +277,48 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
   return rows
 }
 
+/** The line `jevc check --live` ends on, here for the same reason liveOptions is. The model
+ * list is whatever the responses named, so it is quoted the way the rows above it are, and a
+ * run in which no response named one says so rather than printing "against :". */
+export function liveSummary(r: Pick<Report, 'model' | 'rows' | 'drifted' | 'broken'>): string {
+  const against = r.model === '' ? 'no named model' : JSON.stringify(r.model)
+  return `${r.rows.length} rows checked live against ${against}: ${r.drifted} drifted, ${r.broken} broken\n`
+}
+
+/** `jevc check --live --model <id> --threshold <n>`, validated into checkLive's options.
+ * Here rather than in cli.ts because cli.ts runs on import: this is the seam a test reaches
+ * with no key and no network. Throws a sentence the CLI prints as-is.
+ *
+ * `--model` is one of MODELS, the same list validateRequest enforces on the wire. The
+ * threshold range comes from diffFixture's `delta > threshold`: noul and confidence deltas
+ * live in 0..1, so at 1 or above neither can ever drift and the run goes silent on exactly
+ * the movement it exists to report; below 0 an identical answer (delta 0) is drift. 0 itself
+ * is legal and means "any movement at all", noise floor included. */
+export function liveOptions(model: string | undefined, threshold: string | undefined):
+  { model?: JevModel; driftThreshold?: number } {
+  const out: { model?: JevModel; driftThreshold?: number } = {}
+  if (model !== undefined) {
+    if (!MODELS.includes(model as JevModel)) {
+      throw new Error(`--model "${model}" is not a model jevc can ask. Expected one of: ${MODELS.join(', ')}.`)
+    }
+    out.model = model as JevModel
+  }
+  if (threshold !== undefined) {
+    const t = Number(threshold)
+    // Number(), not parseFloat: parseFloat reads "0.3abc" as 0.3 and a typo runs silently.
+    // Number(" ") is 0, hence the blank check.
+    if (threshold.trim() === '' || !Number.isFinite(t) || t < 0 || t >= 1) {
+      throw new Error(`--threshold "${threshold}" must be a number in [0, 1): noul and confidence deltas never exceed 1, so 1 or more reports no drift on them at all.`)
+    }
+    out.driftThreshold = t
+  }
+  return out
+}
+
 /** Re-measure the corpus against the live API and diff against what was recorded.
- * `jev-latest` is an alias that moves under you; this is how a model bump surfaces as a
- * diff in a report rather than as a production incident. Requires TYPESAFE_API_KEY (read
+ * The model asked is PINNED_MODEL unless `--model` names another; a response from any model
+ * but the pin gets a `<fixture>.model` row, so a model bump surfaces as a diff in a report
+ * rather than as a production incident. Requires TYPESAFE_API_KEY (read
  * by the SDK client `askModel` constructs internally). Never run as part of `npm test`.
  *
  * `askModel`, not `evaluate`: this function's whole output is a classification of what moved,
@@ -313,7 +352,16 @@ export async function checkLive(
   for (const f of fixtures) {
     try {
       const res = await askModel(buildProgram(f), f.state, opts)
-      if (res.model) models.add(res.model)
+      const named = typeof res.model === 'string' && res.model !== '' ? res.model : undefined
+      if (named) models.add(named)
+      // Who answered gets its own row, ahead of what moved, on the fixture that saw it. A
+      // non-Jev answerer is `broken` (exit 1): every number below would be a diff against a
+      // model this corpus never described. Another Jev build, or an ID JEVC_ALLOW_MODEL
+      // accepts, is `drifted`: worth a line, not a failed run. A non-string is never printed.
+      for (const i of res.issues.filter(i => i.code === 'model_unexpected')) {
+        rows.push({ id: `${f.id}.model`, recorded: f.measured.model, live: named ?? 'none',
+          delta: null, status: i.severity === 'error' ? 'broken' : 'drifted' })
+      }
       rows.push(...diffFixture(f, res.answers, threshold))
       // The threshold that matters is the one the corpus recorded, not the flat 0.15: a noul
       // moving 0.96 -> 0.82 is inside no band in particular, but `noul_gte: 0.90` is the gate
@@ -323,9 +371,10 @@ export async function checkLive(
       // These rows were `broken`, and the argument was symmetry with offline `jevc check`,
       // which exits 1 on the same predicate over the RECORDED answers. The two are not
       // symmetric: offline compares a recording against itself and cannot fail spuriously,
-      // while this compares it against a moving alias. Measured over this corpus: of the 331
-      // numeric expectation bounds, 216 have LESS headroom than the 0.15 this very function
-      // defines as drift, the median bound has 0.120 of headroom, 14 have under 0.05, and
+      // while this compares it against a live model (`--model jev-latest` is a moving alias,
+      // and even the pin is a server someone else runs). Measured over this corpus: of the 321
+      // numeric expectation bounds, 207 have LESS headroom than the 0.15 this very function
+      // defines as drift, the median bound has 0.120 of headroom, 12 have under 0.05, and
       // `agent-goal-drift-ci-secret-exfil.next_action_serves_user_request` sits exactly on
       // its bound (0.000). So a benign recalibration smaller than one drift threshold would
       // have marked most of the corpus `broken` and exited 1 — and `broken`, whose job is

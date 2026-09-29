@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { loadFixtures } from '../src/check.js'
 import { VERDICT_WORDS } from '../src/ir.js'
 import { runReducer } from '../src/runtime.js'
@@ -156,6 +157,8 @@ describe('README claims recompute from the repo', () => {
   const flatDocs = [readme, readFileSync('docs/schema-mapping.md', 'utf8'),
     readFileSync('docs/validation.md', 'utf8')].join('\n').replace(/\s+/g, ' ')
   const corpus = loadFixtures('fixtures')
+  /** A source file's `//` comments joined back into prose, for numbers quoted in them. */
+  const flatSrc = (file: string) => readFileSync(file, 'utf8').replace(/\n\s*\/\/ ?/g, ' ').replace(/\s+/g, ' ')
 
   const blocks = [...readme.matchAll(/\n```(\w*)\n([\s\S]*?)\n```/g)]
     .map(m => ({ lang: m[1], body: m[2] }))
@@ -271,6 +274,8 @@ describe('README claims recompute from the repo', () => {
         .filter(a => a.type === 'score') as { score: number }[]
       const fractional = scores.filter(a => !Number.isInteger(a.score)).length
       expect(flatDocs).toContain(`${fractional} of the ${scores.length} measured score answers`)
+      // The same count justifies validateResponse accepting a fractional score.
+      expect(flatSrc('src/contract.ts')).toContain(`${fractional} of the ${scores.length} measured score answers`)
     })
 
     it('quotes the drift headroom that justifies `drifted` rather than `broken`', () => {
@@ -282,10 +287,19 @@ describe('README claims recompute from the repo', () => {
             const actual = key.startsWith('noul_') ? (a?.type === 'noul' ? a.noul : undefined)
               : key.startsWith('score_') ? (a?.type === 'score' ? a.score : undefined)
                 : (a?.type === 'choice' || a?.type === 'score' ? a.confidence : undefined)
-            return typeof actual === 'number' ? [Math.abs(actual - bound)] : []
+            // Rounded: 0.95 - 0.8 is 0.1499999... in floats, and a bound with exactly 0.15 of
+            // headroom survives a move of 0.15 (diffFixture flags |delta| > threshold). The raw
+            // comparison counted three of those as at risk. scripts/corpus-stats.ts agrees.
+            return typeof actual === 'number' ? [Number(Math.abs(actual - bound).toFixed(10))] : []
           })))
       const under = gaps.filter(g => g < 0.15).length
       expect(flat).toContain(`${under} of the ${gaps.length} numeric bounds in this corpus have less headroom than the 0.15`)
+      // check.ts makes the same argument for `drifted` over `broken`, with more of the numbers.
+      const check = flatSrc('src/check.ts')
+      expect(check).toContain(`of the ${gaps.length} numeric expectation bounds, ${under} have LESS headroom`)
+      expect(check).toContain(`the median bound has ${median(gaps).toFixed(3)} of headroom`)
+      expect(check).toContain(`${gaps.filter(g => g < 0.05).length} have under 0.05`)
+      expect(Math.min(...gaps)).toBe(0)
     })
   })
 
@@ -430,6 +444,32 @@ describe('README claims recompute from the repo', () => {
         expect(d.source.file, `${d.id} was lifted from outside the project`).toBe('CLAUDE.md')
         expect(claudeMd[d.source.line - 1], `${d.id} cites the wrong line`).toContain(d.source.quote)
       }
+    })
+
+    // The sample README's round trip, run as printed against the files it says it produced.
+    // A lift labels the document by the path it was given, and step 3 checks every citation
+    // against that label, so the shipped commit.json (which cites `CLAUDE.md`) passes only
+    // from the directory it was lifted in. Printed from the repo root, step 3 refused it.
+    it('runs the sample round trip from where it says its files were produced', () => {
+      const DIR = 'examples/sample-project'
+      const block = readFileSync(`${DIR}/README.md`, 'utf8')
+        .match(/## The round trip[\s\S]*?```bash\n([\s\S]*?)```/)
+      expect(block, 'the sample README no longer prints the round trip').not.toBeNull()
+      const lines = block![1].split('\n').map(l => l.replace(/\s+#.*$/, '').trim()).filter(Boolean)
+      const cwd = resolve(lines[0].match(/^cd (\S+)$/)?.[1] ?? '.')
+      const args = (prefix: string) => {
+        const line = lines.find(l => l.startsWith(prefix))
+        expect(line, `no \`${prefix}\` step`).toBeDefined()
+        return line!.replace(/ > \/dev\/null$/, '').split(/\s+/).slice(1)
+      }
+      const jevc = (a: string[]) => spawnSync('node', [resolve('dist/cli.js'), ...a],
+        { cwd, encoding: 'utf8', env: { ...process.env, TYPESAFE_API_KEY: '' } })
+
+      expect(jevc(args('jevc scan')).stdout).toMatch(/^\s*CLAUDE\.md\s+13 rules\s+7 decidable/m)
+      const shipped = relative(cwd, resolve(`${DIR}/.claude/gates/commit.json`))
+      const check = jevc(args('jevc compile program.json').map(a => a === 'program.json' ? shipped : a))
+      expect(check.stderr).toBe('')
+      expect(check.status).toBe(0)
     })
 
     it('lists exactly the targets that exist, in a table with one row each', async () => {

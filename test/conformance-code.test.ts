@@ -841,7 +841,7 @@ describe('the json target is a valid request, and a request that answers back', 
       // every choice option and every score level is the chosen one at least once.
       for (let pick = 0; pick < 5; pick++) {
         const answers = answersFromRequest(req, pick)
-        const res = { model: 'jev-latest', answers, usage: { input_tokens: 10, output_tokens: 10 } }
+        const res = { model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 10 } }
         expect(validateResponse(p, res).filter(i => i.severity === 'error'),
           `${name} pick=${pick}`).toEqual([])
         // Built from the REQUEST; compared against the same construction over the PROGRAM.
@@ -852,6 +852,118 @@ describe('the json target is a valid request, and a request that answers back', 
         expect(runReducer(p, answers), `${name} pick=${pick}`).toBe(runReducer(p, fromProgram))
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The model each code target asks for, read back from the artifact the way its consumer
+// constructs it. The corpus was recorded on jev-1.13.0; `jev-latest` is an alias that moves.
+// ---------------------------------------------------------------------------
+
+describe('the model every code target asks for', () => {
+  it('ai-sdk: the exported model is the pinned jev-1.13.0', () => {
+    const got = runTs(emitAiSdk(gate), [
+      `import { model } from './mod.ts'`,
+      `console.log(JSON.stringify(model.modelId))`,
+    ])
+    expect(got).toBe('jev-1.13.0')
+  })
+
+  // The provider reads no env var for its base URL, so without this an emitted module
+  // could only ever reach api.typesafe.ai — never a local server that speaks the wire.
+  const aiSdkUrl = (base: string | undefined) => runTs(emitAiSdk(gate), [
+    `const seen: string[] = []`,
+    `Object.assign(globalThis, { fetch: async (url: unknown) => { seen.push(String(url)); return new Response('{}') } })`,
+    base === undefined ? `delete process.env.TYPESAFE_BASE_URL` : `process.env.TYPESAFE_BASE_URL = ${JSON.stringify(base)}`,
+    `const { model } = await import('./mod.ts')`,
+    `await model.doEvaluate({ state: 'x', questions: {} })`,
+    `console.log(JSON.stringify(seen))`,
+  ])
+  it('ai-sdk: TYPESAFE_BASE_URL (the root, as the native SDK reads it) moves the request', () => {
+    expect(aiSdkUrl('http://127.0.0.1:9/')).toEqual(['http://127.0.0.1:9/v1/systemone'])
+  })
+  it('ai-sdk: with TYPESAFE_BASE_URL unset the request goes to the provider default', () => {
+    expect(aiSdkUrl(undefined)).toEqual(['https://api.typesafe.ai/v1/systemone'])
+  })
+  // O-R6, KA-R5: @typesafe-ai/sdk trims the variable and treats blank as unset, so a .env line
+  // `TYPESAFE_BASE_URL= ` sent jevc's own calls to the default and this module to " /v1".
+  it('ai-sdk: TYPESAFE_BASE_URL is trimmed, and blank means unset, as the native SDK reads it', () => {
+    expect(aiSdkUrl('   ')).toEqual(['https://api.typesafe.ai/v1/systemone'])
+    expect(aiSdkUrl(' http://127.0.0.1:9// ')).toEqual(['http://127.0.0.1:9/v1/systemone'])
+  })
+
+  it.runIf(pythonAvailable)('langchain: the classifier is constructed with the pinned jev-1.13.0', () => {
+    expect(runPy(emitLangchain(gate), 'classifier.model')).toBe('jev-1.13.0')
+  })
+
+  // langchain-typesafe 0.0.1a3 takes the questions per invoke, not in the constructor.
+  // classify(state) is the call a consumer makes, so it is the one run: through a client
+  // that records the request instead of sending it, answered with a fixed response.
+  it.runIf(pythonAvailable)('langchain: classify(state) sends the program to /v1/systemone and its answers reduce like runReducer', () => {
+    const answers: Record<string, JevAnswer> = {
+      destructive: { type: 'noul', noul: 0.2 },
+      dept: { type: 'choice', choice: 'technical', confidence: 0.9, probabilities: { billing: 0.1, technical: 0.9 } },
+      radius: { type: 'score', score: 1, confidence: 0.3, legend: { 0: 'none', 1: 'some', 2: 'everything' },
+        probabilities: { 0: 0.3, 1: 0.4, 2: 0.3 } },
+    } as Record<string, JevAnswer>
+    const state = { tool: 'rm', args: ['-rf', 'build'] }
+    const got = runPyScript(emitLangchain(gate), [
+      'import json',
+      'import mod',
+      'sent = []',
+      'class Response:',
+      '    def __init__(self, body): self.body = body',
+      '    def json(self): return self.body',
+      'class Client:',
+      '    def post(self, url, **kw):',
+      '        sent.append({"url": url, "body": kw["json"]})',
+      `        return Response({"model": "jev-1.13.0", "answers": json.loads(${JSON.stringify(JSON.stringify(answers))})})`,
+      'mod.classifier.client = Client()',
+      `res = mod.classify(json.loads(${JSON.stringify(JSON.stringify(state))}))`,
+      'print(json.dumps({"sent": sent, "verdict": mod.reduce(res.answers)}))',
+    ])
+    expect(got).toEqual({
+      sent: [{ url: expect.stringMatching(/\/v1\/systemone$/), body: emitJson(gate, state) }],
+      verdict: runReducer(gate, answers),
+    })
+    expect(runReducer(gate, answers)).toBe('review')
+  })
+
+  // O-R3, KA-R1: classify() returned whatever answered, so a module pointed at a local server
+  // by TYPESAFE_BASE_URL reduced a stranger's answers against thresholds measured on Jev. It
+  // now applies the guard evaluate() applies, JEVC_ALLOW_MODEL included.
+  it.runIf(pythonAvailable)('langchain: classify(state) checks who answered, as evaluate does', () => {
+    const answeredBy = (model: string, allow?: string) => runPyScript(emitLangchain(gate), [
+      'import json, os, warnings',
+      allow === undefined ? 'os.environ.pop("JEVC_ALLOW_MODEL", None)' : `os.environ["JEVC_ALLOW_MODEL"] = ${JSON.stringify(allow)}`,
+      'import mod',
+      'class Response:',
+      '    def __init__(self, body): self.body = body',
+      '    def json(self): return self.body',
+      'class Client:',
+      '    def post(self, url, **kw):',
+      `        return Response({"model": ${JSON.stringify(model)}, "answers": {"destructive": {"type": "noul", "noul": 0.2}}})`,
+      'mod.classifier.client = Client()',
+      'with warnings.catch_warnings(record=True) as w:',
+      '    warnings.simplefilter("always")',
+      '    try:',
+      '        out = {"ok": mod.classify({"x": 1}).model}',
+      '    except ValueError as e:',
+      '        out = {"error": str(e)}',
+      'out["warnings"] = [str(x.message) for x in w]',
+      'print(json.dumps(out))',
+    ])
+    expect(answeredBy('jev-1.13.0')).toEqual({ ok: 'jev-1.13.0', warnings: [] })
+    expect(answeredBy('jev-1.14.0')).toEqual({ ok: 'jev-1.14.0', warnings: [expect.stringContaining('"jev-1.14.0"')] })
+    expect(answeredBy('laya-rl-agent')).toEqual(
+      { error: expect.stringMatching(/"laya-rl-agent"[\s\S]*JEVC_ALLOW_MODEL/), warnings: [] })
+    expect(answeredBy('laya-rl-agent', ' x , laya-rl-agent ,')).toEqual(
+      { ok: 'laya-rl-agent', warnings: [expect.stringMatching(/"laya-rl-agent"[\s\S]*re-measure/)] })
+    expect(answeredBy('laya-rl-agent-v2', 'laya-rl-agent')).toMatchObject({ error: expect.any(String) })
+    expect(answeredBy('')).toMatchObject({ error: expect.stringContaining('names no model') })
+    const esc = answeredBy('evil\u001b[2J' + 'x'.repeat(200)) as { error: string }
+    expect(esc.error).not.toMatch(/[\u0000-\u001f]/)
+    expect(esc.error).toContain(`"evil\\u001b[2J${'x'.repeat(56)}\\u2026"`)
   })
 })
 

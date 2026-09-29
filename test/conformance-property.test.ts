@@ -63,7 +63,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 
-import { cleanupArtifacts, scratch } from './helpers/artifacts.js'
+import {
+  AI_SDK_STUB_DTS, AI_SDK_STUB_JS, cleanupArtifacts, LANGCHAIN_STUB, scratch,
+} from './helpers/artifacts.js'
 import {
   bouncerVerdict, straddle, validateBouncerPolicy, validateToolgatePolicy, toolgateVerdict,
 } from './helpers/consumers.js'
@@ -444,39 +446,6 @@ const PYTHON = 'python3'
 const pythonAvailable = ((): boolean => {
   try { execFileSync(PYTHON, ['-c', 'pass'], { stdio: 'ignore' }); return true } catch { return false }
 })()
-
-const AI_SDK_STUB_DTS = `
-export declare function createTypeSafeAi(options: { apiKey?: string }): {
-  evaluationModel(id: string): { readonly modelId: string }
-}
-`
-const AI_SDK_STUB_JS = `
-export function createTypeSafeAi(options) {
-  return { evaluationModel: (id) => ({ modelId: id }) }
-}
-`
-const LANGCHAIN_STUB = `
-class _Kw:
-    def __init__(self, **kw): self.__dict__.update(kw)
-class Choice(_Kw): pass
-class Noul(_Kw): pass
-class NoulCriteria(_Kw): pass
-class Score(_Kw): pass
-class TypeSafeClassifier(_Kw): pass
-class NoulAnswer:
-    __slots__ = ("type", "noul")
-    def __init__(self, noul): self.type, self.noul = "noul", noul
-class ChoiceAnswer:
-    __slots__ = ("type", "choice", "probabilities", "confidence")
-    def __init__(self, choice, confidence, probabilities=None):
-        self.type, self.choice, self.confidence = "choice", choice, confidence
-        self.probabilities = probabilities or {}
-class ScoreAnswer:
-    __slots__ = ("type", "score", "legend", "probabilities", "confidence")
-    def __init__(self, score, confidence, legend=None, probabilities=None):
-        self.type, self.score, self.confidence = "score", score, confidence
-        self.legend, self.probabilities = legend or {}, probabilities or {}
-`
 
 const TS_DRIVER = `import { readFileSync } from 'node:fs'
 const plan = JSON.parse(readFileSync(new URL('./plan.json', import.meta.url), 'utf8')) as any[]

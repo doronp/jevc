@@ -23,18 +23,22 @@ gate is here to catch.
 
 ## The round trip
 
-Four commands, and the fourth puts the result back where the first one found it.
+Four commands, and the fourth puts the result back where the first one found it. Run them
+from this directory: the lift request labels the document by the path you typed, step 3 checks
+every citation against that label, and the shipped `commit.json` cites `CLAUDE.md`.
 
 ```bash
-jevc scan examples/sample-project                      # 1. what rules does this project already have?
-jevc compile examples/sample-project/CLAUDE.md --lift  # 2. hand the printed request to your agent
-#                                                        3. the agent returns a Program; save it
-cp program.json examples/sample-project/.claude/gates/commit.json   # 4. install it
+cd examples/sample-project
+jevc scan .                                   # 1. what rules does this project already have?
+jevc compile CLAUDE.md --lift                 # 2. hand the printed request to your agent
+jevc compile program.json --source CLAUDE.md > /dev/null   # 3. save the agent's Program; check every citation
+cp program.json .claude/gates/commit.json     # 4. install it
 ```
 
 Step 1 reports `CLAUDE.md — 13 rules, 7 decidable`. Step 2 prints a lowering request; no
-model runs inside jevc. Step 3 is your agent's answer, and step 4 is the only part that
-touches this project — a file copy and a hook registration, both of which you can read.
+model runs inside jevc. Step 3 is your agent's answer, checked: a citation that does not
+quote `CLAUDE.md` word for word exits 1. Step 4 is the only part that touches this
+project — a file copy and a hook registration, both of which you can read.
 
 The files that round trip produced, all of them in this directory:
 
@@ -71,6 +75,7 @@ checker, return JSON") trade one unreviewable judgment for another, and now pay 
 ```json
 "rules": [
   { "when": [{ "id": "is_commit_operation",                "op": "lte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "user_explicitly_asked_to_commit",    "op": "uncertain" }],         "then": "ask" },
   { "when": [{ "id": "user_explicitly_asked_to_commit",    "op": "gte", "value": 0.5 }], "then": "allow" },
   { "when": [{ "id": "commit_required_by_requested_task",  "op": "gte", "value": 0.5 }], "then": "allow" }
 ],
@@ -78,7 +83,7 @@ checker, return JSON") trade one unreviewable judgment for another, and now pay 
 ```
 
 Read it in a pull request, change a threshold and see which cases move, add a case to the
-corpus and run it. The judgment that used to live in a paragraph now lives in three lines
+corpus and run it. The judgment that used to live in a paragraph now lives in four lines
 of JSON and a number you can point at.
 
 ## Where the human is
@@ -87,15 +92,20 @@ A closed loop invites the reading that the sentence in `CLAUDE.md` was automatic
 into the gate. It was not, and the seam is worth finding before you trust one of these.
 
 The questions are evidence; the **reducer is the interpretation**, and a human wrote it. In
-this gate the interpretation is visible: the third rule —
+this gate the interpretation is visible: the last rule —
 `commit_required_by_requested_task` — is **not in the rule text**. `NEVER commit unless the
-user explicitly asks.` admits exactly one exception; the third rule adds a second one, for a
+user explicitly asks.` admits exactly one exception; the last rule adds a second one, for a
 commit the requested task genuinely needs. That is a judgment the author made, and it is in
 the reducer rather than inside a question precisely so it can be read, argued with and
 deleted. Delete it and the gate denies strictly.
 
+The second rule is the other seam, and it points at a person rather than a paragraph. When
+the model cannot tell whether the human asked — `user_explicitly_asked_to_commit` inside the
+uncertainty band — the gate returns `ask` and the human confirms, instead of either side
+guessing. The recorded case measured 0.06, outside the band, so it still denies.
+
 That is the trade the loop actually makes. Before, the same interpretation existed too — in
-the model's head, differently each turn, with nothing to point at. After, it is four lines
+the model's head, differently each turn, with nothing to point at. After, it is five lines
 of JSON in a file under review.
 
 ## Install it in your own project
@@ -105,9 +115,10 @@ cp -r examples/sample-project/.claude/gates /path/to/your/project/.claude/
 ```
 
 Then run `npm install jev-compiler` in that project — the gate imports it, and a global
-install is not importable — change the import at the top of `gate.mjs` from the relative
-`dist/` path to `jev-compiler`, set `TYPESAFE_API_KEY` in the environment Claude Code runs
-in, and register the hook —
+install is not importable — change the imports in `gate.mjs` from the
+relative `dist/` paths to `jev-compiler` (for `JEVC_REPLAY`, change
+`HERE('../../../../fixtures')` to `HERE('../../node_modules/jev-compiler/fixtures')`: `HERE`
+resolves against the gate file, not the working directory), set `TYPESAFE_API_KEY` in the environment Claude Code runs in, and register the hook —
 [`.claude/settings.json`](.claude/settings.json) here is the whole file:
 
 ```json
@@ -135,7 +146,17 @@ questions about file writes. Your own rules, not this one: start at `jevc scan .
   It replays that one recorded state; it is a demo of the wiring, not a simulator. Without
   the variable the hook calls the API and needs `TYPESAFE_API_KEY`.
 - The gate fails **closed**: any error returns `ask`, so a network blip pauses for a human
-  instead of silently waving the commit through. `JEVC_ON_ERROR=allow` inverts that.
+  instead of silently waving the commit through. `JEVC_ON_ERROR=allow` inverts that. An answer
+  from a Jev build other than `jev-1.13.0`, or from a model `JEVC_ALLOW_MODEL` names, keeps its
+  verdict and prints `jev gate: warning: ...` on stderr.
+- `JEVC_MODE=observe` lets every `Bash` call through and appends the verdict it would have
+  had to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the gate), one JSON line per call:
+  time, verdict, model, tool name, uncertain ids, the model's answers and any warnings — never the command,
+  the transcript or anything from the environment. A row with a non-null `error` is the
+  fail-closed fallback, not the model's verdict: leave those out when tuning thresholds. A log
+  that cannot be written is reported on stderr and the call still goes through. The default
+  path is inside `.claude/gates/`, which you commit, so add `observe.jsonl` to `.gitignore`.
+  Run it for a while before trusting the thresholds.
 - Non-`Bash` tool calls exit 0 immediately. A question about a tool the rule cannot apply
   to spends a call to learn nothing.
 - The hook returns `deny` rather than exiting 2. Both stop the tool call; the JSON form

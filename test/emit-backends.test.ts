@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { LANGCHAIN_STUB } from './helpers/artifacts.js'
 import { emitAiSdk } from '../src/emit/ai-sdk.js'
 import { emitLangchain } from '../src/emit/langchain.js'
 import { emitBouncerPolicy } from '../src/emit/policy/bouncer.js'
@@ -34,11 +35,9 @@ afterAll(() => {
 /** @ai-sdk/typesafe-ai is the CONSUMER's dependency, not jevc's, so the provider import
  *  and the `model` export cannot resolve here. Neither is part of the reducer under test;
  *  everything else runs verbatim. */
-const stripProvider = (src: string) => src.split('\n')
-  .filter(l => !l.startsWith('import { createTypeSafeAi }')
-            && !l.startsWith('export const model =')
-            && !l.startsWith('  .evaluationModel('))
-  .join('\n')
+const stripProvider = (src: string) => src
+  .replace(/^import \{ createTypeSafeAi \}.*\n/m, '')
+  .replace(/^export const model = [\s\S]*?\.evaluationModel\(.*\n/m, '')
 
 type AiCase = { answers: Record<string, unknown>; confidence?: Record<string, number> }
 
@@ -59,35 +58,10 @@ function runAiSdk(src: string, cases: AiCase[]): string[] {
   return JSON.parse(execFileSync('node_modules/.bin/tsx', [driver], { encoding: 'utf8' }))
 }
 
-/** langchain-typesafe is likewise the consumer's dependency. The stubs reproduce the
- *  answer shapes the target doc verified by execution — NoulAnswer has `.noul` and NO
- *  `.confidence`; choice and score carry a required `.confidence`. */
-const PY_STUBS = `
-class _Kw:
-    def __init__(self, **kw): self.__dict__.update(kw)
-class Noul(_Kw): pass
-class Choice(_Kw): pass
-class Score(_Kw): pass
-class NoulCriteria(_Kw): pass
-class TypeSafeClassifier(_Kw): pass
-
-class NoulAnswer:
-    __slots__ = ("type", "noul")
-    def __init__(self, noul): self.type, self.noul = "noul", noul
-class ChoiceAnswer:
-    __slots__ = ("type", "choice", "probabilities", "confidence")
-    def __init__(self, choice, confidence, probabilities=None):
-        self.type, self.choice, self.confidence = "choice", choice, confidence
-        self.probabilities = probabilities or {}
-class ScoreAnswer:
-    __slots__ = ("type", "score", "legend", "probabilities", "confidence")
-    def __init__(self, score, confidence, legend=None, probabilities=None):
-        self.type, self.score, self.confidence = "score", score, confidence
-        self.legend, self.probabilities = legend or {}, probabilities or {}
-`
-
+/** langchain-typesafe is likewise the consumer's dependency: the one transcription of
+ *  0.0.1a3 in test/helpers/artifacts.ts, so this file cannot drift from it. */
 const stripLangchainImport = (src: string) =>
-  PY_STUBS + src.split('\n').filter(l => !l.startsWith('from langchain_typesafe import')).join('\n')
+  LANGCHAIN_STUB + src.split('\n').filter(l => !l.startsWith('from langchain_typesafe import')).join('\n')
 
 /** Parses the emitted module with `ast` and then RUNS its reduce() per case. */
 function runLangchain(src: string, cases: Array<Record<string, unknown>>): string[] {

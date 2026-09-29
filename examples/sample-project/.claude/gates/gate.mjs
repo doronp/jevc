@@ -12,10 +12,14 @@
  *
  * Set JEVC_REPLAY=1 to answer from the recorded fixture instead of calling the API, which
  * is how the test suite and a curious reader run it with no key and no network.
+ *
+ * Set JEVC_MODE=observe to watch the rule before trusting it: every Bash call is let
+ * through, and the verdict it would have had is appended as one JSON line to
+ * JEVC_OBSERVE_LOG (default: observe.jsonl beside this file).
  */
-import { readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { evaluate, runReducer } from '../../../../dist/index.js'   // installed: from 'jev-compiler'
+import { evaluate, isUncertain, runReducer } from '../../../../dist/index.js'   // installed: from 'jev-compiler'
 
 const HERE = (p) => fileURLToPath(new URL(p, import.meta.url))
 const program = JSON.parse(readFileSync(HERE('./commit.json'), 'utf8'))
@@ -70,18 +74,48 @@ const decide = async () => {
     const { loadFixtures } = await import('../../../../dist/check.js')
     const f = loadFixtures(HERE('../../../../fixtures'))
       .find(x => x.id === 'commit-only-when-explicitly-asked')
-    return { verdict: runReducer(program, f.measured.answers), answers: f.measured.answers }
+    // The fixture recorded more questions than this program asks; keep the ones it asks.
+    const answers = Object.fromEntries(program.decisions.map(d => [d.id, f.measured.answers[d.id]]))
+    return {
+      verdict: runReducer(program, answers),
+      model: f.measured.model,
+      answers,
+      uncertain: program.decisions.filter(d => isUncertain(answers, d.id, program)).map(d => d.id),
+      warnings: [],
+    }
   }
   return evaluate(program, state)   // needs TYPESAFE_API_KEY
 }
 
-let verdict, answers
+let verdict, model, answers, uncertain, warnings = [], error = null
 try {
-  ({ verdict, answers } = await decide())
+  ({ verdict, model, answers, uncertain, warnings } = await decide())
 } catch (err) {
   verdict = ON_ERROR
   answers = {}
+  uncertain = []
+  error = err.message
   process.stderr.write(`jev gate error, failing ${ON_ERROR}: ${err.message}\n`)
+}
+// The verdict stands (another Jev build, or a model JEVC_ALLOW_MODEL names), but the band it
+// fell in was measured on a different model. Said where the error above is said, so a human
+// reading hook output sees it, and logged below, so an observe run can be filtered on it.
+for (const w of warnings) process.stderr.write(`jev gate: warning: ${w.message}\n`)
+
+if (process.env.JEVC_MODE === 'observe') {
+  // The model's answers and nothing it was shown: no state (the command, the user's words)
+  // and no environment, so the log is safe to keep and share. Observing must never block,
+  // so a log that cannot be written costs the line, not the tool call. `error` is set when the
+  // verdict is ON_ERROR's fallback rather than the model's, so an outage is not read as a rule
+  // that fired.
+  const line = { ts: new Date().toISOString(), verdict, model: model ?? null,
+    tool_name: hook.tool_name ?? null, uncertain, answers, warnings: warnings.map(w => w.message), error }
+  try {
+    appendFileSync(process.env.JEVC_OBSERVE_LOG || HERE('./observe.jsonl'), `${JSON.stringify(line)}\n`)
+  } catch (err) {
+    process.stderr.write(`jev gate: observe log not written: ${err.message}\n`)
+  }
+  process.exit(0)
 }
 
 if (verdict === 'allow') process.exit(0)   // silence is consent; the tool call proceeds
@@ -91,6 +125,9 @@ if (verdict === 'allow') process.exit(0)   // silence is consent; the tool call 
 const asked = answers.user_explicitly_asked_to_commit?.noul
 const reason = asked === undefined
   ? 'The commit gate could not be evaluated.'
+  : verdict === 'ask'
+  ? `CLAUDE.md line 7: commits need an explicit request, and whether the recent turns make`
+    + ` one is unclear (${asked.toFixed(2)}). Confirm this commit before it runs.`
   : `CLAUDE.md line 7: commits need an explicit request. The recent turns read as`
     + ` approval of a plan, not a request to commit (${asked.toFixed(2)}).`
     + ` Write the commit message and let the human run it.`

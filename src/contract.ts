@@ -16,6 +16,13 @@ export type JevQuestion =
 
 export type JevModel = 'jev-latest' | 'jev-preview' | 'jev-1.13.0'
 export const MODELS: readonly JevModel[] = ['jev-latest', 'jev-preview', 'jev-1.13.0']
+/** The model every default asks for. Not a preference: it is the one model the corpus was
+ * recorded against — all 58 fixtures in fixtures/ report `measured.model: "jev-1.13.0"` —
+ * so every threshold, band and README number was measured on it. The defaults used to be
+ * `jev-latest`, an alias that moves under you: a vendor bump would have changed what every
+ * compiled gate asks without any jevc release, and nothing in the corpus would still
+ * describe the model answering. `jev-latest` stays a legal explicit choice. */
+export const PINNED_MODEL = 'jev-1.13.0' satisfies JevModel
 
 // The API silently ignores unknown fields (spec §3.1: a typo like `criterion`
 // never errors), so jevc has to whitelist what it emits instead.
@@ -240,15 +247,23 @@ export function validateRequest(req: JevRequest): ValidationIssue[] {
 }
 
 /** The other half of the wire contract. `res` is `unknown` on purpose: it crosses the same
- * trust boundary as the request but in the opposite direction, from a remote service on a
- * model alias that moves (`jev-latest` resolved to jev-1.13.0 today), and runtime.ts takes it
- * with a bare `as Record<string, JevAnswer>` — the type asserts a shape nobody checked.
- * Same conventions as validateRequest: every violation reported at once, `error` means the
- * verdict would be wrong or would throw, `warn` means the verdict still stands. The call
- * site is runtime.ts, not here: `askModel` runs this on every response and `evaluate`
- * throws on the `error`-severity half. It is also public, so a caller can arrive with a
- * program the validators never saw. */
-export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
+ * trust boundary as the request but in the opposite direction, from a remote service that
+ * may not even be the one asked (TYPESAFE_BASE_URL points the SDK anywhere), and runtime.ts
+ * takes it with a bare `as Record<string, JevAnswer>` — the type asserts a shape nobody
+ * checked. Same conventions as validateRequest: every violation reported at once, `error`
+ * means the verdict would be wrong or would throw, `warn` means the verdict still stands.
+ * The call site is runtime.ts, not here: `askModel` runs this on every response and
+ * `evaluate` throws on the `error`-severity half. It is also public, so a caller can arrive
+ * with a program the validators never saw.
+ *
+ * `allowedModels` is the caller's explicit list of non-Jev model IDs to accept with a
+ * warning instead of an error. A parameter, not an env read, so this function stays pure;
+ * runtime.ts fills it from JEVC_ALLOW_MODEL. */
+export function validateResponse(
+  p: Program,
+  res: unknown,
+  allowedModels: readonly string[] = [],
+): ValidationIssue[] {
   const out: ValidationIssue[] = []
   const err = (code: string, path: string, message: string) =>
     out.push({ code, path, message, severity: 'error' })
@@ -270,6 +285,39 @@ export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
     return out
   }
   const body = res as Record<string, unknown>
+
+  // Who answered. The request pins PINNED_MODEL, but nothing made the response prove it:
+  // anything behind TYPESAFE_BASE_URL that speaks the wire format produced verdicts
+  // indistinguishable from Jev's, reduced against thresholds measured on a model it is not.
+  // Checked before `answers` so a stranger with no answers is still named as a stranger.
+  // Only a string is ever quoted; anything else is named by its shape, because this is the
+  // one response field a message prints and an echoed request must not leak through it.
+  const model = body.model
+  const pinned = `jevc's corpus, and every threshold and band it records, was measured on ${PINNED_MODEL}`
+  // The string is the server's choice and lands on a terminal and in logs: JSON-quoted so an
+  // escape sequence arrives as \u001b (JSON leaves DEL and C1 alone, so those are escaped by
+  // hand), and cut at 64 characters because a server that echoes the request can put the whole
+  // state here. No Jev ID comes near 64. Matching above still uses the whole string.
+  const quoted = (s: string): string =>
+    JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s)
+      .replace(/[\u007f-\u009f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  if (typeof model !== 'string' || model === '') {
+    err('model_unexpected', 'model',
+      `Response names no model (got ${model === '' ? 'an empty string' : shape(model)}), so nothing says Jev answered; ${pinned}.`)
+  } else if (!model.startsWith('jev-')) {
+    if (allowedModels.includes(model)) {
+      out.push({ code: 'model_unexpected', path: 'model', severity: 'warn',
+        message: `Response came from ${quoted(model)}, which is not Jev; accepted only because JEVC_ALLOW_MODEL names it, but ${pinned}, so re-measure them on that model before trusting its verdicts.` })
+    } else {
+      err('model_unexpected', 'model',
+        `Response came from ${quoted(model)}, which is not Jev; ${pinned}, so none of them were tested against its answers. If that model is deliberate, name it in JEVC_ALLOW_MODEL (comma-separated exact IDs) to accept it with a warning.`)
+    }
+  } else if (model !== PINNED_MODEL) {
+    // Another Jev build is the case `jevc check --live` exists for, not a reason to refuse:
+    // the answers are Jev's, only their calibration against this corpus is unproven.
+    out.push({ code: 'model_unexpected', path: 'model', severity: 'warn',
+      message: `Response came from ${quoted(model)}, not the pinned ${PINNED_MODEL} the corpus was measured on; thresholds and bands may have moved. Re-measure with \`jevc check --live\`.` })
+  }
 
   // A null or absent `answers` currently dies as a bare node TypeError ("Cannot read
   // properties of null") thrown from jevc's own internals, pointing the user at jevc rather
@@ -330,7 +378,7 @@ export function validateResponse(p: Program, res: unknown): ValidationIssue[] {
 
     if (d.kind === 'score') {
       // A score answer is the probability-weighted expectation over the level indices, not
-      // the index itself: 23 of the 26 measured score answers in fixtures/ are fractional
+      // the index itself: 22 of the 25 measured score answers in fixtures/ are fractional
       // (1.99, 2.98, 0.57, 3.09 over five levels), which is exactly why reducer thresholds
       // read 2.5. So range is checkable and integrality is NOT — requiring an integer here
       // would reject almost every real response.

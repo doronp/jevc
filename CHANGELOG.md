@@ -5,14 +5,99 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Breaking
+
+Recompile every emitted artifact after upgrading: the model it asks for and the `langchain`
+module's API are both baked in at compile time.
+
+- Every default model is now the pinned `jev-1.13.0` (`PINNED_MODEL`, exported), not the
+  `jev-latest` alias: `emitJson`, `askModel`/`evaluate` (and so the sample gate), and the model the
+  emitted `ai-sdk` and `langchain` artifacts construct. All 58 fixtures were recorded against
+  `jev-1.13.0`, so the alias asked a model nobody measured, and a vendor bump would have changed
+  every compiled gate without a jevc release. `jev-latest` is still accepted when you name it.
+  Recompile emitted artifacts to pick the pin up.
+- `validateResponse` now checks who answered (`model_unexpected`). A response whose `model` is
+  missing or not a Jev build is an error, so `evaluate()` throws and a gate fails closed; another
+  Jev build is a warning and the verdict stands. The corpus and every threshold it records were
+  measured on `jev-1.13.0` and must be re-measured for any other model. `JEVC_ALLOW_MODEL` (comma-separated
+  exact IDs, read on every call) is the one opt-in: a named non-Jev model becomes a warning.
+  `check --live` reports the answering model as a `<fixture>.model` row — `broken` for a non-Jev
+  model, `drifted` for another Jev build or an allowed ID. `validateResponse` takes the allow-list
+  as an optional third argument. `evaluate()` returns the warnings as `Verdict.warnings`, and
+  the sample gate prints each on stderr and logs them in observe mode.
+- The emitted `langchain` module targets `langchain-typesafe>=0.0.1a3` and names it in its
+  header. a3 moved `questions` from the `TypeSafeClassifier` constructor into invoke's input and
+  forbids extra fields, so the module jevc emitted before raised a `ValidationError` at import.
+  It now constructs `TypeSafeClassifier(model=...)` and exports `classify(state)`, which invokes
+  it with `{"state": state, "questions": ...}`: call `reduce(classify(state).answers)` where you
+  called `reduce(classifier.invoke(state).answers)`. `classify` applies the same model guard as
+  `evaluate`: a non-Jev model raises `ValueError` unless `JEVC_ALLOW_MODEL` names it, and an
+  allowed model or another Jev build is a `warnings.warn`. `scripts/check-langchain-a3.sh` (opt-in,
+  needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
+  dummy key and a mock transport, and shows that an empty key fails at import, so a local
+  server still needs a dummy one; it sends nothing to TypeSafe.
+
+### Changed
+
+- The emitted `ai-sdk` module honours `TYPESAFE_BASE_URL`, the API root jevc's own SDK and
+  `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
+  the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
+  variable is set and the provider default when it is not. The value is trimmed and a blank one
+  means unset, as `@typesafe-ai/sdk` reads it. Recompile to pick it up.
+- A model ID a response names is JSON-quoted wherever jevc prints it — `model_unexpected`
+  messages (cut at 64 characters) and the `check --live` summary line — so a control character
+  arrives escaped. The summary reads `against no named model` when no response named one.
+- The sample project's install steps name the exact fixtures path for `JEVC_REPLAY`,
+  `HERE('../../node_modules/jev-compiler/fixtures')`. "Point it at
+  `node_modules/jev-compiler/fixtures`" read as `./node_modules/...`, which `HERE` resolves
+  inside `.claude/gates/`, so an installed gate replayed nothing and answered `ask`.
+- The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
+  `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
+  The recorded case (0.06) is outside the band, so the replay still denies.
+  `examples/02-agents-md-guardrail.ts`, which ends by pointing at that gate, declares the same
+  rules, and a test holds the two to each other.
+- Docs: the README says where answers come from and what happens when they stop —
+  `TYPESAFE_BASE_URL` for an account or a local Jev-compatible server, thresholds measured on
+  `jev-1.13.0` only, the vendor outage path per surface, pin retirement, `JEVC_MODE=observe`, and
+  that `bouncer`/`toolgate` inherit the host's model. `docs/design.md`'s `escalate` flag is marked
+  superseded. The local-server path is one list: the server accepts a request asking for a Jev
+  build (`--model` takes no other ID in this release), names itself in the reply's `model`,
+  `JEVC_ALLOW_MODEL` lists that ID, and the key is a non-empty dummy. The Security section counts
+  `TYPESAFE_BASE_URL` among the variables jevc reads, because it decides where the key is sent.
+
 ### Added
 
 - A Claude Code plugin: `/plugin marketplace add doronp/jevc`, then `/plugin install jevc@jevc`.
   It carries one skill, `/jevc:jevc`, that runs scan, lift and compile, has the agent check every
-  citation with `grep` because `jevc compile` does not, and installs a `PreToolUse` gate in the
+  citation with `grep` because the published 0.1.0 has no `compile --source`, and installs a `PreToolUse` gate in the
   project only after asking. It uses `npx -y -p jev-compiler@latest jevc` when `jevc` is not on
   `PATH`, and the plugin registers no hooks of its own. The plugin root is `plugin/`, so installing
   copies the manifest and the skill, not the repository and its dev dependencies.
+- `jevc check --live --model <id> --threshold <n>`. `--model` is one of the models jevc can ask
+  (default `jev-1.13.0`); `--model jev-latest` is how to see what a vendor bump would change.
+  `--threshold` is the drift threshold (default 0.15), a number in [0, 1): noul and confidence
+  deltas never exceed 1, so a larger value would report no drift on them. Both are validated
+  before the key check and refused without `--live`.
+- `JEVC_MODE=observe` in the sample gate: every call is let through, and the verdict it would
+  have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
+  gate) — time, verdict, model, tool name, uncertain ids, answers and warnings; no state, no env values. A
+  row whose verdict is the fail-closed fallback carries the error in `error` (null otherwise). A
+  log that cannot be written does not block the call.
+- `jevc compile <program.json> --source <doc>` runs `parseLiftResponse` on a lifted Program
+  before compiling it: a citation that does not quote `<doc>` word for word, or names it
+  differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
+  `--source` nothing changes. It is refused on a JSON Schema, with `--lift`, and as `-` when the
+  Program is also read from stdin.
+- `scripts/check-ai-sdk.sh` (opt-in, not part of `npm test`): typechecks an emitted `ai-sdk`
+  module with `tsc --strict` against the real `@ai-sdk/typesafe-ai@3.0.10` and runs it against a
+  server on 127.0.0.1 with a dummy key; it sends nothing to TypeSafe.
+- `scripts/pack-smoke.sh` (opt-in, not part of `npm test`): builds, `npm pack`s, installs the
+  tarball into an empty directory, runs the sample gate there from `.claude/gates/` (where the
+  install steps put it) with its imports pointed at `jev-compiler` and its fixtures at
+  `../../node_modules/jev-compiler/fixtures`, asserts it denies the sample payload, runs
+  the installed `jevc check`, then scans git history (the CI pattern) and the tracked tree plus
+  the unpacked tarball for secret-shaped strings, printing locations only. A history search git
+  could not run, or a file the scan could not read, fails the run rather than counting as clean.
 
 ### Fixed
 
@@ -20,15 +105,21 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   project whose path has a space, node got half the path and exited 1, which Claude Code treats as
   a non-blocking error, so the gate was silently off. `$CLAUDE_PROJECT_DIR` is now quoted in
   `settings.json` and everywhere the READMEs and `docs/wiring.md` print it.
+- README's "Lift citation rules" read as if its checks ran on every path. They run in
+  `parseLiftResponse` and in `jevc compile --source`; `compile` without `--source` and
+  `emit-policy` on a saved `program.json` do not re-verify citations, and the 0.1.0 entry's
+  "can no longer reach an emitted bouncer policy at exit 0" holds for the checked paths only.
 - The instructions for installing the sample gate in your own project said to import from `jevc`;
   the package is `jev-compiler`. They now also say to install it in the project, since a global
   install is not importable and the gate otherwise dies at import, which Claude Code treats as a
   non-blocking error.
-- The copy-paste slash command in `docs/wiring.md` no longer says `jevc compile` checks citations.
-  It does not; the command now has the agent `grep` each quote before compiling. README's "Lift
-  citation rules" now says the same: the citation checks run in `parseLiftResponse`, and the 0.1.0
-  entry's "can no longer reach an emitted bouncer policy at exit 0" holds for that path only, not
-  for `compile` or `emit-policy` on a saved `program.json`.
+- The sample project's round trip ran from the repo root, where the lift labels the document
+  `examples/sample-project/CLAUDE.md`; the shipped `commit.json` cites `CLAUDE.md`, so step 3
+  refused it. The commands now run from `examples/sample-project`, and a test runs them.
+- The README said 210 of the 321 numeric bounds have less than 0.15 of headroom; it is 207. Fifteen
+  sit exactly on 0.15, and float subtraction put three of them under it. Two source comments
+  quoted an older corpus (331 bounds, 23 of 26 fractional score answers) and now match
+  `scripts/corpus-stats.ts`, which recomputes all of them offline.
 
 ## 0.1.0 — 2026-09-20
 

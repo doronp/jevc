@@ -1,4 +1,4 @@
-import type { EntryType } from '../contract.js'
+import { PINNED_MODEL, type EntryType } from '../contract.js'
 import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
 // One definition, shared with native.ts: `idKey` and the line-terminator set were
@@ -228,8 +228,15 @@ ${rules}
 // This backend reads TYPESAFE_AI_API_KEY; langchain-typesafe and jevc's own .env read
 // TYPESAFE_API_KEY. Accept either, or an environment set up for jevc throws
 // AI_LoadAPIKeyError here.
-export const model = createTypeSafeAi({ apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY })
-  .evaluationModel('jev-latest')
+// The backend reads no env var for its base URL. TYPESAFE_BASE_URL is the API root for
+// jevc's own SDK and langchain-typesafe, and this baseURL includes /v1, so add it here.
+// Trimmed, and blank treated as unset, the way @typesafe-ai/sdk reads it; unset leaves the
+// backend's default, https://api.typesafe.ai/v1.
+const typesafeRoot = process.env.TYPESAFE_BASE_URL?.trim().replace(/\\/+$/, '')
+export const model = createTypeSafeAi({
+  apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY,
+  baseURL: typesafeRoot ? \`\${typesafeRoot}/v1\` : undefined,
+}).evaluationModel('${PINNED_MODEL}')
 ${p.residual ? `\n${['Still requires a generative model:', ...p.residual.split(LINE)]
     .map(l => `// ${l}`).join('\n')}\n` : ''}`
 }

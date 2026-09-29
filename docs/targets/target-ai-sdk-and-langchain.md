@@ -1,4 +1,4 @@
-# Emit target: @ai-sdk/typesafe-ai@3.0.3 (Target A, TS) + langchain-typesafe==0.0.1a2 (Target B, Python)
+# Emit target: @ai-sdk/typesafe-ai@3.0.3 (Target A, TS; read at 3.0.3, baseURL and modelId re-verified on 3.0.10) + langchain-typesafe>=0.0.1a3 (Target B, Python)
 
 **Feasible:** True  
 **Format:** ts + py (both targets are configured in code — neither tool reads a config file)  
@@ -15,6 +15,7 @@ TARGET B (installed from PyPI into /tmp/jevc-tgtB venv, Python 3.10.10 — note 
 - Per-file sha256 from the wheel RECORD: `classifier.py FbEWnDhmaVAeiNxZT-7EdpisZXTvwL6l61qxbKbJfs8` (18072 B), `types.py hBlxqnEjBY0GzXTc5pt7Xx0sKFoIWgJPs0pcGhmGeZE` (11148 B), `experimental/middleware/auto_mode.py Nn6ICTUJgaY9tYeLPwR91ffcWTMmcWFCN7EqYQrapa4` (9108 B), `experimental/middleware/model_router.py VOWjys4pGWwNbLoyxNsq_tXgBXAtGXjlXbNvS4sl8x4` (6891 B).
 - Base deps `httpx2>=2.0.0,<3.0.0`, `langchain-core>=1.6.2,<2.0.0`; extra `experimental` → `langchain>=1.3.15,<2.0.0`. Resolved: `langchain-core==1.6.3`, `httpx2==2.13.0`, `pydantic==2.14.0b2`, `langchain==1.4.1`, `langgraph==1.2.11`.
 - Files read: `__init__.py`, `_version.py`, `types.py`, `classifier.py`, `client.py`, `_state.py`, `experimental/middleware/{__init__,auto_mode,model_router}.py` (1710 lines total).
+- **Re-pinned to `langchain-typesafe==0.0.1a3` (2026-09-29).** a3 (MIT, same `Requires-Python`, deps `httpx2>=2.0.0,<3.0.0` + `langchain-core>=1.6.2,<2.0.0`) moved `questions` out of the `TypeSafeClassifier` constructor into `invoke`'s input (`ClassifierRequest = {"state", "questions"}`); with `extra="forbid"` the a2 spelling `TypeSafeClassifier(questions=...)` is a `ValidationError` at construction — verified. Wheel RECORD sha256: `classifier.py _wGr0BByvQdbTXtycDZJsPU96BCHxBWwmSA-IfwjOZI` (17260 B), `types.py MiKUY8SYQ4FxG3kWCuNng_HNeK_9NTAaalIGHEPe5Q4` (11908 B), `client.py UxAAv28chYjzZnabEhb6kKsC49JOLAKDLGRd86EZzKI` (11771 B). B.1 and B.3 below are unchanged in a3; B.2 is updated. The middleware sections below were read on a2 and not re-verified (in a3 both middlewares construct `TypeSafeClassifier()` and pass questions per `invoke`). `scripts/check-langchain-a3.sh` (opt-in, uv, dummy key, `httpx2.MockTransport` on the classifier's client) runs an emitted module against the real a3.
 - Verified by execution: `inspect.signature` on both middleware `__init__`s (no `threshold` param; `_PROBABILITY_THRESHOLD == 0.5`), the dead default-`criteria` path resolving to `None`, `ScoreAnswer.legend` required, `NoulAnswer` having no `confidence`, flat `answers` vs derived `nouls`/`choices`/`scores`, `min_length` validation on Choice/Score, and the exact `_payload()`/`_endpoint` output.
 
 Grounded against this repository at the time of writing: `docs/design.md` §9, `fixtures/security-guardrails.json` (model `jev-1.13.0`, recorded 2026-09-18), and `.env.example`.
@@ -27,7 +28,7 @@ Runtime credential/endpoint resolution, in precedence order:
 
 TARGET A (`createTypeSafeAi(options)`, typesafe-ai-provider.ts:31-45)
 1. `options.apiKey` (explicit) → 2. `TYPESAFE_AI_API_KEY` env var → 3. throws `AI_LoadAPIKeyError` ("TypeSafe API key is missing. Pass it using the 'apiKey' parameter or the TYPESAFE_AI_API_KEY environment variable.")
-- `options.baseURL` (trailing slash stripped) → hardcoded `https://api.typesafe.ai/v1`. NO env var for baseURL on this target.
+- `options.baseURL` (one trailing slash stripped) → hardcoded `https://api.typesafe.ai/v1`. NO env var for baseURL on this target. The emitted module therefore passes `baseURL: <TYPESAFE_BASE_URL trimmed, without trailing slashes> + "/v1"` when `TYPESAFE_BASE_URL` is set and not blank (the API root, read the way jevc's own `@typesafe-ai/sdk` reads it) and `undefined` otherwise — verified against `@ai-sdk/typesafe-ai@3.0.10` with a stubbed `fetch`: `http://127.0.0.1:9/` → `http://127.0.0.1:9/v1/systemone`, unset → `https://api.typesafe.ai/v1/systemone`. `scripts/check-ai-sdk.sh` (opt-in, npm, dummy key, a server on 127.0.0.1) typechecks an emitted module with `tsc --strict` against the real 3.0.10 and runs it; without the trim, ` http://127.0.0.1:<port>/ ` reached the server as `/%20/v1/systemone`.
 - Endpoint: `POST {baseURL}/systemone` (verified live: `https://api.typesafe.ai/v1/systemone`)
 - Fallback quirk: if `config.headers` is `undefined` the model re-loads the key from `TYPESAFE_AI_API_KEY` inside `doEvaluate` (evaluation-model.ts:95-103). Unreachable via `createTypeSafeAi` (it always supplies headers), reachable only if you construct `EvaluationTypeSafeAiModel` directly — which is NOT exported from `index.ts`.
 
@@ -184,7 +185,7 @@ So, precisely:
 
 ---
 
-# TARGET B — langchain-typesafe==0.0.1a2
+# TARGET B — langchain-typesafe==0.0.1a3 (read on 0.0.1a2; B.2 updated for a3)
 
 ## B.1 Question constructors — EXACT (`langchain_typesafe/types.py`)
 
@@ -215,10 +216,9 @@ Verified by execution: `Choice(criteria={})` → `too_short`; `Score(criteria=['
 
 ## B.2 `TypeSafeClassifier` — EXACT (`langchain_typesafe/classifier.py`)
 
-`@beta()` `RunnableSerializable[State, ClassificationResponse]`, `ConfigDict(extra="forbid", arbitrary_types_allowed=True, validate_default=True)` — an unknown kwarg is a hard error, so the emitter must emit exactly these seven fields:
+`@beta()` `RunnableSerializable[ClassifierRequest, ClassifierResponse]` (a3), `ConfigDict(extra="forbid", arbitrary_types_allowed=True, validate_default=True)` — an unknown kwarg is a hard error, so the emitter may pass only these six fields. a2 had a seventh, `questions: dict[str, Question] = Field(min_length=1)`; a3 removed it:
 ```python
 TypeSafeClassifier(
-    questions:    dict[str, Question]          = Field(min_length=1),   # REQUIRED
     model:        str                          = "jev-latest",          # stripped; non-empty
     api_key:      SecretStr | str              = env TYPESAFE_API_KEY,
     base_url:     str                          = env TYPESAFE_BASE_URL | "https://api.typesafe.ai",
@@ -229,7 +229,7 @@ TypeSafeClassifier(
 ```
 `State: TypeAlias = str | BaseMessage | Sequence[_StateValue] | dict[str, _StateValue]` — a bare `int`/`float`/`bool`/`None` root raises `TypeError` (`_state.py:46`). `BaseMessage` is accepted at the root or at any depth and serialized to role/content JSON via `convert_to_openai_messages`.
 
-Runnable surface: `invoke(input, config=None, **_)`, `ainvoke(...)`, plus inherited `batch`/`abatch`. Tracing metadata is injected automatically (`ls_provider="typesafe"`, `ls_model_name=self.model`, `ls_model_type="chat"`, `run_type="llm"`).
+Runnable surface: `invoke(input, config=None, **_)`, `ainvoke(...)`, plus inherited `batch`/`abatch`. In a3 `input` is `ClassifierRequest`, a `TypedDict` `{"state": State, "questions": dict[str, Question]}`; "non-empty" is documented on `questions` but not validated client-side, so an empty map reaches the wire. Tracing metadata is injected automatically (`ls_provider="typesafe"`, `ls_model_name=self.model`, `ls_model_type="chat"`, `run_type="llm"`).
 
 Emitted wire payload — verified by calling `_payload()` directly:
 ```json
@@ -342,7 +342,7 @@ Prefer `createTypeSafeAi({apiKey})` over the `typeSafeAi` singleton in emitted c
 
 ## Program → Target B `TypeSafeClassifier`: FULL FIDELITY, and the best target of the two.
 
-Near-identity mapping — `noul` stays `noul`, `criteria:{true,false}` stays as-is, and the emitted payload is shape-identical to `fixtures/*.json`. Strictly more information comes back than on A: `confidence` inline and required on choice/score, `legend` inline and required on score. `reduce` is ordinary Python reading `result.answers[id]` (flat access is fine — the grouped views are just `@property` filters). `stateBuilder` maps onto `State` directly and gets `BaseMessage` serialization for free at any nesting depth. Emit `questions=` + `model=` and let `api_key`/`base_url` come from env; `extra="forbid"` means a stray kwarg is a hard error, so emit only the seven documented fields.
+Near-identity mapping — `noul` stays `noul`, `criteria:{true,false}` stays as-is, and the emitted payload is shape-identical to `fixtures/*.json`. Strictly more information comes back than on A: `confidence` inline and required on choice/score, `legend` inline and required on score. `reduce` is ordinary Python reading `result.answers[id]` (flat access is fine — the grouped views are just `@property` filters). `stateBuilder` maps onto `State` directly and gets `BaseMessage` serialization for free at any nesting depth. Emit `TypeSafeClassifier(model=...)` plus a `classify(state)` that calls `classifier.invoke({"state": state, "questions": <name>_questions})` (a3's request shape), and let `api_key`/`base_url` come from env; `extra="forbid"` means a stray kwarg is a hard error, so emit only documented fields. The module header names the requirement, `langchain-typesafe>=0.0.1a3`.
 
 ## Program → Target B middleware: THIS IS WHERE THE HONEST CEILING IS.
 

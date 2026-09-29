@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { loadFixtures, assertExpectation, buildProgram, diffFixture } from '../src/check.js'
 import type { Fixture, Expectation } from '../src/check.js'
 import type { JevAnswer } from '../src/contract.js'
+import { PINNED_MODEL } from '../src/contract.js'
 
 const fixtures = loadFixtures('fixtures')
 
@@ -36,6 +37,14 @@ describe('fixture corpus', () => {
 
   it('loads 58 measured fixtures', () => {
     expect(fixtures).toHaveLength(58)
+  })
+
+  // The pin is not a preference: it is the one model every recorded answer came from, so
+  // the default request asks the model the corpus measured. A re-recording on another
+  // model has to move both together.
+  it('was recorded entirely against PINNED_MODEL', () => {
+    expect(PINNED_MODEL).toBe('jev-1.13.0')
+    expect(new Set(fixtures.map(f => f.measured.model))).toEqual(new Set([PINNED_MODEL]))
   })
 
   it('every fixture records the natural-language prompt it replaces', () => {

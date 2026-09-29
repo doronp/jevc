@@ -304,7 +304,7 @@ describe('validateResponse', () => {
   // calling validateResponse directly, which is now public.
   it('reports a missing answer once for a program with a duplicate id', () => {
     const dup: Program = { ...p, decisions: [p.decisions[0]!, p.decisions[0]!] }
-    const issues = validateResponse(dup, { model: 'x', answers: {}, usage: { input_tokens: 1, output_tokens: 1 } })
+    const issues = validateResponse(dup, { model: 'jev-1.13.0', answers: {}, usage: { input_tokens: 1, output_tokens: 1 } })
     expect(issues.map(i => [i.code, i.path])).toEqual([['answer_missing', 'answers.destructive']])
   })
 
@@ -357,7 +357,7 @@ describe('validateResponse', () => {
   })
 
   // Guard, not a defect test: a score answer is the probability-weighted expectation over
-  // level indices, not the index itself — 23 of the 26 measured score answers in fixtures/
+  // level indices, not the index itself — 22 of the 25 measured score answers in fixtures/
   // are fractional. An integrality check here would reject almost every real response.
   it('accepts a fractional score, which is the normal case', () => {
     expect(validateResponse(p, answers({
@@ -395,6 +395,78 @@ describe('validateResponse', () => {
     expect(absent.map(i => [i.code, i.severity])).toEqual([['usage_missing', 'warn']])
     const partial = validateResponse(p, res({ usage: { input_tokens: 10 } }))
     expect(partial.map(i => [i.code, i.severity])).toEqual([['usage_missing', 'warn']])
+  })
+
+  // E0 item 2. `res.model` was never read, so anything that speaks the wire format — a local
+  // encoder behind TYPESAFE_BASE_URL, a misrouted proxy — could answer in Jev's place and the
+  // verdict was computed from a model no threshold in this repo was measured on.
+  describe('model_unexpected', () => {
+    const modelIssues = (r: unknown, allow?: readonly string[]) =>
+      validateResponse(p, r, allow).filter(i => i.code === 'model_unexpected')
+
+    it('says nothing about the pinned model', () => {
+      expect(modelIssues(res())).toEqual([])
+    })
+
+    it('refuses a model that is not Jev, naming it and saying why that matters', () => {
+      const issues = validateResponse(p, res({ model: 'laya-rl-agent' }))
+      expect(issues.map(i => [i.code, i.path, i.severity])).toEqual([['model_unexpected', 'model', 'error']])
+      expect(issues[0].message).toContain('"laya-rl-agent"')
+      expect(issues[0].message).toContain('jev-1.13.0')
+      expect(issues[0].message).toContain('JEVC_ALLOW_MODEL')
+    })
+
+    it('refuses a response that names no model at all', () => {
+      for (const model of [undefined, null, 42, '']) {
+        const issues = modelIssues(res({ model }))
+        expect(issues.map(i => i.severity), JSON.stringify(model)).toEqual(['error'])
+      }
+    })
+
+    it('warns, and only warns, for a Jev build other than the pin', () => {
+      const issues = modelIssues(res({ model: 'jev-1.14.0' }))
+      expect(issues.map(i => i.severity)).toEqual(['warn'])
+      expect(issues[0].message).toContain('"jev-1.14.0"')
+      expect(issues[0].message).toContain('jev-1.13.0')
+    })
+
+    it('downgrades an allow-listed exact ID to a warning, and no other ID', () => {
+      const allowed = modelIssues(res({ model: 'laya-rl-agent' }), ['laya-rl-agent'])
+      expect(allowed.map(i => i.severity)).toEqual(['warn'])
+      expect(allowed[0].message).toContain('"laya-rl-agent"')
+      expect(allowed[0].message).toContain('jev-1.13.0')
+      // Exact match: not a prefix, not a case fold.
+      for (const model of ['laya-rl-agent-v2', 'LAYA-RL-AGENT', 'gpt-4o']) {
+        expect(modelIssues(res({ model }), ['laya-rl-agent']).map(i => i.severity), model).toEqual(['error'])
+      }
+    })
+
+    it('is reported alongside a missing answers map, not hidden behind it', () => {
+      expect(validateResponse(p, res({ model: 'laya-rl-agent', answers: null })).map(i => i.code))
+        .toEqual(['model_unexpected', 'answers_missing'])
+    })
+
+    // O-R5, KA-R4: the model string is the one wire value these messages print, and they go to
+    // a terminal (the gate's stderr, `evaluate`'s throw) and into logs. A server behind
+    // TYPESAFE_BASE_URL chooses it.
+    it('quotes a model string so a control character arrives escaped, and bounds it', () => {
+      const [esc] = modelIssues(res({ model: 'evil\u001b[2J\nFAKE: all clear\u009b' }))
+      expect(esc.message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+      expect(esc.message).toContain('"evil\\u001b[2J\\nFAKE: all clear\\u009b"')
+      const [long] = modelIssues(res({ model: 'x'.repeat(10_000) }), ['x'.repeat(10_000)])
+      expect(long.severity).toBe('warn')
+      expect(long.message.length).toBeLessThan(600)
+      expect(long.message).toContain(`"${'x'.repeat(64)}…"`)
+    })
+
+    it('describes, never serialises, a model field that is not a string', () => {
+      // The same service's error envelope is known to echo the request (redactErrorBody), so
+      // a structured `model` is named by its shape and never printed.
+      const [issue] = modelIssues(res({ model: { state: 'SECRET STATE' } }))
+      expect(issue.severity).toBe('error')
+      expect(issue.message).toContain('(got object)')
+      expect(issue.message).not.toContain('SECRET')
+    })
   })
 
   // The no-false-rejection guard, the response-side twin of "every fixture request passes

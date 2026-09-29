@@ -127,14 +127,17 @@ And the verdict is a block you can read in a pull request:
 ```json
 "rules": [
   { "when": [{ "id": "is_commit_operation",               "op": "lte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "user_explicitly_asked_to_commit",   "op": "uncertain" }],         "then": "ask" },
   { "when": [{ "id": "user_explicitly_asked_to_commit",   "op": "gte", "value": 0.5 }], "then": "allow" },
   { "when": [{ "id": "commit_required_by_requested_task", "op": "gte", "value": 0.5 }], "then": "allow" }
 ],
 "otherwise": "deny"
 ```
 
-Change a threshold and see which recorded cases move. Add a case and run it. The judgment
-that used to live in a paragraph now lives in three lines and a number you can point at.
+The second rule is the honest middle: when the model cannot tell whether the human asked, the
+gate asks the human rather than guessing. Change a threshold and see which recorded cases move.
+Add a case and run it. The judgment that used to live in a paragraph now lives in four lines
+and a number you can point at.
 
 ```bash
 npx tsx examples/02-agents-md-guardrail.ts   # the reasoning
@@ -214,12 +217,11 @@ which is the whole file:
 }
 ```
 
-For your own project: copy that `.claude/` directory, run `npm install jev-compiler` in the
-project (the gate imports it, and a global install is not importable), change the import in
-`gate.mjs` from the relative `dist/` path to `jev-compiler`, and set `TYPESAFE_API_KEY` in
-the environment Claude Code runs in.
-[`examples/sample-project/README.md`](examples/sample-project/README.md) walks the round
-trip — scan, lift, compile, install, run — one command at a time.
+For your own project: copy that `.claude/` directory, `npm install jev-compiler` in the
+project (a global install gives you the command, not an importable module), change the
+imports in `gate.mjs` from the relative `dist/` paths to `jev-compiler`, and set
+`TYPESAFE_API_KEY` in the environment Claude Code runs in. [`examples/sample-project/README.md`](examples/sample-project/README.md) walks
+the round trip — scan, lift, compile, install, run — one command at a time.
 
 [**`docs/wiring.md`**](docs/wiring.md) has one recipe per surface, with the code that
 actually runs:
@@ -338,11 +340,11 @@ Six commands. Every console block in this file is real output from this repo.
 | Command | Flags | Does |
 | --- | --- | --- |
 | `jevc scan [dir]` | `--json` | Finds the instruction files a project already has and sorts their rules into decidable, procedure and generation. The intended first command. |
-| `jevc compile <file\|->` | `--lift`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose. `-` reads stdin. |
+| `jevc compile <file\|->` | `--lift`, `--source <doc>`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema or a lifted Program → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose; `--source` refuses a lifted Program unless every citation quotes `<doc>`. `-` reads stdin. |
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
 | `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 58. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
-| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
+| `jevc check` | `--live`, `--model <id>`, `--threshold <n>`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. `--model` (default `jev-1.13.0`) and `--threshold` (default 0.15, range [0, 1)) apply to `--live` only and are refused without it. |
 
 `bouncer` and `toolgate` are reached only through `emit-policy`, never through `--emit`:
 they are policy documents, not modules.
@@ -353,8 +355,10 @@ check --live requires TYPESAFE_API_KEY in the environment.
 ```
 
 `--live` is the only command that touches the network, and it refuses before reaching it if
-there is no key. `jev-latest` is an alias that moves under you, so a TypeSafe model bump
-should surface as a diff in a drift report rather than as a production incident.
+there is no key. It asks the pinned `jev-1.13.0` unless `--model` names another; to see what a
+TypeSafe model bump would change, run it with `--model jev-latest`, and any build other than
+the pin shows up as a `<fixture>.model` row in the drift report rather than as a production
+incident.
 
 ### Compiling a schema
 
@@ -449,7 +453,9 @@ two evidence questions, each citing the line it came from, and the verdict in `r
 `parseLiftResponse` puts that through the same validator the deterministic path uses and
 checks all three fields of every `source`. The citation rules are in
 [Notes](#lift-citation-rules); the short version is that any error-severity issue returns
-the **empty** `Program`, never a usable one with a warning attached.
+the **empty** `Program`, never a usable one with a warning attached. From the shell,
+`jevc compile program.json --source AGENTS.md` runs the same check and exits 1 with nothing
+emitted when a citation does not verify. Without `--source`, a Program compiles unchecked.
 
 ### Emitting a policy
 
@@ -547,6 +553,9 @@ npm run build        # -> dist/
 npm test             # offline: no key, no network, no quota
 npm run gallery      # regenerate examples/GALLERY.md from fixtures/
 npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
+bash scripts/pack-smoke.sh          # opt-in, npm: pack, install, run the gate from the tarball; secret scan
+bash scripts/check-ai-sdk.sh        # opt-in, npm: emitted ai-sdk module on the real package, local server
+bash scripts/check-langchain-a3.sh  # opt-in, uv: emitted langchain module on the real a3, mock transport
 ```
 
 - [`docs/wiring.md`](docs/wiring.md) — one recipe per surface, with runnable code.
@@ -640,9 +649,9 @@ Note that 0.07 is the collapsed verdict question from the decomposition law: wid
 that the recording is a stable assertion, far too narrow to be a verdict you would ship.
 Those are different questions, and the corpus only answers the first.
 
-`--live` compares the recording against `jev-latest`, and the two commands are not running
+`--live` compares the recording against the pinned `jev-1.13.0` (or `--model`), and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
-spuriously, while 210 of the 321 numeric bounds in this corpus have less headroom than the
+spuriously, while 207 of the 321 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift
 threshold would otherwise turn most of the corpus red. A band that no longer holds is
 `drifted`, not `broken`, and does not gate the exit. Everything structural still exits 1 on
@@ -662,6 +671,14 @@ are refused locally by `score_too_few_levels`, `choice_too_few_options`, `duplic
 `unknown_field`, `path_unresolved` and `state_empty`, each pinned by
 `test/contract.test.ts`.
 
+The response also has to say who answered. The corpus, and every threshold and band it
+records, was measured on `jev-1.13.0`, the model the request pins, and must be re-measured for
+any other model. A response whose `model` is missing or is not a Jev build is `model_unexpected` at error
+severity, so `evaluate()` throws and a gate fails closed; another Jev build is a warning and the
+verdict stands, with the warning in the returned `Verdict.warnings` (the sample gate prints it
+to stderr and logs it). `JEVC_ALLOW_MODEL` (comma-separated exact model IDs, read on every call) is the
+one opt-in: it turns a named non-Jev model into a warning. It re-measures nothing.
+
 [`docs/validation.md`](docs/validation.md) has the probe table with what the API actually
 returned, plus the response-side checks, the two closed vocabularies a TypeScript cast
 cannot enforce, and the token budget.
@@ -674,12 +691,13 @@ exit 0, carrying the invented `file:line — quote` as a provenance comment — 
 citation is worse than none, because it turns "I should check this" into "someone already
 did."
 
-These checks run in `parseLiftResponse`, on a lift response as it comes back. `jevc
-compile` and `jevc emit-policy` on a saved `program.json` never see the document the quotes
-came from, so they do not re-verify its citations: a paraphrased quote in a hand-saved
-program still compiles at exit 0 and becomes the artifact's provenance comment. Check each
-quote against the file before compiling, as the
-[Claude Code skill](plugin/skills/jevc/SKILL.md) does with `grep -nF`.
+These checks run in `parseLiftResponse`, on a lift response as it comes back, and in
+`jevc compile --source <doc>`, which runs it on a saved `program.json`. Without `--source`,
+`jevc compile` and `jevc emit-policy` never see the document the quotes came from, so they do
+not re-verify its citations: a paraphrased quote in a hand-saved program still compiles at
+exit 0 and becomes the artifact's provenance comment. The
+[Claude Code skill](plugin/skills/jevc/SKILL.md) checks each quote with `grep -nF`, because
+the published 0.1.0 it can fetch has no `--source`.
 
 - `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
   re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing
@@ -807,6 +825,69 @@ classification — `scan` calls no model, writes no files and decides nothing. A
 the list and picks a file to lift, and the lift step is where a model and then a human
 decide what actually becomes a question.
 
+### Where the answers come from, and when they stop
+
+`TYPESAFE_BASE_URL` reroutes every call: jevc's own (`evaluate`, `askModel`, `check --live`,
+all through `@typesafe-ai/sdk`), the emitted `langchain` module's (through
+`langchain-typesafe`) and the emitted `ai-sdk` module's, which passes it as `baseURL`. That is
+how you point jevc at a TypeSafe account or at a local Jev-compatible server. The model guard
+reads the `model` field the server sends back, so a server that echoes whatever model it was
+asked for passes it. Trust the base URL as far as you trust the key.
+
+Thresholds are per model. Every threshold, band and corpus number here was measured on
+`jev-1.13.0`; the guard refuses a verdict from anything that does not say it is a Jev build and
+warns on a Jev build other than the pin. `--model <id>` picks which TypeSafe build
+`check --live` asks and `--threshold <n>` how far an answer may move before it is a row.
+
+To run a local Jev-compatible server on purpose, it takes all five of these:
+
+1. The server answers `POST <root>/v1/systemone` in TypeSafe's wire format, and
+   `TYPESAFE_BASE_URL=<root>` points jevc at it.
+2. It accepts a request that asks for a Jev build. jevc and the emitted modules ask for
+   `jev-1.13.0`, and `--model` takes only `jev-latest`, `jev-preview` or `jev-1.13.0`, the
+   list the request validator enforces; a server that routes by model ID has to map those to
+   itself. Asking for a non-Jev ID is not in this release.
+3. It names itself in the reply's `model`. A missing, empty or non-string `model` is always an
+   error; the allow-list cannot turn it into a warning.
+4. `JEVC_ALLOW_MODEL` lists that exact ID, which turns the guard's error into a warning.
+5. `TYPESAFE_API_KEY` holds a non-empty dummy: `check --live` and the emitted `langchain`
+   module refuse an empty one, and the server can ignore it.
+
+Then re-measure: `check --live` against that server reports every band that moved as a
+`drifted` row. Until then the thresholds describe `jev-1.13.0`, not your model. The guard runs inside
+`evaluate` and `askModel`, and the emitted `langchain` module's `classify()` applies it too
+(`ValueError`, or `warnings.warn`). The emitted `ai-sdk` module asks for the pin and does not
+check who answered; `@ai-sdk/typesafe-ai` reports the model it asked for when the reply names
+none, so its `modelId` proves nothing either.
+
+The vendor is a single point of failure: there is no local fallback, so when the server is
+down nothing answers. `evaluate()` waits 5 seconds, retries once (`timeoutMs`, `maxRetries`),
+then throws; it never returns a verdict it did not compute, and the emitted modules do not
+catch the error either. The sample gate catches that and answers `ask`, so every gated `Bash` call waits for
+a human until the outage ends; `JEVC_ON_ERROR=allow` keeps the agent working, unguarded,
+instead. The `bouncer` policy ships `on_error: passthrough` and toolgate's `fail_mode` defaults
+to `passthrough`: both let the call through on a backend error, so set them to `ask` or `deny`
+if an outage should stop the agent.
+
+The `bouncer` and `toolgate` policies name no model; the host picks it. Bouncer asks
+`jev-latest` ([target-bouncer.md](docs/targets/target-bouncer.md)) and toolgate's
+`backend.model` defaults to `typesafe-ai/jev` ([target-toolgate.md](docs/targets/target-toolgate.md)),
+so neither the pin nor the guard reaches them, and a vendor model bump reaches you without a
+jevc release.
+
+If TypeSafe retires `jev-1.13.0`, a request naming it either fails, and a gate fails the way
+it does in an outage, or comes back from another build, which the guard reports as a warning
+while the verdict stands. The fix is a jevc release, not a flag: re-measure the corpus
+against the successor in a pinned drift run, bump `PINNED_MODEL`, and recompile, because every
+emitted module carries the model it was compiled with.
+
+To watch a rule before trusting it, run the sample gate with `JEVC_MODE=observe`: every call
+goes through, and the verdict it would have given is appended to `observe.jsonl` beside the
+gate (or `JEVC_OBSERVE_LOG`) with the answers and the uncertain ids, never the state. A row
+with a non-null `error` is the fail-closed fallback, not a verdict the model gave. The default
+path sits beside a gate you commit, so gitignore `observe.jsonl`. Read the log, adjust the
+thresholds, then drop the variable.
+
 ### Cost
 
 From TypeSafe's published pricing as of 2026-09-18: **$0.042 per million input tokens,
@@ -815,8 +896,13 @@ that no test can pin, because it is not in the repo.
 
 ### Security
 
-`jevc` itself reads one variable, `TYPESAFE_API_KEY`. It is never written to a file, never
-committed, never logged, and never embedded in a fixture. `.env` is gitignored and
+`jevc` itself reads three variables. `TYPESAFE_API_KEY` is never written to a file, never
+committed, never logged, and never embedded in a fixture. `TYPESAFE_BASE_URL`, read through
+`@typesafe-ai/sdk`, decides where that key is sent: an inherited value ships the key to
+whatever host it names, so treat it like the key (see
+[Where the answers come from](#where-the-answers-come-from-and-when-they-stop)).
+`JEVC_ALLOW_MODEL` holds model IDs, not a secret (see
+[What the validator catches](#what-the-validator-catches)). `.env` is gitignored and
 `.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
 
 The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's

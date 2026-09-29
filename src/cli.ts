@@ -3,15 +3,15 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { fromJsonSchema, type JsonSchema, type SchemaProgram } from './from-schema.js'
-import { buildLiftRequest } from './from-prompt.js'
+import { buildLiftRequest, parseLiftResponse } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
 import { emitAiSdk } from './emit/ai-sdk.js'
 import { emitLangchain } from './emit/langchain.js'
 import { canEmit } from './emit/capability.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
-import { assertExpectation, checkLive, loadFixtures } from './check.js'
-import { validateRequest, type ValidationIssue } from './contract.js'
+import { assertExpectation, checkLive, liveOptions, liveSummary, loadFixtures } from './check.js'
+import { PINNED_MODEL, validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -103,7 +103,7 @@ const flag = (name: string): string | undefined => {
 const has = (name: string) => argv.includes(`--${name}`)
 
 /** Flags that consume the argument after them. Everything else is a bare switch. */
-const VALUED = new Set(['emit', 'o', 'for', 'fixtures'])
+const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold', 'source'])
 
 /**
  * The first argument after the subcommand that is neither a flag nor a flag's value.
@@ -137,8 +137,8 @@ const die = (msg: string): never => { toStderr(`${msg}\n`); process.exit(1) }
  * a failure rather than silently ignored"); argv was the one surface exempt from it.
  */
 const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
-  compile: new Set(['emit', 'o', 'lift']),
-  check: new Set(['fixtures', 'live']),
+  compile: new Set(['emit', 'o', 'lift', 'source']),
+  check: new Set(['fixtures', 'live', 'model', 'threshold']),
   explain: new Set(['fixtures']),
   'emit-policy': new Set(['for', 'o']),
   scan: new Set(['json']),
@@ -300,7 +300,12 @@ const fixtures = (dir: string) => {
 const PACKAGED_FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url))
 
 if (cmd === 'compile') {
-  const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json|ai-sdk|langchain] [-o out]')
+  const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--source <doc>] [--emit sdk|json|ai-sdk|langchain] [-o out]')
+  // stdin can be read once. The Program took it, the document then read as empty, and every
+  // citation in an honest lift was reported as not found — a forgery verdict with no forgery.
+  if (path === '-' && flag('source') === '-') {
+    die('The program and --source cannot both come from stdin: pass one of them as a file.')
+  }
   const text = read(path)
 
   if (has('lift')) {
@@ -315,6 +320,11 @@ if (cmd === 'compile') {
     // command later — so the answer is to refuse the combination rather than pick one.
     if (flag('emit') !== undefined) {
       die('--emit has no meaning with `jevc compile --lift`: --lift prints the lowering request an agent answers, not an emitted artifact. Lift first, then run jevc on the Program the agent returns.')
+    }
+    // The same unread-but-known flag: the document being lifted is the source, and the
+    // citations `--source` checks do not exist until the agent answers.
+    if (flag('source') !== undefined) {
+      die('--source has no meaning with `jevc compile --lift`: it checks the citations of the Program the agent returns, one command later. Lift first, then run `jevc compile program.json --source ' + (path === '-' ? '<doc>' : path) + '`.')
     }
 
     // An empty instruction file is not "a document that happens to contain no rules", it
@@ -384,6 +394,9 @@ if (cmd === 'compile') {
     }
     program = parsed as SchemaProgram
   } else {
+    if (flag('source') !== undefined) {
+      die(`--source checks the citations of a lifted Program, and ${path} has no \`decisions\` key, so it is not one. A JSON Schema quotes no document; compile it without --source.`)
+    }
     try {
       program = fromJsonSchema(parsed as JsonSchema)
     } catch {
@@ -391,9 +404,27 @@ if (cmd === 'compile') {
     }
   }
 
-  const issues = [...validateProgram(program!), ...lintProgram(program!)]
+  // A lifted Program is model output, and its citations are the only thing separating a rule
+  // from the document from a rule the model invented. `parseLiftResponse` is the check, and
+  // this path never ran it: a quote found nowhere in the document compiled at exit 0, and
+  // the emitted `// from <file>:<line>` comment then vouched for it. `--source` hands it the
+  // document. It runs `validateProgram` and `lintProgram` itself, so its issues replace the
+  // pair below rather than repeat them. The label is the path as typed, `stdin` for `-`,
+  // because that is what the `--lift` fence called the document and what every
+  // `source.file` in the answer must match.
+  //
+  // ponytail: opt-in, so a Program that carries citations and is compiled without --source
+  // is still unchecked. The upgrade is to refuse one whose decisions carry a `source` unless
+  // --source is given; a hand-written Program cites nothing and would be unaffected.
+  const source = flag('source')
+  const label = source === '-' ? 'stdin' : source
+  const lifted = source === undefined ? undefined : parseLiftResponse(text, read(source), label!)
+  const issues = lifted?.issues ?? [...validateProgram(program!), ...lintProgram(program!)]
   for (const i of issues) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
-  if (issues.some(i => i.severity === 'error')) process.exit(1)
+  if (issues.some(i => i.severity === 'error')) {
+    if (lifted) toStderr(`${path} did not verify against ${label}, so nothing was emitted. Each decision's \`source\` must quote ${label} word for word and name it the way the lift request did: the path as typed then, or \`stdin\`.\n`)
+    process.exit(1)
+  }
 
   if (program!.residual) toStderr(`\nresidual:\n${program!.residual}\n`)
 
@@ -433,10 +464,10 @@ if (cmd === 'compile') {
   // target at all. Its `no_decisions` error is the one that bites here: a JSON Schema whose
   // properties are all free text (the ordinary prose->residual case) compiles to zero
   // decisions, and the emitted module then asks nothing and returns the fallthrough verdict
-  // for every input. capability.ts:72-79 already named this exact failure — langchain's
-  // `TypeSafeClassifier(questions=...)` declares `Field(min_length=1)` and raises at import
-  // — and nothing on this path called it. It is also the honest exit code for "I compiled
-  // nothing": one `dropped:` line at exit 0 reads as success.
+  // for every input. capability.ts:72-79 already named this exact failure — langchain-typesafe
+  // 0.0.1a3 no longer validates the questions client-side, so the emitted classify() sends
+  // an empty map to the API — and nothing on this path called it. It is also the honest
+  // exit code for "I compiled nothing": one `dropped:` line at exit 0 reads as success.
   //
   // `validateRequest` owns the wire constraints the API enforces on whichever artifact ends
   // up sending the request (empty question ids, the token budget; the 255-option ceiling
@@ -466,16 +497,29 @@ if (cmd === 'compile') {
 }
 
 if (cmd === 'check') {
+  // Both only mean something to a live run: offline check asserts the recorded answers,
+  // which name their own model and are diffed against nothing. Refused rather than ignored,
+  // the same call as `--emit` with `compile --lift` — a flag that silently does nothing
+  // reads as a run that honoured it.
+  for (const name of ['model', 'threshold']) {
+    if (!has('live') && flag(name) !== undefined) {
+      die(`--${name} has no meaning without --live: offline \`jevc check\` asserts the recorded answers and asks no model.`)
+    }
+  }
   const corpus = fixtures(flag('fixtures') ?? PACKAGED_FIXTURES)
 
   if (has('live')) {
+    // Validated before the key check, so a bad flag is reported on a machine with no key
+    // and never costs a call on one that has it.
+    let live: ReturnType<typeof liveOptions> = {}
+    try { live = liveOptions(flag('model'), flag('threshold')) } catch (e) { die((e as Error).message) }
     // Amendment: --live requires a real API key and must never run as part of `npm test`.
     // Offline `check` (the default, above) needs no key and stays that way.
     if (!process.env.TYPESAFE_API_KEY) {
       die('check --live requires TYPESAFE_API_KEY in the environment.')
     }
     // Network, auth and quota failures are the normal case here, not bugs.
-    const report = await checkLive(corpus)
+    const report = await checkLive(corpus, live)
       .catch(e => die(`check --live failed: ${(e as Error).message}`))
     for (const row of report.rows) {
       if (row.status === 'stable') continue
@@ -484,9 +528,7 @@ if (cmd === 'check') {
         `${row.status.toUpperCase()} ${row.id}  recorded=${JSON.stringify(row.recorded)} live=${JSON.stringify(row.live)}${delta}\n`,
       )
     }
-    toStdout(
-      `${report.rows.length} rows checked live against ${report.model}: ${report.drifted} drifted, ${report.broken} broken\n`,
-    )
+    toStdout(liveSummary(report))
     process.exit(report.broken > 0 ? 1 : 0)
   }
 
@@ -608,9 +650,15 @@ die(`usage: jevc <command>
   scan [dir]                    find the instruction files this project already has
   compile <file|-> --lift       turn a rules document into a lowering request for your agent
   compile <file|->              turn a JSON Schema into a typed module
+  compile <program.json> --source <doc>
+                                compile the Program your agent returned, refusing it
+                                unless every citation quotes <doc>
   emit-policy --for <target>    lower a compiled program into bouncer or toolgate YAML
   show [fixture-id]             one recorded fixture, end to end
   explain <decision-id>         why a question exists, and what it measured
   check                         replay the measured corpus
+  check --live [--model <id>] [--threshold <n>]
+                                re-measure it against the API (needs TYPESAFE_API_KEY);
+                                --model defaults to ${PINNED_MODEL}, --threshold to 0.15
 
 Start with \`jevc scan\`. \`jevc --version\` prints the version.`)

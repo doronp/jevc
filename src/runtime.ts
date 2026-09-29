@@ -1,7 +1,7 @@
 import { TypeSafeClient, APIError } from '@typesafe-ai/sdk'
 import type { SystemOneRequest } from '@typesafe-ai/sdk'
 import type { JevAnswer, JevModel, JevRequest, ValidationIssue } from './contract.js'
-import { redactErrorBody, validateRequest, validateResponse } from './contract.js'
+import { PINNED_MODEL, redactErrorBody, validateRequest, validateResponse } from './contract.js'
 import { uncertaintyOf, validateProgram, type Program } from './ir.js'
 import { emitJson } from './emit/json.js'
 
@@ -108,6 +108,11 @@ export type Verdict = {
   uncertain: string[]
   usage: { input_tokens: number; output_tokens: number }
   latencyMs: number
+  /** Every warn-severity issue askModel found (request and response). The one that matters
+   * most is `model_unexpected`: an answer from a Jev build other than the pinned one, or from a
+   * model JEVC_ALLOW_MODEL let through. The verdict stands, but the thresholds behind it were
+   * not measured on the model that produced it, and a caller that never sees this cannot tell. */
+  warnings: ValidationIssue[]
 }
 
 export type EvaluateOptions = {
@@ -167,7 +172,7 @@ export async function askModel(
   // per fixture). Refusing a paid call over a regex on instructions text belongs at the CLI's
   // authoring gate, which is where it already is.
 
-  const req = emitJson(p, state, opts.model ?? 'jev-latest')
+  const req = emitJson(p, state, opts.model ?? PINNED_MODEL)
   // Kept unfiltered: the warns are the request half of AskResult.issues below.
   const issues = validateRequest(req)
   const requestErrors = issues.filter(i => i.severity === 'error')
@@ -228,7 +233,13 @@ export async function askModel(
   }
   const latencyMs = clock() - t0
 
-  issues.push(...validateResponse(p, res))
+  // Read per call, not at import: a hook process is long-lived and a test flips it per case.
+  // Fail-closed is the default; the env var is the single explicit way to accept a non-Jev
+  // answerer, and it takes exact IDs so naming one model cannot let a different one through.
+  // ponytail: env only, no EvaluateOptions field; add a per-call list there if a library
+  // caller ever needs different allow-lists in one process.
+  const allowed = (process.env.JEVC_ALLOW_MODEL ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  issues.push(...validateResponse(p, res, allowed))
   // res.answers was the third of the three bare casts this round exists to close (cli.ts:197
   // and from-prompt.ts:172 are the others). validateResponse has now had its say, so the cast
   // asserts only what was checked — except when there is no answers object at all, where
@@ -272,5 +283,6 @@ export async function evaluate(
     uncertain: p.decisions.filter(d => isUncertain(answers, d.id, p)).map(d => d.id),
     usage: r.usage,
     latencyMs: r.latencyMs,
+    warnings: r.issues.filter(i => i.severity === 'warn'),
   }
 }

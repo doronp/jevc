@@ -21,11 +21,13 @@
  * afterAll; nothing is written inside the repo.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { validateRequest } from '../src/contract.js'
 import { loadFixtures } from '../src/check.js'
@@ -655,6 +657,53 @@ describe('cases with a known history', () => {
     expect(r.stdout).toBe('')
   })
 
+  // E0 item 3. `--model` and `--threshold` are validated BEFORE the key check, so every case
+  // here is decided with no key in the child environment and nothing can reach a socket. The
+  // accepted cases prove it the other way round: valid flags get as far as the key refusal.
+  describe('check --live --model / --threshold', () => {
+    const refuses = (args: string[], ...says: string[]) => {
+      const r = jevc(['check', ...args])
+      expect(r.status, args.join(' ')).toBe(1)
+      for (const s of says) expect(r.stderr, args.join(' ')).toContain(s)
+      expect(r.stderr, args.join(' ')).not.toContain('TYPESAFE_API_KEY')
+      expect(r.stdout).toBe('')
+    }
+
+    it('accepts every Jev model and a threshold, and still stops at the missing key', () => {
+      for (const args of [
+        ['--live', '--model', 'jev-1.13.0'], ['--live', '--model', 'jev-latest'], ['--live', '--model=jev-preview'],
+        ['--live', '--threshold', '0.3'], ['--live', '--threshold=0'], ['--live', '--threshold', '0.999'],
+        ['--live', '--model', 'jev-latest', '--threshold', '0.05', '--fixtures', 'fixtures'],
+      ]) {
+        const r = jevc(['check', ...args])
+        expect(r.status, args.join(' ')).toBe(1)
+        expect(r.stderr, args.join(' ')).toContain('check --live requires TYPESAFE_API_KEY')
+        expect(r.stdout).toBe('')
+      }
+    })
+
+    it('refuses a model that is not a Jev model, naming the choices', () => {
+      refuses(['--live', '--model', 'laya-rl-agent'], '"laya-rl-agent"', 'jev-latest, jev-preview, jev-1.13.0')
+      refuses(['--live', '--model', 'jev-1.14.0'], '"jev-1.14.0"')
+    })
+
+    it('refuses a threshold that is not a number in [0, 1)', () => {
+      for (const t of ['abc', 'NaN', 'Infinity', '1', '1.5', '0x10', '--threshold=-0.1']) {
+        refuses(t.startsWith('--') ? ['--live', t] : ['--live', '--threshold', t], '--threshold', '[0, 1)')
+      }
+    })
+
+    it('refuses either flag without --live, where nothing would read it', () => {
+      refuses(['--model', 'jev-1.13.0'], '--model has no meaning without --live')
+      refuses(['--threshold', '0.3'], '--threshold has no meaning without --live')
+    })
+
+    it('refuses either flag twice', () => {
+      refuses(['--live', '--model', 'jev-1.13.0', '--model', 'jev-latest'], '"--model" was given more than once')
+      refuses(['--live', '--threshold', '0.1', '--threshold', '0.2'], '"--threshold" was given more than once')
+    })
+  })
+
   // "I compiled nothing" must not read as success. Fixed in round 3 for the empty case;
   // asserted here at the process level, across every target including the default.
   for (const args of [[], ['--emit', 'sdk'], ['--emit', 'json'], ['--emit', 'ai-sdk'], ['--emit', 'langchain']]) {
@@ -970,7 +1019,7 @@ describe('the examples, as real processes', () => {
   // 02's caption: "Every number printed below is replayed from fixtures/agent-harness-rules
   // .json — one real call to jev-1.13.0". Each printed number is checked against that
   // fixture, and the printed verdict against the reducer the example itself declares
-  // (examples/02-agents-md-guardrail.ts:41-47, first match wins, otherwise deny).
+  // (examples/02-agents-md-guardrail.ts:44-52, first match wins, otherwise deny).
   it('02 prints numbers that are in the fixture, and a verdict its own rules imply', () => {
     const out = runExample('02-agents-md-guardrail.ts').stdout
     const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
@@ -995,9 +1044,12 @@ describe('the examples, as real processes', () => {
       expect(printed[id], `${id} printed a number no fixture measured`).toBe(noul(id))
     }
 
-    // The example's reducer, transcribed: first match wins, otherwise deny.
+    // The example's reducer, transcribed: first match wins, otherwise deny. The `uncertain`
+    // rule reads the default noul band, (0.35, 0.65) exclusive.
+    const u = printed.user_explicitly_asked_to_commit
     const expected =
       printed.is_commit_operation <= 0.5 ? 'allow'
+        : u > 0.35 && u < 0.65 ? 'ask'
         : printed.user_explicitly_asked_to_commit >= 0.5 ? 'allow'
           : printed.commit_required_by_requested_task >= 0.5 ? 'allow'
             : 'deny'
@@ -1010,6 +1062,19 @@ describe('the examples, as real processes', () => {
     const collapsed = f.measured.answers.decision
     if (collapsed.type !== 'choice') throw new Error('fixture shape changed')
     expect(out).toContain(`${collapsed.choice} at confidence ${collapsed.confidence}`)
+  })
+
+  // 02 ends on "This program installed in the project the rule came from" and prints the
+  // sample gate's command, so its rules must be the ones commit.json installs, in order.
+  // Read from the source as written, not by running it: the example declares the program
+  // inline, and a reader compares the two files by eye.
+  it('02 declares the reducer rules the sample gate installs', () => {
+    const src = readFileSync(join(ROOT, 'examples', '02-agents-md-guardrail.ts'), 'utf8')
+    const commit = JSON.parse(readFileSync(join(ROOT, 'examples/sample-project/.claude/gates/commit.json'), 'utf8'))
+    const written = [...src.matchAll(/\{ when: \[\{ id: '(\w+)', op: '(\w+)'(?:, value: ([\d.]+))? \}\], then: '(\w+)' \}/g)]
+      .map(([, id, op, value, then]) => ({ when: [value ? { id, op, value: Number(value) } : { id, op }], then }))
+    expect(written).toEqual(commit.reduce.rules)
+    expect(src).toContain(`otherwise: '${commit.reduce.otherwise}'`)
   })
 
   // 03's caption: "the collapsed 'which tier?' question picked the CHEAP tier at confidence
@@ -1259,6 +1324,189 @@ describe('scan, show, and the installable hook', () => {
       })
       expect(r.status).toBe(0)
       expect(JSON.parse(r.stdout ?? '').hookSpecificOutput.permissionDecision).toBe('ask')
+    })
+
+    describe('JEVC_MODE=observe', () => {
+      let dir: string
+      beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'jevc-observe-')) })
+      afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+      it('logs one line per call and lets the call through, even when the verdict is deny', () => {
+        const log = join(dir, 'observe.jsonl')
+        const env = { JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: log, JEVC_SENTINEL: 'sentinel-7f3a91' }
+        for (let i = 0; i < 2; i++) {
+          const r = runHook(sample(), env)
+          expect(r.status, r.stderr).toBe(0)
+          expect(r.stdout, 'observe mode must never block').toBe('')
+        }
+        const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
+        expect(lines).toHaveLength(2)
+        const row = JSON.parse(lines[0]) as Record<string, unknown>
+        expect(Object.keys(row).sort()).toEqual(['answers', 'error', 'model', 'tool_name', 'ts', 'uncertain', 'verdict', 'warnings'])
+        expect(Number.isNaN(Date.parse(row.ts as string))).toBe(false)
+        const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
+        const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
+        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [], warnings: [], error: null })
+        // The model's answers to this program's questions, and nothing it was shown.
+        expect(row.answers).toEqual(Object.fromEntries(program.decisions.map(d => [d.id, f.measured.answers[d.id]])))
+        for (const leak of ['git commit', 'go ahead', 'payments-api', 'sentinel-7f3a91', log]) {
+          expect(lines[0], `the observe log carries "${leak}"`).not.toContain(leak)
+        }
+      })
+
+      it('still lets the call through when the log cannot be written', () => {
+        const r = runHook(sample(), { JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: join(dir, 'no', 'such', 'dir', 'x.jsonl') })
+        expect(r.status).toBe(0)
+        expect(r.stdout).toBe('')
+        // O-R11: without this, deleting the report left the test green, and a log that silently
+        // stops growing reads as "the rule never fired".
+        expect(r.stderr).toMatch(/^jev gate: observe log not written: .*ENOENT/m)
+      })
+
+      // Every other test names JEVC_OBSERVE_LOG, so the documented default was never exercised.
+      // A copy with its imports made absolute runs from a directory the test owns.
+      it('writes observe.jsonl beside the gate when JEVC_OBSERVE_LOG is unset', () => {
+        const gates = join(dir, 'project', '.claude', 'gates')
+        mkdirSync(gates, { recursive: true })
+        const dist = (f: string) => JSON.stringify(pathToFileURL(join(ROOT, 'dist', f)).href)
+        const gate = readFileSync(join(HOOK, 'gate.mjs'), 'utf8')
+          .replaceAll("'../../../../dist/index.js'", dist('index.js'))
+          .replaceAll("'../../../../dist/check.js'", dist('check.js'))
+          .replaceAll("HERE('../../../../fixtures')", JSON.stringify(join(ROOT, 'fixtures')))
+        expect(gate, 'the gate no longer imports what this copy rewrites').not.toContain('../../../../')
+        writeFileSync(join(gates, 'gate.mjs'), gate)
+        writeFileSync(join(gates, 'commit.json'), readFileSync(join(HOOK, 'commit.json')))
+        const { JEVC_OBSERVE_LOG: _drop, ...env } = { ...OFFLINE_ENV, JEVC_OBSERVE_LOG: '' }
+        const r = spawnSync(process.execPath, [join(gates, 'gate.mjs')], {
+          cwd: join(dir, 'project'), input: JSON.stringify(sample()), encoding: 'utf8',
+          env: { ...env, JEVC_REPLAY: '1', JEVC_MODE: 'observe' }, timeout: 60_000,
+        })
+        expect([r.status, r.stdout, r.stderr]).toEqual([0, '', ''])
+        const lines = readFileSync(join(gates, 'observe.jsonl'), 'utf8').trimEnd().split('\n')
+        expect(lines).toHaveLength(1)
+        expect(JSON.parse(lines[0])).toMatchObject({ verdict: 'deny', error: null })
+      })
+    })
+
+    // The live path, offline: the gate's own evaluate() answered by a local server through
+    // TYPESAFE_BASE_URL, with a dummy key. No recorded fixture sits in the uncertainty band,
+    // so this is the only way to reach commit.json's uncertain -> ask rule end to end. It is
+    // also the only way to show the model guard reaching a real gate through the real SDK.
+    describe('the live path, offline', () => {
+      const band = {
+        is_commit_operation: { type: 'noul', noul: 0.96 },
+        user_explicitly_asked_to_commit: { type: 'noul', noul: 0.5 },
+        commit_required_by_requested_task: { type: 'noul', noul: 0.16 },
+      }
+      // `model: undefined` drops out of JSON.stringify, which is the "names no model" reply.
+      let reply: Record<string, unknown> = {}
+      const answeredBy = (model: unknown) => { reply = { model, answers: band, usage: { input_tokens: 1, output_tokens: 1 } } }
+      // B5: the body is read, not drained, so the test proves what the gate asked, not just
+      // that something asked.
+      const bodies: { model?: unknown; questions?: Record<string, unknown> }[] = []
+      const server = createServer((req, res) => {
+        let raw = ''
+        req.on('data', c => { raw += c })
+        req.on('end', () => {
+          bodies.push(JSON.parse(raw))
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify(reply))
+        })
+      })
+      beforeAll(() => new Promise<void>(r => server.listen(0, '127.0.0.1', r)))
+      afterAll(() => { server.close() })
+
+      // JEVC_ALLOW_MODEL is dropped too: one inherited from the shell running the suite would
+      // turn the fail-closed case below into a pass.
+      const { JEVC_REPLAY: _r, JEVC_ALLOW_MODEL: _a, ...offline } = { ...OFFLINE_ENV, JEVC_REPLAY: '', JEVC_ALLOW_MODEL: '' }
+      const live = (env: Record<string, string> = {}) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done, fail) => {
+        const c = spawn(process.execPath, [join(HOOK, 'gate.mjs')], {
+          cwd: PROJECT,
+          env: { ...offline, TYPESAFE_API_KEY: 'dummy',
+            TYPESAFE_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ...env },
+        })
+        let stdout = '', stderr = ''
+        c.stdout.on('data', d => { stdout += d })
+        c.stderr.on('data', d => { stderr += d })
+        c.on('error', fail)
+        c.on('close', status => done({ status, stdout, stderr }))
+        c.stdin.end(JSON.stringify(sample()))
+      })
+      const decision = (r: { stdout: string }) =>
+        JSON.parse(r.stdout).hookSpecificOutput as { permissionDecision: string; permissionDecisionReason: string }
+      const observed = async (env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'jevc-observe-'))
+        try {
+          const o = await live({ JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: join(dir, 'observe.jsonl'), ...env })
+          expect([o.status, o.stdout]).toEqual([0, ''])
+          return JSON.parse(readFileSync(join(dir, 'observe.jsonl'), 'utf8')) as Record<string, unknown>
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      it('asks the human when whether they asked for the commit is uncertain', async () => {
+        answeredBy('jev-1.13.0')
+        const before = bodies.length
+        const r = await live()
+        expect(r.status, r.stderr).toBe(0)
+        const d = decision(r)
+        expect(d.permissionDecision).toBe('ask')
+        expect(d.permissionDecisionReason).toContain('0.50')
+        expect(d.permissionDecisionReason, 'the deny wording on an ask').not.toContain('not a request to commit')
+        expect(r.stderr, 'the pinned model answered; there is nothing to warn about').toBe('')
+
+        expect(await observed()).toMatchObject(
+          { verdict: 'ask', model: 'jev-1.13.0', uncertain: ['user_explicitly_asked_to_commit'], answers: band, warnings: [] })
+        const sent = bodies.slice(before)
+        expect(sent).toHaveLength(2)
+        const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
+        for (const body of sent) {
+          expect(body.model, 'the gate asks for the pin').toBe('jev-1.13.0')
+          expect(Object.keys(body.questions ?? {})).toEqual(program.decisions.map(d => d.id))
+        }
+      })
+
+      // O-R1: evaluate() used to drop the warning, so a gate running on an unpinned model said
+      // nothing at all. The verdict stands; the human is told it was not measured on this model.
+      it('keeps the verdict from another Jev build, and says so on stderr and in the log', async () => {
+        answeredBy('jev-1.14.0')
+        const r = await live()
+        expect(r.status, r.stderr).toBe(0)
+        expect(decision(r).permissionDecisionReason).toContain('0.50')
+        expect(r.stderr).toMatch(/^jev gate: warning: .*"jev-1\.14\.0".*jev-1\.13\.0/m)
+        const row = await observed()
+        expect(row).toMatchObject({ verdict: 'ask', model: 'jev-1.14.0' })
+        expect(row.warnings).toEqual([expect.stringContaining('"jev-1.14.0"')])
+      })
+
+      it('fails closed to `ask` when a model that is not Jev answered', async () => {
+        answeredBy('laya-rl-agent')
+        const r = await live()
+        expect(r.status).toBe(0)
+        expect(decision(r)).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: 'The commit gate could not be evaluated.' })
+        expect(r.stderr).toMatch(/^jev gate error, failing ask: [\s\S]*"laya-rl-agent"[\s\S]*JEVC_ALLOW_MODEL/m)
+        // O-R4: the fallback is not the model's verdict, and an observe log that recorded it as
+        // one would tune thresholds against outages. The row says why it is there.
+        expect(await observed()).toMatchObject({ verdict: 'ask', model: null, answers: {},
+          error: expect.stringContaining('"laya-rl-agent"') })
+      })
+
+      it('takes the verdict from a model JEVC_ALLOW_MODEL names, with a warning', async () => {
+        answeredBy('laya-rl-agent')
+        const r = await live({ JEVC_ALLOW_MODEL: 'laya-rl-agent' })
+        expect(r.status, r.stderr).toBe(0)
+        expect(decision(r).permissionDecisionReason).toContain('0.50')
+        expect(r.stderr).toMatch(/^jev gate: warning: .*"laya-rl-agent".*re-measure/m)
+      })
+
+      it('fails closed to `ask` when the response names no model', async () => {
+        answeredBy(undefined)
+        const r = await live()
+        expect(r.status).toBe(0)
+        expect(decision(r).permissionDecision).toBe('ask')
+        expect(r.stderr).toMatch(/^jev gate error, failing ask: [\s\S]*names no model/m)
+      })
     })
   })
 })

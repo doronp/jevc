@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { assertExpectation, checkLive, diffFixture, loadFixtures } from '../src/check.js'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { assertExpectation, checkLive, diffFixture, liveOptions, liveSummary, loadFixtures } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
@@ -307,6 +307,15 @@ describe('assertExpectation — a right-typed answer with no measurement in it',
 // row in the report claimed it. A mid-run alias bump is the one event `--live` exists to
 // attribute, and it was the one event the report misattributed.
 describe('checkLive — which model answered', () => {
+  // askModel reads JEVC_ALLOW_MODEL per call, so one set in the shell running the suite would
+  // turn the broken row below into a drifted one.
+  const saved = process.env.JEVC_ALLOW_MODEL
+  beforeEach(() => { delete process.env.JEVC_ALLOW_MODEL })
+  afterEach(() => {
+    if (saved === undefined) delete process.env.JEVC_ALLOW_MODEL
+    else process.env.JEVC_ALLOW_MODEL = saved
+  })
+
   it('names every model that answered when the alias moves mid-run', async () => {
     const fs = ['f1', 'f2', 'f3'].map(id =>
       fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
@@ -322,6 +331,61 @@ describe('checkLive — which model answered', () => {
     expect(report.model).toBe('jev-1.13.0, jev-1.14.0')
   })
 
+  // E0 item 2. askModel now reports a response from outside the pin as `model_unexpected`;
+  // checkLive read none of res.issues, so a whole run answered by something that is not Jev
+  // would have diffed as ordinary drift. One row per fixture, on the fixture that saw it.
+  it('reports a fixture answered by a model that is not Jev as broken, and keeps diffing', async () => {
+    const fs = ['f1', 'f2'].map(id =>
+      fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const report = await checkLive(fs, {
+      client: serves({
+        'state for f1': wire({ destructive: noul(0.9) }),
+        'state for f2': { ...wire({ destructive: noul(0.9) }), model: 'laya-rl-agent' },
+      }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f2.model', recorded: 'jev-1.13.0', live: 'laya-rl-agent', delta: null, status: 'broken' },
+    ])
+    // Its answers are still classified: the model row says who, the diff rows say what moved.
+    expect(report.rows.map(r => r.id)).toEqual(['f1.destructive', 'f2.model', 'f2.destructive'])
+    expect(report.model).toBe('jev-1.13.0, laya-rl-agent')
+  })
+
+  it('reports another Jev build as drifted, not broken', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: 'jev-1.14.0' } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'jev-1.14.0', delta: null, status: 'drifted' },
+    ])
+  })
+
+  // O-R11: the documented re-measure path — name the local model, run check --live — had no
+  // test; a row keyed on "starts with jev-" instead of the guard's severity passed every other.
+  it('reports a model JEVC_ALLOW_MODEL names as drifted, the re-measure path', async () => {
+    process.env.JEVC_ALLOW_MODEL = 'laya-rl-agent'
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: 'laya-rl-agent' } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'laya-rl-agent', delta: null, status: 'drifted' },
+    ])
+    expect(report.broken).toBe(0)
+  })
+
+  it('never prints a model field that is not a model ID', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: { state: 'SECRET' } } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'none', delta: null, status: 'broken' },
+    ])
+    expect(report.model).toBe('')
+  })
+
   it('names the single model unchanged when it does not move', async () => {
     const fs = ['f1', 'f2'].map(id =>
       fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
@@ -332,6 +396,65 @@ describe('checkLive — which model answered', () => {
       }),
     })
     expect(report.model).toBe('jev-1.13.0')
+  })
+})
+
+// KA-R8, KA-R4: the line `check --live` ends on. A run where no response named a model printed
+// "against : ...", and the model list is wire text printed unquoted after rows that quote it.
+describe('liveSummary', () => {
+  const report = (model: string) => ({ model, rows: [], drifted: 1, broken: 2 })
+  it('names the model, quoted', () => {
+    expect(liveSummary(report('jev-1.13.0'))).toBe('0 rows checked live against "jev-1.13.0": 1 drifted, 2 broken\n')
+  })
+  it('says so when no response named a model', () => {
+    expect(liveSummary(report(''))).toBe('0 rows checked live against no named model: 1 drifted, 2 broken\n')
+  })
+  it('prints a control character escaped', () => {
+    expect(liveSummary(report('x\u001b[2J'))).not.toMatch(/\u001b/)
+  })
+})
+
+// E0 item 3. cli.ts runs on import, so `liveOptions` is the seam: the CLI builds checkLive's
+// options with it, and these tests hand its result to checkLive exactly as the CLI does, with
+// a stub client in place of the network.
+describe('liveOptions — `check --live --model <id> --threshold <n>`', () => {
+  const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+  const asking = (answer: number) => {
+    const seen: string[] = []
+    const client = { systemOne: async (req: { model: string }) => {
+      seen.push(req.model)
+      return wire({ destructive: noul(answer) })
+    } } as unknown as TypeSafeClient
+    return { seen, client }
+  }
+
+  it('asks the model --model names', async () => {
+    const { seen, client } = asking(0.9)
+    await checkLive([f], { client, ...liveOptions('jev-latest', undefined) })
+    expect(seen).toEqual(['jev-latest'])
+  })
+
+  it('asks the pinned model when --model is absent', async () => {
+    const { seen, client } = asking(0.9)
+    await checkLive([f], { client, ...liveOptions(undefined, undefined) })
+    expect(seen).toEqual(['jev-1.13.0'])
+  })
+
+  it('classifies drift against --threshold instead of the default 0.15', async () => {
+    // A 0.2 move: drift at the default, stable at 0.25, drift again at 0.1.
+    const status = async (t: string | undefined) =>
+      (await checkLive([f], { client: asking(0.7).client, ...liveOptions(undefined, t) })).rows[0]!.status
+    expect(await status(undefined)).toBe('drifted')
+    expect(await status('0.25')).toBe('stable')
+    expect(await status('0.1')).toBe('drifted')
+  })
+
+  it('refuses a model outside MODELS and a threshold outside [0, 1)', () => {
+    expect(() => liveOptions('laya-rl-agent', undefined)).toThrow(/"laya-rl-agent"/)
+    for (const t of ['abc', 'NaN', 'Infinity', '-0.1', '1', '2', ' ', '0.3abc']) {
+      expect(() => liveOptions(undefined, t), t).toThrow(/--threshold/)
+    }
+    expect(liveOptions(undefined, '0')).toEqual({ driftThreshold: 0 })
   })
 })
 

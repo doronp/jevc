@@ -1,4 +1,4 @@
-import type { EntryType, JevModel, JevQuestion, JevRequest } from '../contract.js'
+import { PINNED_MODEL, type EntryType, type JevModel, type JevQuestion, type JevRequest } from '../contract.js'
 import type { Decision, Program } from '../ir.js'
 
 export function toQuestion(d: Decision): JevQuestion {
@@ -21,7 +21,7 @@ export function toQuestion(d: Decision): JevQuestion {
 export function emitJson(
   p: Program,
   state: JevRequest['state'],
-  model: JevModel = 'jev-latest',
+  model: JevModel = PINNED_MODEL,
 ): JevRequest {
   return {
     model,

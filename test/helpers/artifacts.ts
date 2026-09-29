@@ -61,15 +61,29 @@ export function cleanupArtifacts(): void {
 }
 
 /** Stub for the consumer's own dependency, so the emitted ai-sdk module needs no edits.
- *  Only the two members the artifact touches: `createTypeSafeAi(...).evaluationModel(id)`. */
-const AI_SDK_STUB_DTS = `
-export declare function createTypeSafeAi(options: { apiKey?: string }): {
-  evaluationModel(id: string): { readonly modelId: string }
+ *  Transcribed from @ai-sdk/typesafe-ai@3.0.10: the settings the artifact may pass (an
+ *  unknown one is an excess-property error under tsc, as it is against the real d.ts),
+ *  and where `doEvaluate` POSTs — `${withoutTrailingSlash(baseURL) ?? default}/systemone`
+ *  through `options.fetch ?? globalThis.fetch`. Nothing else of the model is modelled. */
+export const AI_SDK_STUB_DTS = `
+export declare function createTypeSafeAi(options?: {
+  apiKey?: string; baseURL?: string; headers?: Record<string, string>; fetch?: typeof globalThis.fetch
+}): {
+  evaluationModel(id: string): {
+    readonly modelId: string
+    doEvaluate(options: { state: unknown; questions: Record<string, unknown> }): Promise<unknown>
+  }
 }
 `
-const AI_SDK_STUB_JS = `
-export function createTypeSafeAi(options) {
-  return { evaluationModel: (id) => ({ modelId: id }) }
+export const AI_SDK_STUB_JS = `
+export function createTypeSafeAi(options = {}) {
+  const b = options.baseURL
+  const baseURL = (b != null && b.endsWith('/') ? b.slice(0, -1) : b) ?? 'https://api.typesafe.ai/v1'
+  return { evaluationModel: (id) => ({
+    modelId: id,
+    doEvaluate: ({ state, questions }) => (options.fetch ?? globalThis.fetch)(\`\${baseURL}/systemone\`,
+      { method: 'POST', body: JSON.stringify({ model: id, state, questions }) }),
+  }) }
 }
 `
 
@@ -192,20 +206,46 @@ export const pythonAvailable = ((): boolean => {
 /**
  * `langchain_typesafe` is the consumer's dependency, not jevc's. Written as a real
  * module beside the artifact so the emitted `from langchain_typesafe import ...` line
- * stays in the file. Answer classes reproduce the shapes target-ai-sdk-and-langchain.md
- * §B.3 verified against the real package: NoulAnswer has `.noul` and NO `.confidence`;
- * ChoiceAnswer and ScoreAnswer carry a REQUIRED `.confidence`, and ScoreAnswer a
- * required `.legend`.
+ * stays in the file. A transcription of langchain-typesafe==0.0.1a3, stdlib only:
+ *
+ * - `TypeSafeClassifier` takes a3's six fields and nothing else (extra="forbid",
+ *   classifier.py). a3 moved `questions` out of the constructor into invoke's input, so
+ *   `questions=` here raises exactly as it does there, and `invoke` builds a3's
+ *   `_payload` and POSTs it to `_endpoint` through `self.client`. There is no default
+ *   client: a test assigns one that records the request, which is what
+ *   scripts/check-langchain-a3.sh does to the real package with httpx2.MockTransport.
+ * - Question `model_dump` matches a3's `model_dump(mode="json", exclude_none=True)`,
+ *   checked against the real package: a None FIELD is dropped, a None inside a criteria
+ *   dict or list is kept.
+ * - Answer classes reproduce the shapes target-ai-sdk-and-langchain.md §B.3 verified:
+ *   NoulAnswer has `.noul` and NO `.confidence`; ChoiceAnswer and ScoreAnswer carry a
+ *   REQUIRED `.confidence`, and ScoreAnswer a required `.legend`.
+ *
+ * ponytail: a3 also refuses to construct without TYPESAFE_API_KEY. Not modelled, so the
+ * offline suite needs no key in its children; the opt-in script runs the real check.
  */
 export const LANGCHAIN_STUB = `
-class _Kw:
-    def __init__(self, **kw): self.__dict__.update(kw)
+import os
 
-class Choice(_Kw): pass
-class Noul(_Kw): pass
-class NoulCriteria(_Kw): pass
-class Score(_Kw): pass
-class TypeSafeClassifier(_Kw): pass
+class NoulCriteria:
+    def __init__(self, true=None, false=None):
+        self.true, self.false = true, false
+    def model_dump(self, mode="json", exclude_none=True):
+        return {k: v for k, v in (("true", self.true), ("false", self.false)) if v is not None}
+
+class _Question:
+    def __init__(self, instructions, criteria=None):
+        self.instructions, self.criteria = instructions, criteria
+    def model_dump(self, mode="json", exclude_none=True):
+        d = {"type": self.type, "instructions": self.instructions}
+        if self.criteria is not None:
+            c = self.criteria
+            d["criteria"] = c.model_dump() if isinstance(c, NoulCriteria) else c
+        return d
+
+class Noul(_Question): type = "noul"
+class Choice(_Question): type = "choice"
+class Score(_Question): type = "score"
 
 class NoulAnswer:
     __slots__ = ("type", "noul")
@@ -223,6 +263,34 @@ class ScoreAnswer:
     def __init__(self, score, confidence, legend=None, probabilities=None):
         self.type, self.score, self.confidence = "score", score, confidence
         self.legend, self.probabilities = legend or {}, probabilities or {}
+
+_ANSWERS = {"noul": NoulAnswer, "choice": ChoiceAnswer, "score": ScoreAnswer}
+
+class ClassifierResponse:
+    def __init__(self, body):
+        self.model = body["model"]
+        self.answers = {k: _ANSWERS[a["type"]](**{f: v for f, v in a.items() if f != "type"})
+                        for k, a in body["answers"].items()}
+
+class TypeSafeClassifier:
+    _FIELDS = ("model", "api_key", "base_url", "timeout", "client", "async_client")
+    def __init__(self, **kw):
+        for k in kw:
+            if k not in self._FIELDS:
+                raise ValueError(f"1 validation error for TypeSafeClassifier\\n{k}\\n  Extra inputs are not permitted")
+        self.model = kw.get("model", "jev-latest").strip()
+        self.base_url = kw.get("base_url", os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai"))
+        self.client = kw.get("client")
+    def invoke(self, input, config=None, **_):
+        payload = {
+            "state": input["state"],
+            "model": self.model,
+            "questions": {k: q.model_dump(mode="json", exclude_none=True) for k, q in input["questions"].items()},
+        }
+        if self.client is None:
+            raise RuntimeError("stub TypeSafeClassifier: no network in tests; assign .client")
+        r = self.client.post(f"{self.base_url.rstrip('/')}/v1/systemone", json=payload, headers={})
+        return ClassifierResponse(r.json())
 `
 
 function pyProject(tag: string): string {

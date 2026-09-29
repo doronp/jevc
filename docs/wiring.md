@@ -94,12 +94,12 @@ Run `jevc scan .` and show me the table.
 
 Then, for the file with the most decidable rules, run `jevc compile <that file> --lift`
 and answer the request it prints. Every decision you return must carry a `source` with a
-verbatim `quote` from the file, so do not paraphrase. Save the result to `program.json`.
-`jevc compile` does not re-check citations, so before compiling run
-`grep -nF -f /dev/stdin <that file>` for each decision, with the quote in a `<<'EOF'`
-heredoc so an apostrophe cannot break it, and confirm it prints the line the decision cites.
+verbatim `quote` from the file — jevc rejects the whole response if a citation does not
+check out, so do not paraphrase.
 
-Then run `jevc compile program.json --emit sdk -o gate.ts`.
+Save the result to `program.json` and run
+`jevc compile program.json --source <that file> --emit sdk -o gate.ts`, spelling the file
+exactly as you did for `--lift`.
 
 Then tell me three things: which rules became questions, which stayed in the prompt
 because they are procedure or generation, and which reducer thresholds you guessed at —
@@ -155,18 +155,27 @@ const verdict = reduce(result.answers, confidenceOf(result))
 `reduce` here takes **two** arguments and the second is not optional — see
 [Notes](#notes).
 
+The module reads its key from `TYPESAFE_AI_API_KEY` or `TYPESAFE_API_KEY`, and
+`TYPESAFE_BASE_URL` as the API root (it appends `/v1`), so it reaches a local
+Jev-compatible server the way jevc does. It does not check who answered, and the provider
+cannot tell you either: `@ai-sdk/typesafe-ai` reports the model it asked for when the reply
+names none (3.0.10, `scripts/check-ai-sdk.sh`), so the response's `modelId` is not evidence
+that Jev answered.
+
 ## Python agents
 
 ```bash
 jevc compile triage.json --emit langchain -o triage_jev.py
 ```
 
-The emitted module builds the classifier and the reducer for you:
+The emitted module builds the classifier and the reducer for you. It needs
+`langchain-typesafe>=0.0.1a3`, which takes the questions per call rather than in the
+constructor; `classify` passes them for you:
 
 ```python
-from triage_jev import classifier, reduce
+from triage_jev import classify, reduce
 
-response = classifier.invoke(state)     # a Runnable: state goes in at the root
+response = classify(state)              # classifier.invoke({"state": state, "questions": ...})
 verdict  = reduce(response.answers)
 
 if verdict == "deny":
@@ -178,9 +187,16 @@ dict, at any depth. `response.answers` is the flat `{id: Answer}` mapping; the
 `nouls` / `choices` / `scores` properties are filtered views of the same storage, useful
 when you want the narrower static type.
 
-`api_key` and `base_url` come from the environment — `TypeSafeClassifier` sets
-`extra="forbid"`, so a stray keyword argument is a hard error rather than a silently
-ignored one.
+`api_key` and `base_url` come from the environment (`TYPESAFE_API_KEY`,
+`TYPESAFE_BASE_URL`) — `TypeSafeClassifier` sets `extra="forbid"`, so a stray keyword
+argument is a hard error rather than a silently ignored one. The classifier is built at
+import and a3 refuses an empty key there, so set `TYPESAFE_API_KEY` to any non-empty value
+even for a local server.
+
+`classify` checks who answered, as `evaluate` does: a response from a model that is not Jev
+raises `ValueError` unless `JEVC_ALLOW_MODEL` (comma-separated exact IDs) names it, and an
+allowed model or a Jev build other than `jev-1.13.0` is a `warnings.warn`. a3 itself refuses a
+response with no `model`.
 
 ## Any Python agent that can call a tool
 
@@ -250,7 +266,7 @@ jevc compile triage.json --emit json
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "jev-1.13.0",
   "state": "<state>",
   "questions": {
     "is_urgent": { "type": "noul", "instructions": "Does this ticket describe an outage or data loss happening right now?" },
