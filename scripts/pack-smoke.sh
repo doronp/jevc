@@ -54,10 +54,14 @@ env -u TYPESAFE_API_KEY ./node_modules/.bin/jevc check | tail -n 1
 echo "== secret scan"
 mkdir unpacked && tar -xzf "$tgz" -C unpacked
 # 1. The CI scan, as CI runs it, over every commit. -l prints where, never the match.
-if (cd "$repo" && git grep -lIEi 'apikey_[0-9a-f]{16}' $(git rev-list --all) -- 2>/dev/null); then
-  fail "a TypeSafe key shape is in history (the .github/workflows/ci.yml scan)"
-fi
-echo "ci pattern, git history: clean"
+# git grep exits 1 for "no match" and >1 for "could not search"; only 1 is clean.
+revs="$(cd "$repo" && git rev-list --all)" || fail "git rev-list failed; history not scanned"
+rc=0; (cd "$repo" && git grep -lIEi 'apikey_[0-9a-f]{16}' $revs --) || rc=$?
+case $rc in
+  0) fail "a TypeSafe key shape is in history (the .github/workflows/ci.yml scan)" ;;
+  1) echo "ci pattern, git history: clean" ;;
+  *) fail "git grep exited $rc; history not scanned" ;;
+esac
 # 2. The same pattern and three heuristics over the tracked tree and the tarball. A hit
 # prints file:line and 6 characters, never the value.
 # ponytail: regex heuristics, not a scanner. fixtures/ records fake secrets as test
@@ -74,11 +78,12 @@ const entropy = s => {
   return Object.values(n).reduce((h, k) => h - (k / s.length) * Math.log2(k / s.length), 0)
 }
 const skipEntropy = f => /\/(fixtures|docs\/targets)\/|package-lock\.json$/.test(f)
-let hits = 0
+let hits = 0, unread = 0
 const hit = (f, i, kind, v) => { hits++; console.log(`HIT ${kind}: ${f}:${i + 1}: ${v.slice(0, 6)}... (redacted)`) }
 for (const f of files) {
   let text
-  try { text = readFileSync(f, 'utf8') } catch { continue }
+  // A file that cannot be read was not scanned, which is not the same as clean.
+  try { text = readFileSync(f, 'utf8') } catch (e) { unread++; console.log(`UNREAD: ${f}: ${e.code}`); continue }
   if (text.includes('\0')) continue
   text.split('\n').forEach((line, i) => {
     for (const m of line.matchAll(/apikey_[0-9a-f]{16}/gi)) hit(f, i, 'key-shape', m[0])
@@ -95,8 +100,8 @@ for (const f of files) {
     }
   })
 }
-console.log(`heuristics: ${files.length} files scanned (repo tree + tarball), ${hits} hit(s)`)
-process.exit(hits ? 1 : 0)
+console.log(`heuristics: ${files.length - unread} files scanned (repo tree + tarball), ${hits} hit(s), ${unread} unreadable`)
+process.exit(hits || unread ? 1 : 0)
 JS
 
 echo "PASS: packed, installed, the gate denied from node_modules, no secrets found"

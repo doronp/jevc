@@ -83,7 +83,8 @@ module's API are both baked in at compile time.
   install steps put it) with its imports pointed at `jev-compiler` and its fixtures at
   `../../node_modules/jev-compiler/fixtures`, asserts it denies the sample payload, runs
   the installed `jevc check`, then scans git history (the CI pattern) and the tracked tree plus
-  the unpacked tarball for secret-shaped strings, printing locations only.
+  the unpacked tarball for secret-shaped strings, printing locations only. A history search git
+  could not run, or a file the scan could not read, fails the run rather than counting as clean.
 
 ### Fixed
 
