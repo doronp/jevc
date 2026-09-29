@@ -61,15 +61,29 @@ export function cleanupArtifacts(): void {
 }
 
 /** Stub for the consumer's own dependency, so the emitted ai-sdk module needs no edits.
- *  Only the two members the artifact touches: `createTypeSafeAi(...).evaluationModel(id)`. */
-const AI_SDK_STUB_DTS = `
-export declare function createTypeSafeAi(options: { apiKey?: string }): {
-  evaluationModel(id: string): { readonly modelId: string }
+ *  Transcribed from @ai-sdk/typesafe-ai@3.0.10: the settings the artifact may pass (an
+ *  unknown one is an excess-property error under tsc, as it is against the real d.ts),
+ *  and where `doEvaluate` POSTs — `${withoutTrailingSlash(baseURL) ?? default}/systemone`
+ *  through `options.fetch ?? globalThis.fetch`. Nothing else of the model is modelled. */
+export const AI_SDK_STUB_DTS = `
+export declare function createTypeSafeAi(options?: {
+  apiKey?: string; baseURL?: string; headers?: Record<string, string>; fetch?: typeof globalThis.fetch
+}): {
+  evaluationModel(id: string): {
+    readonly modelId: string
+    doEvaluate(options: { state: unknown; questions: Record<string, unknown> }): Promise<unknown>
+  }
 }
 `
-const AI_SDK_STUB_JS = `
-export function createTypeSafeAi(options) {
-  return { evaluationModel: (id) => ({ modelId: id }) }
+export const AI_SDK_STUB_JS = `
+export function createTypeSafeAi(options = {}) {
+  const b = options.baseURL
+  const baseURL = (b != null && b.endsWith('/') ? b.slice(0, -1) : b) ?? 'https://api.typesafe.ai/v1'
+  return { evaluationModel: (id) => ({
+    modelId: id,
+    doEvaluate: ({ state, questions }) => (options.fetch ?? globalThis.fetch)(\`\${baseURL}/systemone\`,
+      { method: 'POST', body: JSON.stringify({ model: id, state, questions }) }),
+  }) }
 }
 `
 

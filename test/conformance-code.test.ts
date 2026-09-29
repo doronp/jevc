@@ -869,6 +869,23 @@ describe('the model every code target asks for', () => {
     expect(got).toBe('jev-1.13.0')
   })
 
+  // The provider reads no env var for its base URL, so without this an emitted module
+  // could only ever reach api.typesafe.ai — never a local server that speaks the wire.
+  const aiSdkUrl = (base: string | undefined) => runTs(emitAiSdk(gate), [
+    `const seen: string[] = []`,
+    `Object.assign(globalThis, { fetch: async (url: unknown) => { seen.push(String(url)); return new Response('{}') } })`,
+    base === undefined ? `delete process.env.TYPESAFE_BASE_URL` : `process.env.TYPESAFE_BASE_URL = ${JSON.stringify(base)}`,
+    `const { model } = await import('./mod.ts')`,
+    `await model.doEvaluate({ state: 'x', questions: {} })`,
+    `console.log(JSON.stringify(seen))`,
+  ])
+  it('ai-sdk: TYPESAFE_BASE_URL (the root, as the native SDK reads it) moves the request', () => {
+    expect(aiSdkUrl('http://127.0.0.1:9/')).toEqual(['http://127.0.0.1:9/v1/systemone'])
+  })
+  it('ai-sdk: with TYPESAFE_BASE_URL unset the request goes to the provider default', () => {
+    expect(aiSdkUrl(undefined)).toEqual(['https://api.typesafe.ai/v1/systemone'])
+  })
+
   it.runIf(pythonAvailable)('langchain: the classifier is constructed with the pinned jev-1.13.0', () => {
     expect(runPy(emitLangchain(gate), 'classifier.model')).toBe('jev-1.13.0')
   })

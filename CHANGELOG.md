@@ -29,6 +29,10 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   called `reduce(classifier.invoke(state).answers)`. `scripts/check-langchain-a3.sh` (opt-in,
   needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
   dummy key and a mock transport; it sends nothing to TypeSafe.
+- The emitted `ai-sdk` module honours `TYPESAFE_BASE_URL`, the API root jevc's own SDK and
+  `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
+  the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
+  variable is set and the provider default when it is not. Recompile to pick it up.
 
 ### Added
 

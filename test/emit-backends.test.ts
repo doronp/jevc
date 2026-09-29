@@ -35,11 +35,9 @@ afterAll(() => {
 /** @ai-sdk/typesafe-ai is the CONSUMER's dependency, not jevc's, so the provider import
  *  and the `model` export cannot resolve here. Neither is part of the reducer under test;
  *  everything else runs verbatim. */
-const stripProvider = (src: string) => src.split('\n')
-  .filter(l => !l.startsWith('import { createTypeSafeAi }')
-            && !l.startsWith('export const model =')
-            && !l.startsWith('  .evaluationModel('))
-  .join('\n')
+const stripProvider = (src: string) => src
+  .replace(/^import \{ createTypeSafeAi \}.*\n/m, '')
+  .replace(/^export const model = [\s\S]*?\.evaluationModel\(.*\n/m, '')
 
 type AiCase = { answers: Record<string, unknown>; confidence?: Record<string, number> }
 

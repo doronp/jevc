@@ -63,7 +63,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 
-import { cleanupArtifacts, LANGCHAIN_STUB, scratch } from './helpers/artifacts.js'
+import {
+  AI_SDK_STUB_DTS, AI_SDK_STUB_JS, cleanupArtifacts, LANGCHAIN_STUB, scratch,
+} from './helpers/artifacts.js'
 import {
   bouncerVerdict, straddle, validateBouncerPolicy, validateToolgatePolicy, toolgateVerdict,
 } from './helpers/consumers.js'
@@ -445,16 +447,6 @@ const pythonAvailable = ((): boolean => {
   try { execFileSync(PYTHON, ['-c', 'pass'], { stdio: 'ignore' }); return true } catch { return false }
 })()
 
-const AI_SDK_STUB_DTS = `
-export declare function createTypeSafeAi(options: { apiKey?: string }): {
-  evaluationModel(id: string): { readonly modelId: string }
-}
-`
-const AI_SDK_STUB_JS = `
-export function createTypeSafeAi(options) {
-  return { evaluationModel: (id) => ({ modelId: id }) }
-}
-`
 const TS_DRIVER = `import { readFileSync } from 'node:fs'
 const plan = JSON.parse(readFileSync(new URL('./plan.json', import.meta.url), 'utf8')) as any[]
 const out: Record<string, unknown[]> = {}
