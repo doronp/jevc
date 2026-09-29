@@ -71,6 +71,7 @@ checker, return JSON") trade one unreviewable judgment for another, and now pay 
 ```json
 "rules": [
   { "when": [{ "id": "is_commit_operation",                "op": "lte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "user_explicitly_asked_to_commit",    "op": "uncertain" }],         "then": "ask" },
   { "when": [{ "id": "user_explicitly_asked_to_commit",    "op": "gte", "value": 0.5 }], "then": "allow" },
   { "when": [{ "id": "commit_required_by_requested_task",  "op": "gte", "value": 0.5 }], "then": "allow" }
 ],
@@ -78,7 +79,7 @@ checker, return JSON") trade one unreviewable judgment for another, and now pay 
 ```
 
 Read it in a pull request, change a threshold and see which cases move, add a case to the
-corpus and run it. The judgment that used to live in a paragraph now lives in three lines
+corpus and run it. The judgment that used to live in a paragraph now lives in four lines
 of JSON and a number you can point at.
 
 ## Where the human is
@@ -87,15 +88,20 @@ A closed loop invites the reading that the sentence in `CLAUDE.md` was automatic
 into the gate. It was not, and the seam is worth finding before you trust one of these.
 
 The questions are evidence; the **reducer is the interpretation**, and a human wrote it. In
-this gate the interpretation is visible: the third rule —
+this gate the interpretation is visible: the last rule —
 `commit_required_by_requested_task` — is **not in the rule text**. `NEVER commit unless the
-user explicitly asks.` admits exactly one exception; the third rule adds a second one, for a
+user explicitly asks.` admits exactly one exception; the last rule adds a second one, for a
 commit the requested task genuinely needs. That is a judgment the author made, and it is in
 the reducer rather than inside a question precisely so it can be read, argued with and
 deleted. Delete it and the gate denies strictly.
 
+The second rule is the other seam, and it points at a person rather than a paragraph. When
+the model cannot tell whether the human asked — `user_explicitly_asked_to_commit` inside the
+uncertainty band — the gate returns `ask` and the human confirms, instead of either side
+guessing. The recorded case measured 0.06, outside the band, so it still denies.
+
 That is the trade the loop actually makes. Before, the same interpretation existed too — in
-the model's head, differently each turn, with nothing to point at. After, it is four lines
+the model's head, differently each turn, with nothing to point at. After, it is five lines
 of JSON in a file under review.
 
 ## Install it in your own project
@@ -134,6 +140,11 @@ questions about file writes. Your own rules, not this one: start at `jevc scan .
   the variable the hook calls the API and needs `TYPESAFE_API_KEY`.
 - The gate fails **closed**: any error returns `ask`, so a network blip pauses for a human
   instead of silently waving the commit through. `JEVC_ON_ERROR=allow` inverts that.
+- `JEVC_MODE=observe` lets every `Bash` call through and appends the verdict it would have
+  had to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the gate), one JSON line per call:
+  time, verdict, model, tool name, uncertain ids and the model's answers — never the command,
+  the transcript or anything from the environment. A log that cannot be written is reported
+  on stderr and the call still goes through. Run it for a while before trusting the thresholds.
 - Non-`Bash` tool calls exit 0 immediately. A question about a tool the rule cannot apply
   to spends a call to learn nothing.
 - The hook returns `deny` rather than exiting 2. Both stop the tool call; the JSON form

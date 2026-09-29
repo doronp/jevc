@@ -33,6 +33,9 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
   the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
   variable is set and the provider default when it is not. Recompile to pick it up.
+- The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
+  `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
+  The recorded case (0.06) is outside the band, so the replay still denies.
 
 ### Added
 
@@ -41,6 +44,10 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `--threshold` is the drift threshold (default 0.15), a number in [0, 1): noul and confidence
   deltas never exceed 1, so a larger value would report no drift on them. Both are validated
   before the key check and refused without `--live`.
+- `JEVC_MODE=observe` in the sample gate: every call is let through, and the verdict it would
+  have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
+  gate) — time, verdict, model, tool name, uncertain ids and answers; no state, no env values. A
+  log that cannot be written does not block the call.
 
 ## 0.1.0 — 2026-09-20
 

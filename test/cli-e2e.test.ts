@@ -21,8 +21,10 @@
  * afterAll; nothing is written inside the repo.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1306,6 +1308,94 @@ describe('scan, show, and the installable hook', () => {
       })
       expect(r.status).toBe(0)
       expect(JSON.parse(r.stdout ?? '').hookSpecificOutput.permissionDecision).toBe('ask')
+    })
+
+    describe('JEVC_MODE=observe', () => {
+      let dir: string
+      beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'jevc-observe-')) })
+      afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+      it('logs one line per call and lets the call through, even when the verdict is deny', () => {
+        const log = join(dir, 'observe.jsonl')
+        const env = { JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: log, JEVC_SENTINEL: 'sentinel-7f3a91' }
+        for (let i = 0; i < 2; i++) {
+          const r = runHook(sample(), env)
+          expect(r.status, r.stderr).toBe(0)
+          expect(r.stdout, 'observe mode must never block').toBe('')
+        }
+        const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
+        expect(lines).toHaveLength(2)
+        const row = JSON.parse(lines[0]) as Record<string, unknown>
+        expect(Object.keys(row).sort()).toEqual(['answers', 'model', 'tool_name', 'ts', 'uncertain', 'verdict'])
+        expect(Number.isNaN(Date.parse(row.ts as string))).toBe(false)
+        const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
+        const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
+        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [] })
+        // The model's answers to this program's questions, and nothing it was shown.
+        expect(row.answers).toEqual(Object.fromEntries(program.decisions.map(d => [d.id, f.measured.answers[d.id]])))
+        for (const leak of ['git commit', 'go ahead', 'payments-api', 'sentinel-7f3a91', log]) {
+          expect(lines[0], `the observe log carries "${leak}"`).not.toContain(leak)
+        }
+      })
+
+      it('still lets the call through when the log cannot be written', () => {
+        const r = runHook(sample(), { JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: join(dir, 'no', 'such', 'dir', 'x.jsonl') })
+        expect(r.status).toBe(0)
+        expect(r.stdout).toBe('')
+      })
+    })
+
+    // The live path, offline: the gate's own evaluate() answered by a local server through
+    // TYPESAFE_BASE_URL, with a dummy key. No recorded fixture sits in the uncertainty band,
+    // so this is the only way to reach commit.json's uncertain -> ask rule end to end.
+    it('asks the human when whether they asked for the commit is uncertain', async () => {
+      const answers = {
+        is_commit_operation: { type: 'noul', noul: 0.96 },
+        user_explicitly_asked_to_commit: { type: 'noul', noul: 0.5 },
+        commit_required_by_requested_task: { type: 'noul', noul: 0.16 },
+      }
+      let requests = 0
+      const server = createServer((req, res) => {
+        requests++
+        req.resume()
+        req.on('end', () => {
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 1, output_tokens: 1 } }))
+        })
+      })
+      await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+      const { JEVC_REPLAY: _drop, ...offline } = { ...OFFLINE_ENV, JEVC_REPLAY: '' }
+      const live = (env: Record<string, string> = {}) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done, fail) => {
+        const c = spawn(process.execPath, [join(HOOK, 'gate.mjs')], {
+          cwd: PROJECT,
+          env: { ...offline, TYPESAFE_API_KEY: 'dummy',
+            TYPESAFE_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ...env },
+        })
+        let stdout = '', stderr = ''
+        c.stdout.on('data', d => { stdout += d })
+        c.stderr.on('data', d => { stderr += d })
+        c.on('error', fail)
+        c.on('close', status => done({ status, stdout, stderr }))
+        c.stdin.end(JSON.stringify(sample()))
+      })
+      try {
+        const r = await live()
+        expect(r.status, r.stderr).toBe(0)
+        const d = JSON.parse(r.stdout).hookSpecificOutput
+        expect(d.permissionDecision).toBe('ask')
+        expect(d.permissionDecisionReason).toContain('0.50')
+        expect(d.permissionDecisionReason, 'the deny wording on an ask').not.toContain('not a request to commit')
+
+        const log = join(mkdtempSync(join(tmpdir(), 'jevc-observe-')), 'observe.jsonl')
+        const o = await live({ JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: log })
+        expect([o.status, o.stdout]).toEqual([0, ''])
+        expect(JSON.parse(readFileSync(log, 'utf8'))).toMatchObject(
+          { verdict: 'ask', model: 'jev-1.13.0', uncertain: ['user_explicitly_asked_to_commit'], answers })
+        rmSync(dirname(log), { recursive: true, force: true })
+        expect(requests).toBe(2)
+      } finally {
+        server.close()
+      }
     })
   })
 })

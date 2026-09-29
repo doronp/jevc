@@ -122,14 +122,17 @@ And the verdict is a block you can read in a pull request:
 ```json
 "rules": [
   { "when": [{ "id": "is_commit_operation",               "op": "lte", "value": 0.5 }], "then": "allow" },
+  { "when": [{ "id": "user_explicitly_asked_to_commit",   "op": "uncertain" }],         "then": "ask" },
   { "when": [{ "id": "user_explicitly_asked_to_commit",   "op": "gte", "value": 0.5 }], "then": "allow" },
   { "when": [{ "id": "commit_required_by_requested_task", "op": "gte", "value": 0.5 }], "then": "allow" }
 ],
 "otherwise": "deny"
 ```
 
-Change a threshold and see which recorded cases move. Add a case and run it. The judgment
-that used to live in a paragraph now lives in three lines and a number you can point at.
+The second rule is the honest middle: when the model cannot tell whether the human asked, the
+gate asks the human rather than guessing. Change a threshold and see which recorded cases move.
+Add a case and run it. The judgment that used to live in a paragraph now lives in four lines
+and a number you can point at.
 
 ```bash
 npx tsx examples/02-agents-md-guardrail.ts   # the reasoning
