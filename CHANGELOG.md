@@ -63,6 +63,11 @@ module's API are both baked in at compile time.
   before compiling it: a citation that does not quote `<doc>` word for word, or names it
   differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
   `--source` nothing changes. It is refused on a JSON Schema and with `--lift`.
+- `scripts/pack-smoke.sh` (opt-in, not part of `npm test`): builds, `npm pack`s, installs the
+  tarball into an empty directory, runs the sample gate there with its imports pointed at
+  `jev-compiler` and its fixtures at `node_modules/`, asserts it denies the sample payload, runs
+  the installed `jevc check`, then scans git history (the CI pattern) and the tracked tree plus
+  the unpacked tarball for secret-shaped strings, printing locations only.
 
 ### Fixed
 

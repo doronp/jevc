@@ -12,10 +12,13 @@ npm install && npm run build   # Node >= 20; >= 22 to run the tests
 npm test                       # offline: no key, no network, no quota
 npm run typecheck              # tsc over src + test
 npm run gallery                # regenerate examples/GALLERY.md from fixtures/
+bash scripts/pack-smoke.sh     # opt-in: pack, install into an empty dir, run the gate there; secret scan
 ```
 
 Run these from the repository root. `npm run check:live` is the only command that talks to
-the network; it needs `TYPESAFE_API_KEY` and must never be wired into `npm test`.
+TypeSafe; it needs `TYPESAFE_API_KEY` and must never be wired into `npm test`.
+`scripts/pack-smoke.sh` reaches the npm registry for the tarball's dependencies and nothing
+else; run it before a release, because only an installed tarball proves the packaging.
 
 ## Rules
 
