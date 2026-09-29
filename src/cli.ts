@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { fromJsonSchema, type JsonSchema, type SchemaProgram } from './from-schema.js'
-import { buildLiftRequest } from './from-prompt.js'
+import { buildLiftRequest, parseLiftResponse } from './from-prompt.js'
 import { emitNative } from './emit/native.js'
 import { emitJson } from './emit/json.js'
 import { emitAiSdk } from './emit/ai-sdk.js'
@@ -103,7 +103,7 @@ const flag = (name: string): string | undefined => {
 const has = (name: string) => argv.includes(`--${name}`)
 
 /** Flags that consume the argument after them. Everything else is a bare switch. */
-const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold'])
+const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold', 'source'])
 
 /**
  * The first argument after the subcommand that is neither a flag nor a flag's value.
@@ -137,7 +137,7 @@ const die = (msg: string): never => { toStderr(`${msg}\n`); process.exit(1) }
  * a failure rather than silently ignored"); argv was the one surface exempt from it.
  */
 const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
-  compile: new Set(['emit', 'o', 'lift']),
+  compile: new Set(['emit', 'o', 'lift', 'source']),
   check: new Set(['fixtures', 'live', 'model', 'threshold']),
   explain: new Set(['fixtures']),
   'emit-policy': new Set(['for', 'o']),
@@ -300,7 +300,7 @@ const fixtures = (dir: string) => {
 const PACKAGED_FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url))
 
 if (cmd === 'compile') {
-  const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--emit sdk|json|ai-sdk|langchain] [-o out]')
+  const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--source <doc>] [--emit sdk|json|ai-sdk|langchain] [-o out]')
   const text = read(path)
 
   if (has('lift')) {
@@ -315,6 +315,11 @@ if (cmd === 'compile') {
     // command later — so the answer is to refuse the combination rather than pick one.
     if (flag('emit') !== undefined) {
       die('--emit has no meaning with `jevc compile --lift`: --lift prints the lowering request an agent answers, not an emitted artifact. Lift first, then run jevc on the Program the agent returns.')
+    }
+    // The same unread-but-known flag: the document being lifted is the source, and the
+    // citations `--source` checks do not exist until the agent answers.
+    if (flag('source') !== undefined) {
+      die('--source has no meaning with `jevc compile --lift`: it checks the citations of the Program the agent returns, one command later. Lift first, then run `jevc compile program.json --source ' + (path === '-' ? '<doc>' : path) + '`.')
     }
 
     // An empty instruction file is not "a document that happens to contain no rules", it
@@ -384,6 +389,9 @@ if (cmd === 'compile') {
     }
     program = parsed as SchemaProgram
   } else {
+    if (flag('source') !== undefined) {
+      die(`--source checks the citations of a lifted Program, and ${path} has no \`decisions\` key, so it is not one. A JSON Schema quotes no document; compile it without --source.`)
+    }
     try {
       program = fromJsonSchema(parsed as JsonSchema)
     } catch {
@@ -391,9 +399,27 @@ if (cmd === 'compile') {
     }
   }
 
-  const issues = [...validateProgram(program!), ...lintProgram(program!)]
+  // A lifted Program is model output, and its citations are the only thing separating a rule
+  // from the document from a rule the model invented. `parseLiftResponse` is the check, and
+  // this path never ran it: a quote found nowhere in the document compiled at exit 0, and
+  // the emitted `// from <file>:<line>` comment then vouched for it. `--source` hands it the
+  // document. It runs `validateProgram` and `lintProgram` itself, so its issues replace the
+  // pair below rather than repeat them. The label is the path as typed, `stdin` for `-`,
+  // because that is what the `--lift` fence called the document and what every
+  // `source.file` in the answer must match.
+  //
+  // ponytail: opt-in, so a Program that carries citations and is compiled without --source
+  // is still unchecked. The upgrade is to refuse one whose decisions carry a `source` unless
+  // --source is given; a hand-written Program cites nothing and would be unaffected.
+  const source = flag('source')
+  const label = source === '-' ? 'stdin' : source
+  const lifted = source === undefined ? undefined : parseLiftResponse(text, read(source), label!)
+  const issues = lifted?.issues ?? [...validateProgram(program!), ...lintProgram(program!)]
   for (const i of issues) toStderr(`${i.severity}: ${i.path}: ${i.message}\n`)
-  if (issues.some(i => i.severity === 'error')) process.exit(1)
+  if (issues.some(i => i.severity === 'error')) {
+    if (lifted) toStderr(`${path} did not verify against ${label}, so nothing was emitted. Each decision's \`source\` must quote ${label} word for word and name it the way the lift request did: the path as typed then, or \`stdin\`.\n`)
+    process.exit(1)
+  }
 
   if (program!.residual) toStderr(`\nresidual:\n${program!.residual}\n`)
 
@@ -621,6 +647,9 @@ die(`usage: jevc <command>
   scan [dir]                    find the instruction files this project already has
   compile <file|-> --lift       turn a rules document into a lowering request for your agent
   compile <file|->              turn a JSON Schema into a typed module
+  compile <program.json> --source <doc>
+                                compile the Program your agent returned, refusing it
+                                unless every citation quotes <doc>
   emit-policy --for <target>    lower a compiled program into bouncer or toolgate YAML
   show [fixture-id]             one recorded fixture, end to end
   explain <decision-id>         why a question exists, and what it measured

@@ -21,21 +21,21 @@ import type { ValidationIssue } from '../src/contract.js'
 // Everything here is offline. The "agent response" is hand-written against the request
 // this suite just generated; no model is called.
 //
-// Note what this round trip is NOT. There is no CLI subcommand that CONSUMES a lift
-// response — `jevc compile <file>` runs `fromJsonSchema`, so handing it a lifted Program
-// is not the way back in. `parseLiftResponse` is the library entry point the README
-// documents for that half, and `emit-policy` is the CLI command that takes a Program
-// JSON. That is the real chain, and it is the one exercised below.
+// Two ways back in. `parseLiftResponse` is the library entry point the README documents,
+// and `emit-policy` is the CLI command that takes a Program JSON; the first describes
+// exercise that chain. `jevc compile <program.json> --source <doc>` is the CLI's own way
+// back in, and the last describe pins it: without `--source` a Program compiles unchecked,
+// exactly as before; with it the response goes through `parseLiftResponse` and a citation
+// that does not verify exits 1 with nothing on stdout.
 //
-// That chain has no gate in it, which is why `parseLiftResponse` is the gate. It returns
-// a Program and an issues array, and nothing makes a caller read the second: the CLI
-// never calls it, so there is no `process.exit(1)` downstream of it the way there is at
-// cli.ts:237/:295/:390. It used to hand back the fully-parsed Program for a FAILED
-// citation — errors beside it, decisions intact — and a fabricated rule then emitted a
-// bouncer policy at exit 0 whose audit comment cited a line of the document that says
-// the opposite. It now returns the empty Program on any error-severity issue, exactly as
-// it always did for a parse or shape failure: one failure mode, not two. The last two
-// describes below pin that, and pin the warn case it must not swallow with it.
+// `parseLiftResponse` is the gate on both routes. It returns a Program and an issues
+// array, and nothing makes a library caller read the second. It used to hand back the
+// fully-parsed Program for a FAILED citation — errors beside it, decisions intact — and a
+// fabricated rule then emitted a bouncer policy at exit 0 whose audit comment cited a line
+// of the document that says the opposite. It now returns the empty Program on any
+// error-severity issue, exactly as it always did for a parse or shape failure: one failure
+// mode, not two. The describes below pin that, and pin the warn case it must not swallow
+// with it.
 // ---------------------------------------------------------------------------
 
 type ExecError = Error & { stderr?: string; stdout?: string; status?: number | null }
@@ -455,5 +455,76 @@ describe('--lift round trip, what the file check deliberately forgives', () => {
     // it warns; it must not become an error and it must not be silent.
     expect(off[0].severity).toBe('warn')
     expect(off[0].message).toContain('line 3')
+  })
+})
+
+// E0 item 7. `parseLiftResponse` is the gate on the prose route, and the CLI never ran it:
+// `jevc compile program.json` checked a lifted Program's shape and lint, never its
+// citations, so a quote the model invented compiled at exit 0 and the emitted module's
+// `// from <file>:<line>` comment vouched for it. `--source <doc>` runs it before anything
+// is emitted. Without `--source` nothing changes: a Program written by hand, or one whose
+// document is not at hand, has nothing to be checked against.
+describe('jevc compile <program.json> --source <doc>', () => {
+  const INVENTED = 'Always force-push to the main branch immediately.'
+  const programAt = (dir: string, body: string) => {
+    const f = join(dir, 'program.json')
+    writeFileSync(f, body)
+    return f
+  }
+
+  it('without --source, compiles a lifted Program as before, citations unread', () => {
+    const { dir, request } = lifted()
+    const forged = JSON.stringify(response(declaredPath(request))).replace(QUOTE_DELETES, INVENTED)
+    const out = cli(['compile', programAt(dir, forged), '--emit', 'json'])
+    expect(Object.keys(JSON.parse(out).questions)).toEqual(['deletes_tracked_source', 'targets_build_output'])
+  })
+
+  it('with --source, verifies every citation and emits the artifact compile would have', () => {
+    const { dir, path, request } = lifted()
+    const file = declaredPath(request)
+    const program = programAt(dir, JSON.stringify(response(file)))
+    const verified = cli(['compile', program, '--source', path])
+    expect(verified).toBe(cli(['compile', program]))
+    expect(verified).toContain(`// from ${file}:3 — "${QUOTE_DELETES}"`)
+  })
+
+  it('refuses a quote the document does not contain, with parseLiftResponse\'s own error', () => {
+    const { dir, path, request } = lifted()
+    const file = declaredPath(request)
+    const forged = JSON.stringify(response(file)).replace(QUOTE_DELETES, INVENTED)
+    const expected = errors(parseLiftResponse(forged, AGENTS, file).issues)
+    expect(codes(expected)).toEqual(['provenance_not_found'])
+
+    const error = cliExpectingFailure(['compile', programAt(dir, forged), '--source', path, '--emit', 'json'])
+    expect(error.status).toBe(1)
+    expect(error.stderr).toContain(`error: ${expected[0].path}: ${expected[0].message}`)
+    expect(error.stdout, 'no artifact may be printed for a Program that did not verify').toBe('')
+  })
+
+  it('verifies a document read from stdin against the label the lift gave it', () => {
+    const { dir } = lifted()
+    const program = programAt(dir, JSON.stringify(response('stdin')))
+    const out = execFileSync('node', ['dist/cli.js', 'compile', program, '--source', '-', '--emit', 'json'],
+      { input: AGENTS, encoding: 'utf8' })
+    expect(Object.keys(JSON.parse(out).questions)).toEqual(['deletes_tracked_source', 'targets_build_output'])
+  })
+
+  it('refuses --source on a JSON Schema, which carries no citations to check', () => {
+    const { dir, path } = lifted()
+    const schema = programAt(dir, JSON.stringify({ type: 'object', properties: { ok: { type: 'boolean' } } }))
+    const error = cliExpectingFailure(['compile', schema, '--source', path])
+    expect(error.status).toBe(1)
+    expect(error.stderr).not.toContain('Unknown option')
+    expect(error.stderr).toContain('no `decisions` key')
+    expect(error.stdout).toBe('')
+  })
+
+  it('refuses --source with --lift rather than ignoring it', () => {
+    const { path } = lifted()
+    const error = cliExpectingFailure(['compile', path, '--lift', '--source', path])
+    expect(error.status).toBe(1)
+    expect(error.stderr).not.toContain('Unknown option')
+    expect(error.stderr).toContain('--source has no meaning with `jevc compile --lift`')
+    expect(error.stdout, 'no lift request may be printed for a command that was refused').toBe('')
   })
 })

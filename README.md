@@ -334,7 +334,7 @@ Six commands. Every console block in this file is real output from this repo.
 | Command | Flags | Does |
 | --- | --- | --- |
 | `jevc scan [dir]` | `--json` | Finds the instruction files a project already has and sorts their rules into decidable, procedure and generation. The intended first command. |
-| `jevc compile <file\|->` | `--lift`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose. `-` reads stdin. |
+| `jevc compile <file\|->` | `--lift`, `--source <doc>`, `--emit sdk\|json\|ai-sdk\|langchain`, `-o <path>` | JSON Schema or a lifted Program → a TypeScript module (`sdk`, default), a Vercel AI SDK backend (`ai-sdk`, TypeScript), a `langchain-typesafe` classifier (`langchain`, **Python**) or a wire request (`json`); `--lift` prints the lowering request for prose; `--source` refuses a lifted Program unless every citation quotes `<doc>`. `-` reads stdin. |
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
 | `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 58. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
@@ -447,7 +447,9 @@ two evidence questions, each citing the line it came from, and the verdict in `r
 `parseLiftResponse` puts that through the same validator the deterministic path uses and
 checks all three fields of every `source`. The citation rules are in
 [Notes](#lift-citation-rules); the short version is that any error-severity issue returns
-the **empty** `Program`, never a usable one with a warning attached.
+the **empty** `Program`, never a usable one with a warning attached. From the shell,
+`jevc compile program.json --source AGENTS.md` runs the same check and exits 1 with nothing
+emitted when a citation does not verify. Without `--source`, a Program compiles unchecked.
 
 ### Emitting a policy
 

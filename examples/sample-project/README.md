@@ -28,13 +28,14 @@ Four commands, and the fourth puts the result back where the first one found it.
 ```bash
 jevc scan examples/sample-project                      # 1. what rules does this project already have?
 jevc compile examples/sample-project/CLAUDE.md --lift  # 2. hand the printed request to your agent
-#                                                        3. the agent returns a Program; save it
+jevc compile program.json --source examples/sample-project/CLAUDE.md > /dev/null   # 3. save the agent's Program; check every citation
 cp program.json examples/sample-project/.claude/gates/commit.json   # 4. install it
 ```
 
 Step 1 reports `CLAUDE.md — 13 rules, 7 decidable`. Step 2 prints a lowering request; no
-model runs inside jevc. Step 3 is your agent's answer, and step 4 is the only part that
-touches this project — a file copy and a hook registration, both of which you can read.
+model runs inside jevc. Step 3 is your agent's answer, checked: a citation that does not
+quote `CLAUDE.md` word for word exits 1. Step 4 is the only part that touches this
+project — a file copy and a hook registration, both of which you can read.
 
 The files that round trip produced, all of them in this directory:
 

@@ -83,7 +83,9 @@ and answer the request it prints. Every decision you return must carry a `source
 verbatim `quote` from the file — jevc rejects the whole response if a citation does not
 check out, so do not paraphrase.
 
-Save the result to `program.json` and run `jevc compile program.json --emit sdk -o gate.ts`.
+Save the result to `program.json` and run
+`jevc compile program.json --source <that file> --emit sdk -o gate.ts`, spelling the file
+exactly as you did for `--lift`.
 
 Then tell me three things: which rules became questions, which stayed in the prompt
 because they are procedure or generation, and which reducer thresholds you guessed at —

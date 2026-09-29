@@ -48,6 +48,10 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
   gate) — time, verdict, model, tool name, uncertain ids and answers; no state, no env values. A
   log that cannot be written does not block the call.
+- `jevc compile <program.json> --source <doc>` runs `parseLiftResponse` on a lifted Program
+  before compiling it: a citation that does not quote `<doc>` word for word, or names it
+  differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
+  `--source` nothing changes. It is refused on a JSON Schema and with `--lift`.
 
 ## 0.1.0 — 2026-09-20
 
