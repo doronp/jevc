@@ -245,8 +245,8 @@ describe('canEmit', () => {
   // A Program with no decisions compiles to a gate that asks nothing and therefore
   // always returns `otherwise`. Every target accepts it in its own way and none of them
   // complains: bouncer emits `questions: {}`, toolgate emits a thresholds block that
-  // applies to its four built-ins only, and langchain's TypeSafeClassifier.questions is
-  // Field(min_length=1), so that module raises a ValidationError the first time it runs.
+  // applies to its four built-ins only, and langchain's classify() sends an empty questions
+  // map, which langchain-typesafe 0.0.1a3 no longer checks client-side.
   it('rejects a program with no decisions on every target', () => {
     const empty: Program = { decisions: [],
       reduce: { kind: 'rules', rules: [], otherwise: 'allow' }, residual: '', dropped: [] }

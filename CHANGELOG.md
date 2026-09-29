@@ -21,6 +21,14 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `check --live` reports the answering model as a `<fixture>.model` row — `broken` for a non-Jev
   model, `drifted` for another Jev build or an allowed ID. `validateResponse` takes the allow-list
   as an optional third argument.
+- The emitted `langchain` module targets `langchain-typesafe>=0.0.1a3` and names it in its
+  header. a3 moved `questions` from the `TypeSafeClassifier` constructor into invoke's input and
+  forbids extra fields, so the module jevc emitted before raised a `ValidationError` at import.
+  It now constructs `TypeSafeClassifier(model=...)` and exports `classify(state)`, which invokes
+  it with `{"state": state, "questions": ...}`: call `reduce(classify(state).answers)` where you
+  called `reduce(classifier.invoke(state).answers)`. `scripts/check-langchain-a3.sh` (opt-in,
+  needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
+  dummy key and a mock transport; it sends nothing to TypeSafe.
 
 ### Added
 

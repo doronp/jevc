@@ -145,12 +145,14 @@ const verdict = reduce(result.answers, confidenceOf(result))
 jevc compile triage.json --emit langchain -o triage_jev.py
 ```
 
-The emitted module builds the classifier and the reducer for you:
+The emitted module builds the classifier and the reducer for you. It needs
+`langchain-typesafe>=0.0.1a3`, which takes the questions per call rather than in the
+constructor; `classify` passes them for you:
 
 ```python
-from triage_jev import classifier, reduce
+from triage_jev import classify, reduce
 
-response = classifier.invoke(state)     # a Runnable: state goes in at the root
+response = classify(state)              # classifier.invoke({"state": state, "questions": ...})
 verdict  = reduce(response.answers)
 
 if verdict == "deny":
@@ -162,9 +164,9 @@ dict, at any depth. `response.answers` is the flat `{id: Answer}` mapping; the
 `nouls` / `choices` / `scores` properties are filtered views of the same storage, useful
 when you want the narrower static type.
 
-`api_key` and `base_url` come from the environment — `TypeSafeClassifier` sets
-`extra="forbid"`, so a stray keyword argument is a hard error rather than a silently
-ignored one.
+`api_key` and `base_url` come from the environment (`TYPESAFE_API_KEY`,
+`TYPESAFE_BASE_URL`) — `TypeSafeClassifier` sets `extra="forbid"`, so a stray keyword
+argument is a hard error rather than a silently ignored one.
 
 ## Any Python agent that can call a tool
 

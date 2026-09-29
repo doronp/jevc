@@ -872,6 +872,39 @@ describe('the model every code target asks for', () => {
   it.runIf(pythonAvailable)('langchain: the classifier is constructed with the pinned jev-1.13.0', () => {
     expect(runPy(emitLangchain(gate), 'classifier.model')).toBe('jev-1.13.0')
   })
+
+  // langchain-typesafe 0.0.1a3 takes the questions per invoke, not in the constructor.
+  // classify(state) is the call a consumer makes, so it is the one run: through a client
+  // that records the request instead of sending it, answered with a fixed response.
+  it.runIf(pythonAvailable)('langchain: classify(state) sends the program to /v1/systemone and its answers reduce like runReducer', () => {
+    const answers: Record<string, JevAnswer> = {
+      destructive: { type: 'noul', noul: 0.2 },
+      dept: { type: 'choice', choice: 'technical', confidence: 0.9, probabilities: { billing: 0.1, technical: 0.9 } },
+      radius: { type: 'score', score: 1, confidence: 0.3, legend: { 0: 'none', 1: 'some', 2: 'everything' },
+        probabilities: { 0: 0.3, 1: 0.4, 2: 0.3 } },
+    } as Record<string, JevAnswer>
+    const state = { tool: 'rm', args: ['-rf', 'build'] }
+    const got = runPyScript(emitLangchain(gate), [
+      'import json',
+      'import mod',
+      'sent = []',
+      'class Response:',
+      '    def __init__(self, body): self.body = body',
+      '    def json(self): return self.body',
+      'class Client:',
+      '    def post(self, url, **kw):',
+      '        sent.append({"url": url, "body": kw["json"]})',
+      `        return Response({"model": "jev-1.13.0", "answers": json.loads(${JSON.stringify(JSON.stringify(answers))})})`,
+      'mod.classifier.client = Client()',
+      `res = mod.classify(json.loads(${JSON.stringify(JSON.stringify(state))}))`,
+      'print(json.dumps({"sent": sent, "verdict": mod.reduce(res.answers)}))',
+    ])
+    expect(got).toEqual({
+      sent: [{ url: expect.stringMatching(/\/v1\/systemone$/), body: emitJson(gate, state) }],
+      verdict: runReducer(gate, answers),
+    })
+    expect(runReducer(gate, answers)).toBe('review')
+  })
 })
 
 /** The first few points where a target's verdict differs from the reference, formatted so

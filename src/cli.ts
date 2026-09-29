@@ -433,10 +433,10 @@ if (cmd === 'compile') {
   // target at all. Its `no_decisions` error is the one that bites here: a JSON Schema whose
   // properties are all free text (the ordinary prose->residual case) compiles to zero
   // decisions, and the emitted module then asks nothing and returns the fallthrough verdict
-  // for every input. capability.ts:72-79 already named this exact failure — langchain's
-  // `TypeSafeClassifier(questions=...)` declares `Field(min_length=1)` and raises at import
-  // — and nothing on this path called it. It is also the honest exit code for "I compiled
-  // nothing": one `dropped:` line at exit 0 reads as success.
+  // for every input. capability.ts:72-79 already named this exact failure — langchain-typesafe
+  // 0.0.1a3 no longer validates the questions client-side, so the emitted classify() sends
+  // an empty map to the API — and nothing on this path called it. It is also the honest
+  // exit code for "I compiled nothing": one `dropped:` line at exit 0 reads as success.
   //
   // `validateRequest` owns the wire constraints the API enforces on whichever artifact ends
   // up sending the request (empty question ids, the token budget; the 255-option ceiling

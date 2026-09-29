@@ -312,7 +312,7 @@ export function canEmit(p: Program, target: string): ValidationIssue[] {
   // No decisions means no evidence: the emitted artifact asks nothing and always returns
   // `otherwise`. Every target accepts that quietly — bouncer emits `questions: {}`,
   // toolgate emits thresholds that apply to its own built-ins instead, langchain emits a
-  // classifier whose `questions` field is Field(min_length=1) and blows up on first use.
+  // classify() that sends an empty questions map (0.0.1a3 does not check it client-side).
   if (!p.decisions.length) {
     out.push({ code: 'no_decisions', path: 'decisions', severity: 'error',
       message: `Nothing to emit: the program has no decisions, so the generated artifact would ask nothing and always return "${p.reduce.otherwise}".` })
