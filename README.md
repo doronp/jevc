@@ -667,7 +667,8 @@ The response also has to say who answered. The corpus, and every threshold and b
 records, was measured on `jev-1.13.0`, the model the request pins, and must be re-measured for
 any other model. A response whose `model` is missing or is not a Jev build is `model_unexpected` at error
 severity, so `evaluate()` throws and a gate fails closed; another Jev build is a warning and the
-verdict stands. `JEVC_ALLOW_MODEL` (comma-separated exact model IDs, read on every call) is the
+verdict stands, with the warning in the returned `Verdict.warnings` (the sample gate prints it
+to stderr and logs it). `JEVC_ALLOW_MODEL` (comma-separated exact model IDs, read on every call) is the
 one opt-in: it turns a named non-Jev model into a warning. It re-measures nothing.
 
 [`docs/validation.md`](docs/validation.md) has the probe table with what the API actually

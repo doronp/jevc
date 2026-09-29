@@ -108,6 +108,11 @@ export type Verdict = {
   uncertain: string[]
   usage: { input_tokens: number; output_tokens: number }
   latencyMs: number
+  /** Every warn-severity issue askModel found (request and response). The one that matters
+   * most is `model_unexpected`: an answer from a Jev build other than the pinned one, or from a
+   * model JEVC_ALLOW_MODEL let through. The verdict stands, but the thresholds behind it were
+   * not measured on the model that produced it, and a caller that never sees this cannot tell. */
+  warnings: ValidationIssue[]
 }
 
 export type EvaluateOptions = {
@@ -278,5 +283,6 @@ export async function evaluate(
     uncertain: p.decisions.filter(d => isUncertain(answers, d.id, p)).map(d => d.id),
     usage: r.usage,
     latencyMs: r.latencyMs,
+    warnings: r.issues.filter(i => i.severity === 'warn'),
   }
 }

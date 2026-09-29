@@ -481,6 +481,13 @@ describe('evaluate and askModel — the model that answered', () => {
     const r = await evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('jev-1.14.0'), now: tick() })
     expect(r.verdict).toBe('deny')
     expect(r.model).toBe('jev-1.14.0')
+    // O-R1: a warning that only askModel can see never reaches a gate that calls evaluate.
+    expect(r.warnings.map(i => [i.code, i.severity])).toEqual([['model_unexpected', 'warn']])
+  })
+
+  it('returns no warnings when the pinned model answered', async () => {
+    const r = await evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('jev-1.13.0'), now: tick() })
+    expect(r.warnings).toEqual([])
   })
 
   it('JEVC_ALLOW_MODEL turns the named model into a warning, and returns the verdict', async () => {
@@ -488,6 +495,7 @@ describe('evaluate and askModel — the model that answered', () => {
     expect((await modelIssues('laya-rl-agent')).map(i => i.severity)).toEqual(['warn'])
     const r = await evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('laya-rl-agent'), now: tick() })
     expect(r.verdict).toBe('deny')
+    expect(r.warnings.map(i => i.message).join('')).toMatch(/laya-rl-agent[\s\S]*re-measure/)
   })
 
   it('JEVC_ALLOW_MODEL does not downgrade a different model', async () => {

@@ -81,27 +81,32 @@ const decide = async () => {
       model: f.measured.model,
       answers,
       uncertain: program.decisions.filter(d => isUncertain(answers, d.id, program)).map(d => d.id),
+      warnings: [],
     }
   }
   return evaluate(program, state)   // needs TYPESAFE_API_KEY
 }
 
-let verdict, model, answers, uncertain
+let verdict, model, answers, uncertain, warnings = []
 try {
-  ({ verdict, model, answers, uncertain } = await decide())
+  ({ verdict, model, answers, uncertain, warnings } = await decide())
 } catch (err) {
   verdict = ON_ERROR
   answers = {}
   uncertain = []
   process.stderr.write(`jev gate error, failing ${ON_ERROR}: ${err.message}\n`)
 }
+// The verdict stands (another Jev build, or a model JEVC_ALLOW_MODEL names), but the band it
+// fell in was measured on a different model. Said where the error above is said, so a human
+// reading hook output sees it, and logged below, so an observe run can be filtered on it.
+for (const w of warnings) process.stderr.write(`jev gate: warning: ${w.message}\n`)
 
 if (process.env.JEVC_MODE === 'observe') {
   // The model's answers and nothing it was shown: no state (the command, the user's words)
   // and no environment, so the log is safe to keep and share. Observing must never block,
   // so a log that cannot be written costs the line, not the tool call.
   const line = { ts: new Date().toISOString(), verdict, model: model ?? null,
-    tool_name: hook.tool_name ?? null, uncertain, answers }
+    tool_name: hook.tool_name ?? null, uncertain, answers, warnings: warnings.map(w => w.message) }
   try {
     appendFileSync(process.env.JEVC_OBSERVE_LOG || HERE('./observe.jsonl'), `${JSON.stringify(line)}\n`)
   } catch (err) {

@@ -23,7 +23,8 @@ module's API are both baked in at compile time.
   exact IDs, read on every call) is the one opt-in: a named non-Jev model becomes a warning.
   `check --live` reports the answering model as a `<fixture>.model` row — `broken` for a non-Jev
   model, `drifted` for another Jev build or an allowed ID. `validateResponse` takes the allow-list
-  as an optional third argument.
+  as an optional third argument. `evaluate()` returns the warnings as `Verdict.warnings`, and
+  the sample gate prints each on stderr and logs them in observe mode.
 - The emitted `langchain` module targets `langchain-typesafe>=0.0.1a3` and names it in its
   header. a3 moved `questions` from the `TypeSafeClassifier` constructor into invoke's input and
   forbids extra fields, so the module jevc emitted before raised a `ValidationError` at import.
@@ -57,7 +58,7 @@ module's API are both baked in at compile time.
   before the key check and refused without `--live`.
 - `JEVC_MODE=observe` in the sample gate: every call is let through, and the verdict it would
   have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
-  gate) — time, verdict, model, tool name, uncertain ids and answers; no state, no env values. A
+  gate) — time, verdict, model, tool name, uncertain ids, answers and warnings; no state, no env values. A
   log that cannot be written does not block the call.
 - `jevc compile <program.json> --source <doc>` runs `parseLiftResponse` on a lifted Program
   before compiling it: a citation that does not quote `<doc>` word for word, or names it

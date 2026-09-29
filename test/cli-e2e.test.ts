@@ -1326,11 +1326,11 @@ describe('scan, show, and the installable hook', () => {
         const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
         expect(lines).toHaveLength(2)
         const row = JSON.parse(lines[0]) as Record<string, unknown>
-        expect(Object.keys(row).sort()).toEqual(['answers', 'model', 'tool_name', 'ts', 'uncertain', 'verdict'])
+        expect(Object.keys(row).sort()).toEqual(['answers', 'model', 'tool_name', 'ts', 'uncertain', 'verdict', 'warnings'])
         expect(Number.isNaN(Date.parse(row.ts as string))).toBe(false)
         const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
         const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
-        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [] })
+        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [], warnings: [] })
         // The model's answers to this program's questions, and nothing it was shown.
         expect(row.answers).toEqual(Object.fromEntries(program.decisions.map(d => [d.id, f.measured.answers[d.id]])))
         for (const leak of ['git commit', 'go ahead', 'payments-api', 'sentinel-7f3a91', log]) {
@@ -1347,24 +1347,32 @@ describe('scan, show, and the installable hook', () => {
 
     // The live path, offline: the gate's own evaluate() answered by a local server through
     // TYPESAFE_BASE_URL, with a dummy key. No recorded fixture sits in the uncertainty band,
-    // so this is the only way to reach commit.json's uncertain -> ask rule end to end.
-    it('asks the human when whether they asked for the commit is uncertain', async () => {
-      const answers = {
+    // so this is the only way to reach commit.json's uncertain -> ask rule end to end. It is
+    // also the only way to show the model guard reaching a real gate through the real SDK.
+    describe('the live path, offline', () => {
+      const band = {
         is_commit_operation: { type: 'noul', noul: 0.96 },
         user_explicitly_asked_to_commit: { type: 'noul', noul: 0.5 },
         commit_required_by_requested_task: { type: 'noul', noul: 0.16 },
       }
+      // `model: undefined` drops out of JSON.stringify, which is the "names no model" reply.
+      let reply: Record<string, unknown> = {}
+      const answeredBy = (model: unknown) => { reply = { model, answers: band, usage: { input_tokens: 1, output_tokens: 1 } } }
       let requests = 0
       const server = createServer((req, res) => {
         requests++
         req.resume()
         req.on('end', () => {
           res.setHeader('content-type', 'application/json')
-          res.end(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 1, output_tokens: 1 } }))
+          res.end(JSON.stringify(reply))
         })
       })
-      await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
-      const { JEVC_REPLAY: _drop, ...offline } = { ...OFFLINE_ENV, JEVC_REPLAY: '' }
+      beforeAll(() => new Promise<void>(r => server.listen(0, '127.0.0.1', r)))
+      afterAll(() => { server.close() })
+
+      // JEVC_ALLOW_MODEL is dropped too: one inherited from the shell running the suite would
+      // turn the fail-closed case below into a pass.
+      const { JEVC_REPLAY: _r, JEVC_ALLOW_MODEL: _a, ...offline } = { ...OFFLINE_ENV, JEVC_REPLAY: '', JEVC_ALLOW_MODEL: '' }
       const live = (env: Record<string, string> = {}) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done, fail) => {
         const c = spawn(process.execPath, [join(HOOK, 'gate.mjs')], {
           cwd: PROJECT,
@@ -1378,24 +1386,71 @@ describe('scan, show, and the installable hook', () => {
         c.on('close', status => done({ status, stdout, stderr }))
         c.stdin.end(JSON.stringify(sample()))
       })
-      try {
+      const decision = (r: { stdout: string }) =>
+        JSON.parse(r.stdout).hookSpecificOutput as { permissionDecision: string; permissionDecisionReason: string }
+      const observed = async (env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'jevc-observe-'))
+        try {
+          const o = await live({ JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: join(dir, 'observe.jsonl'), ...env })
+          expect([o.status, o.stdout]).toEqual([0, ''])
+          return JSON.parse(readFileSync(join(dir, 'observe.jsonl'), 'utf8')) as Record<string, unknown>
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      it('asks the human when whether they asked for the commit is uncertain', async () => {
+        answeredBy('jev-1.13.0')
+        const before = requests
         const r = await live()
         expect(r.status, r.stderr).toBe(0)
-        const d = JSON.parse(r.stdout).hookSpecificOutput
+        const d = decision(r)
         expect(d.permissionDecision).toBe('ask')
         expect(d.permissionDecisionReason).toContain('0.50')
         expect(d.permissionDecisionReason, 'the deny wording on an ask').not.toContain('not a request to commit')
+        expect(r.stderr, 'the pinned model answered; there is nothing to warn about').toBe('')
 
-        const log = join(mkdtempSync(join(tmpdir(), 'jevc-observe-')), 'observe.jsonl')
-        const o = await live({ JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: log })
-        expect([o.status, o.stdout]).toEqual([0, ''])
-        expect(JSON.parse(readFileSync(log, 'utf8'))).toMatchObject(
-          { verdict: 'ask', model: 'jev-1.13.0', uncertain: ['user_explicitly_asked_to_commit'], answers })
-        rmSync(dirname(log), { recursive: true, force: true })
-        expect(requests).toBe(2)
-      } finally {
-        server.close()
-      }
+        expect(await observed()).toMatchObject(
+          { verdict: 'ask', model: 'jev-1.13.0', uncertain: ['user_explicitly_asked_to_commit'], answers: band, warnings: [] })
+        expect(requests - before).toBe(2)
+      })
+
+      // O-R1: evaluate() used to drop the warning, so a gate running on an unpinned model said
+      // nothing at all. The verdict stands; the human is told it was not measured on this model.
+      it('keeps the verdict from another Jev build, and says so on stderr and in the log', async () => {
+        answeredBy('jev-1.14.0')
+        const r = await live()
+        expect(r.status, r.stderr).toBe(0)
+        expect(decision(r).permissionDecisionReason).toContain('0.50')
+        expect(r.stderr).toMatch(/^jev gate: warning: .*"jev-1\.14\.0".*jev-1\.13\.0/m)
+        const row = await observed()
+        expect(row).toMatchObject({ verdict: 'ask', model: 'jev-1.14.0' })
+        expect(row.warnings).toEqual([expect.stringContaining('"jev-1.14.0"')])
+      })
+
+      it('fails closed to `ask` when a model that is not Jev answered', async () => {
+        answeredBy('laya-rl-agent')
+        const r = await live()
+        expect(r.status).toBe(0)
+        expect(decision(r)).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: 'The commit gate could not be evaluated.' })
+        expect(r.stderr).toMatch(/^jev gate error, failing ask: [\s\S]*"laya-rl-agent"[\s\S]*JEVC_ALLOW_MODEL/m)
+      })
+
+      it('takes the verdict from a model JEVC_ALLOW_MODEL names, with a warning', async () => {
+        answeredBy('laya-rl-agent')
+        const r = await live({ JEVC_ALLOW_MODEL: 'laya-rl-agent' })
+        expect(r.status, r.stderr).toBe(0)
+        expect(decision(r).permissionDecisionReason).toContain('0.50')
+        expect(r.stderr).toMatch(/^jev gate: warning: .*"laya-rl-agent".*re-measure/m)
+      })
+
+      it('fails closed to `ask` when the response names no model', async () => {
+        answeredBy(undefined)
+        const r = await live()
+        expect(r.status).toBe(0)
+        expect(decision(r).permissionDecision).toBe('ask')
+        expect(r.stderr).toMatch(/^jev gate error, failing ask: [\s\S]*names no model/m)
+      })
     })
   })
 })

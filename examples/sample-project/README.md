@@ -141,10 +141,12 @@ questions about file writes. Your own rules, not this one: start at `jevc scan .
   It replays that one recorded state; it is a demo of the wiring, not a simulator. Without
   the variable the hook calls the API and needs `TYPESAFE_API_KEY`.
 - The gate fails **closed**: any error returns `ask`, so a network blip pauses for a human
-  instead of silently waving the commit through. `JEVC_ON_ERROR=allow` inverts that.
+  instead of silently waving the commit through. `JEVC_ON_ERROR=allow` inverts that. An answer
+  from a Jev build other than `jev-1.13.0`, or from a model `JEVC_ALLOW_MODEL` names, keeps its
+  verdict and prints `jev gate: warning: ...` on stderr.
 - `JEVC_MODE=observe` lets every `Bash` call through and appends the verdict it would have
   had to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the gate), one JSON line per call:
-  time, verdict, model, tool name, uncertain ids and the model's answers — never the command,
+  time, verdict, model, tool name, uncertain ids, the model's answers and any warnings — never the command,
   the transcript or anything from the environment. A log that cannot be written is reported
   on stderr and the call still goes through. Run it for a while before trusting the thresholds.
 - Non-`Bash` tool calls exit 0 immediately. A question about a tool the rule cannot apply
