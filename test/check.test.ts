@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { assertExpectation, checkLive, diffFixture, liveOptions, liveSummary, loadFixtures } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
@@ -307,6 +307,15 @@ describe('assertExpectation — a right-typed answer with no measurement in it',
 // row in the report claimed it. A mid-run alias bump is the one event `--live` exists to
 // attribute, and it was the one event the report misattributed.
 describe('checkLive — which model answered', () => {
+  // askModel reads JEVC_ALLOW_MODEL per call, so one set in the shell running the suite would
+  // turn the broken row below into a drifted one.
+  const saved = process.env.JEVC_ALLOW_MODEL
+  beforeEach(() => { delete process.env.JEVC_ALLOW_MODEL })
+  afterEach(() => {
+    if (saved === undefined) delete process.env.JEVC_ALLOW_MODEL
+    else process.env.JEVC_ALLOW_MODEL = saved
+  })
+
   it('names every model that answered when the alias moves mid-run', async () => {
     const fs = ['f1', 'f2', 'f3'].map(id =>
       fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
@@ -350,6 +359,20 @@ describe('checkLive — which model answered', () => {
     expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
       { id: 'f1.model', recorded: 'jev-1.13.0', live: 'jev-1.14.0', delta: null, status: 'drifted' },
     ])
+  })
+
+  // O-R11: the documented re-measure path — name the local model, run check --live — had no
+  // test; a row keyed on "starts with jev-" instead of the guard's severity passed every other.
+  it('reports a model JEVC_ALLOW_MODEL names as drifted, the re-measure path', async () => {
+    process.env.JEVC_ALLOW_MODEL = 'laya-rl-agent'
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: 'laya-rl-agent' } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'laya-rl-agent', delta: null, status: 'drifted' },
+    ])
+    expect(report.broken).toBe(0)
   })
 
   it('never prints a model field that is not a model ID', async () => {
