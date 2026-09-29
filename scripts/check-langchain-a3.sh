@@ -50,6 +50,45 @@ assert body["model"] == "jev-1.13.0", body["model"]
 assert body["questions"] == expected["questions"], (body["questions"], expected["questions"])
 assert body["state"] == fixture["state"]
 assert verdict == "deny", verdict
+
+# Who answered. classify() applies evaluate()'s guard: a non-Jev model raises unless
+# JEVC_ALLOW_MODEL names it; a response with no model never reaches it, because a3's
+# ClassifierResponse requires the field.
+import os
+import warnings
+
+answered_by = fixture["measured"]["model"]
+
+
+def handler(request):
+    body = json.loads(request.content)
+    reply = {"answers": {k: recorded[k] for k in body["questions"]}}
+    if answered_by is not None:
+        reply["model"] = answered_by
+    return httpx2.Response(200, json=reply)
+
+
+commit_jev.classifier.client = httpx2.Client(transport=httpx2.MockTransport(handler))
+answered_by = "laya-rl-agent"
+try:
+    commit_jev.classify(fixture["state"])
+    raise AssertionError("a non-Jev model was accepted")
+except ValueError as e:
+    assert '"laya-rl-agent"' in str(e) and "JEVC_ALLOW_MODEL" in str(e), e
+os.environ["JEVC_ALLOW_MODEL"] = "laya-rl-agent"
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    assert commit_jev.reduce(commit_jev.classify(fixture["state"]).answers) == "deny"
+assert [str(x.message) for x in w if '"laya-rl-agent"' in str(x.message)], [str(x.message) for x in w]
+del os.environ["JEVC_ALLOW_MODEL"]
+answered_by = None
+try:
+    commit_jev.classify(fixture["state"])
+    refused = None
+except Exception as e:  # raised by a3 before _check_model runs; its class is a3's to choose
+    refused = type(e).__name__
+assert refused, "a response with no model was accepted"
 print(f"langchain-typesafe {version('langchain-typesafe')}: 1 request to {url} (mock), "
-      f"{len(body['questions'])} questions = --emit json, model {body['model']}, verdict {verdict}")
+      f"{len(body['questions'])} questions = --emit json, model {body['model']}, verdict {verdict}; "
+      f"non-Jev refused, allow-listed warned, no model refused by a3 ({refused})")
 PY

@@ -30,7 +30,9 @@ module's API are both baked in at compile time.
   forbids extra fields, so the module jevc emitted before raised a `ValidationError` at import.
   It now constructs `TypeSafeClassifier(model=...)` and exports `classify(state)`, which invokes
   it with `{"state": state, "questions": ...}`: call `reduce(classify(state).answers)` where you
-  called `reduce(classifier.invoke(state).answers)`. `scripts/check-langchain-a3.sh` (opt-in,
+  called `reduce(classifier.invoke(state).answers)`. `classify` applies the same model guard as
+  `evaluate`: a non-Jev model raises `ValueError` unless `JEVC_ALLOW_MODEL` names it, and an
+  allowed model or another Jev build is a `warnings.warn`. `scripts/check-langchain-a3.sh` (opt-in,
   needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
   dummy key and a mock transport; it sends nothing to TypeSafe.
 

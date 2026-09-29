@@ -105,6 +105,10 @@ export function emitLangchain(p: Program, name = 'program'): string {
 # Requires: langchain-typesafe>=0.0.1a3
 # api_key and base_url come from the environment (TYPESAFE_API_KEY, TYPESAFE_BASE_URL):
 # TypeSafeClassifier sets extra="forbid", so a stray kwarg is a hard error.
+import json
+import os
+import warnings
+
 from langchain_typesafe import Choice, Noul, NoulCriteria, Score, TypeSafeClassifier
 
 ${name}_questions = {
@@ -113,10 +117,41 @@ ${p.decisions.map(question).join('\n')}
 
 classifier = TypeSafeClassifier(model="${PINNED_MODEL}")
 
+_MEASURED = "jevc's corpus, and every threshold and band it records, was measured on ${PINNED_MODEL}"
+
+
+def _check_model(model):
+    """jevc's evaluate() guard, applied to this module's answers. TYPESAFE_BASE_URL can point
+    the classifier at any server that speaks the wire format, and every threshold below was
+    measured on ${PINNED_MODEL}: a non-Jev model raises unless JEVC_ALLOW_MODEL (comma-separated
+    exact IDs, read per call) names it, and then warns, as another Jev build does."""
+    if not isinstance(model, str) or model == "":
+        raise ValueError(f"Response names no model, so nothing says Jev answered; {_MEASURED}.")
+    # JSON-quoted and cut at 64 characters: the server chooses this string.
+    shown = json.dumps(model[:64] + "\\u2026" if len(model) > 64 else model)
+    if not model.startswith("jev-"):
+        allowed = [m.strip() for m in os.environ.get("JEVC_ALLOW_MODEL", "").split(",") if m.strip()]
+        if model not in allowed:
+            raise ValueError(
+                f"Response came from {shown}, which is not Jev; {_MEASURED}, so none of them were"
+                " tested against its answers. If that model is deliberate, name it in"
+                " JEVC_ALLOW_MODEL (comma-separated exact IDs) to accept it with a warning.")
+        warnings.warn(
+            f"Response came from {shown}, which is not Jev; accepted only because JEVC_ALLOW_MODEL"
+            f" names it, but {_MEASURED}, so re-measure them on that model before trusting its"
+            " verdicts.", stacklevel=3)
+    elif model != "${PINNED_MODEL}":
+        warnings.warn(
+            f"Response came from {shown}, not the pinned ${PINNED_MODEL} the corpus was measured on;"
+            " thresholds and bands may have moved.", stacklevel=3)
+
 
 def classify(state):
-    """Ask this program's questions about state. Pass the result's .answers to reduce()."""
-    return classifier.invoke({"state": state, "questions": ${name}_questions})
+    """Ask this program's questions about state. Pass the result's .answers to reduce().
+    Raises ValueError when the answer did not come from Jev (see _check_model)."""
+    response = classifier.invoke({"state": state, "questions": ${name}_questions})
+    _check_model(response.model)
+    return response
 
 # Each decision's uncertainty rule as the Program declares it. A noul answer is
 # {type, noul} with no .confidence field at all, so its band is tested on .noul; a choice

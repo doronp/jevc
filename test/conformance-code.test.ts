@@ -928,6 +928,43 @@ describe('the model every code target asks for', () => {
     })
     expect(runReducer(gate, answers)).toBe('review')
   })
+
+  // O-R3, KA-R1: classify() returned whatever answered, so a module pointed at a local server
+  // by TYPESAFE_BASE_URL reduced a stranger's answers against thresholds measured on Jev. It
+  // now applies the guard evaluate() applies, JEVC_ALLOW_MODEL included.
+  it.runIf(pythonAvailable)('langchain: classify(state) checks who answered, as evaluate does', () => {
+    const answeredBy = (model: string, allow?: string) => runPyScript(emitLangchain(gate), [
+      'import json, os, warnings',
+      allow === undefined ? 'os.environ.pop("JEVC_ALLOW_MODEL", None)' : `os.environ["JEVC_ALLOW_MODEL"] = ${JSON.stringify(allow)}`,
+      'import mod',
+      'class Response:',
+      '    def __init__(self, body): self.body = body',
+      '    def json(self): return self.body',
+      'class Client:',
+      '    def post(self, url, **kw):',
+      `        return Response({"model": ${JSON.stringify(model)}, "answers": {"destructive": {"type": "noul", "noul": 0.2}}})`,
+      'mod.classifier.client = Client()',
+      'with warnings.catch_warnings(record=True) as w:',
+      '    warnings.simplefilter("always")',
+      '    try:',
+      '        out = {"ok": mod.classify({"x": 1}).model}',
+      '    except ValueError as e:',
+      '        out = {"error": str(e)}',
+      'out["warnings"] = [str(x.message) for x in w]',
+      'print(json.dumps(out))',
+    ])
+    expect(answeredBy('jev-1.13.0')).toEqual({ ok: 'jev-1.13.0', warnings: [] })
+    expect(answeredBy('jev-1.14.0')).toEqual({ ok: 'jev-1.14.0', warnings: [expect.stringContaining('"jev-1.14.0"')] })
+    expect(answeredBy('laya-rl-agent')).toEqual(
+      { error: expect.stringMatching(/"laya-rl-agent"[\s\S]*JEVC_ALLOW_MODEL/), warnings: [] })
+    expect(answeredBy('laya-rl-agent', ' x , laya-rl-agent ,')).toEqual(
+      { ok: 'laya-rl-agent', warnings: [expect.stringMatching(/"laya-rl-agent"[\s\S]*re-measure/)] })
+    expect(answeredBy('laya-rl-agent-v2', 'laya-rl-agent')).toMatchObject({ error: expect.any(String) })
+    expect(answeredBy('')).toMatchObject({ error: expect.stringContaining('names no model') })
+    const esc = answeredBy('evil\u001b[2J' + 'x'.repeat(200)) as { error: string }
+    expect(esc.error).not.toMatch(/[\u0000-\u001f]/)
+    expect(esc.error).toContain(`"evil\\u001b[2J${'x'.repeat(56)}\\u2026"`)
+  })
 })
 
 /** The first few points where a target's verdict differs from the reference, formatted so

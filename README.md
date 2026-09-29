@@ -826,8 +826,10 @@ its exact model ID in `JEVC_ALLOW_MODEL`, then re-measure: `check --live` agains
 row. Until then the thresholds describe
 `jev-1.13.0`, not your model. `--model <id>` picks which TypeSafe build `check --live` asks and
 `--threshold <n>` how far an answer may move before it is a row. The guard runs inside
-`evaluate` and `askModel`; the emitted `ai-sdk` and `langchain` modules ask for the pin through
-their own clients and do not check who answered.
+`evaluate` and `askModel`, and the emitted `langchain` module's `classify()` applies it too
+(`ValueError`, or `warnings.warn`). The emitted `ai-sdk` module asks for the pin and does not
+check who answered; `@ai-sdk/typesafe-ai` reports the model it asked for when the reply names
+none, so its `modelId` proves nothing either.
 
 The vendor is a single point of failure: there is no local fallback, so when the server is
 down nothing answers. `evaluate()` waits 5 seconds, retries once (`timeoutMs`, `maxRetries`),

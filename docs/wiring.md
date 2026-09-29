@@ -141,6 +141,13 @@ const verdict = reduce(result.answers, confidenceOf(result))
 `reduce` here takes **two** arguments and the second is not optional — see
 [Notes](#notes).
 
+The module reads its key from `TYPESAFE_AI_API_KEY` or `TYPESAFE_API_KEY`, and
+`TYPESAFE_BASE_URL` as the API root (it appends `/v1`), so it reaches a local
+Jev-compatible server the way jevc does. It does not check who answered, and the provider
+cannot tell you either: `@ai-sdk/typesafe-ai` reports the model it asked for when the reply
+names none (3.0.10, `scripts/check-ai-sdk.sh`), so the response's `modelId` is not evidence
+that Jev answered.
+
 ## Python agents
 
 ```bash
@@ -168,7 +175,14 @@ when you want the narrower static type.
 
 `api_key` and `base_url` come from the environment (`TYPESAFE_API_KEY`,
 `TYPESAFE_BASE_URL`) — `TypeSafeClassifier` sets `extra="forbid"`, so a stray keyword
-argument is a hard error rather than a silently ignored one.
+argument is a hard error rather than a silently ignored one. The classifier is built at
+import and a3 refuses an empty key there, so set `TYPESAFE_API_KEY` to any non-empty value
+even for a local server.
+
+`classify` checks who answered, as `evaluate` does: a response from a model that is not Jev
+raises `ValueError` unless `JEVC_ALLOW_MODEL` (comma-separated exact IDs) names it, and an
+allowed model or a Jev build other than `jev-1.13.0` is a `warnings.warn`. a3 itself refuses a
+response with no `model`.
 
 ## Any Python agent that can call a tool
 
