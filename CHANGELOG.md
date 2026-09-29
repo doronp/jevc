@@ -3,6 +3,33 @@
 Notable changes to jevc. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- A Claude Code plugin: `/plugin marketplace add doronp/jevc`, then `/plugin install jevc@jevc`.
+  It carries one skill, `/jevc:jevc`, that runs scan, lift and compile, has the agent check every
+  citation with `grep` because `jevc compile` does not, and installs a `PreToolUse` gate in the
+  project only after asking. It uses `npx -y -p jev-compiler@latest jevc` when `jevc` is not on
+  `PATH`, and the plugin registers no hooks of its own. The plugin root is `plugin/`, so installing
+  copies the manifest and the skill, not the repository and its dev dependencies.
+
+### Fixed
+
+- The sample hook registration ran `node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs` unquoted. In a
+  project whose path has a space, node got half the path and exited 1, which Claude Code treats as
+  a non-blocking error, so the gate was silently off. `$CLAUDE_PROJECT_DIR` is now quoted in
+  `settings.json` and everywhere the READMEs and `docs/wiring.md` print it.
+- The instructions for installing the sample gate in your own project said to import from `jevc`;
+  the package is `jev-compiler`. They now also say to install it in the project, since a global
+  install is not importable and the gate otherwise dies at import, which Claude Code treats as a
+  non-blocking error.
+- The copy-paste slash command in `docs/wiring.md` no longer says `jevc compile` checks citations.
+  It does not; the command now has the agent `grep` each quote before compiling. README's "Lift
+  citation rules" now says the same: the citation checks run in `parseLiftResponse`, and the 0.1.0
+  entry's "can no longer reach an emitted bouncer policy at exit 0" holds for that path only, not
+  for `compile` or `emit-policy` on a saved `program.json`.
+
 ## 0.1.0 — 2026-09-20
 
 First release, so everything is new. The entries below are the behaviour changes landed by the

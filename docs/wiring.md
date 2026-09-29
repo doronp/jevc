@@ -67,9 +67,23 @@ Two things decide whether this gate is any good, and neither is the model:
 
 ## Claude Code skill and slash command
 
-Let the agent you already have open do the compiling. Save as
-`.claude/commands/jev.md` — Claude Code commands are markdown files, and the body is the
-prompt:
+Let the agent you already have open do the compiling. The short way is the plugin:
+
+```
+/plugin marketplace add doronp/jevc
+/plugin install jevc@jevc
+```
+
+It installs one skill, [`plugin/skills/jevc/SKILL.md`](../plugin/skills/jevc/SKILL.md),
+which Claude Code loads when you ask it to enforce a rule, or which you run as `/jevc:jevc`.
+It is the recipe below grown into the whole round trip: scan, lift, a citation check,
+compile, and — only if you say yes — the [`PreToolUse` gate](#claude-code-pretooluse-hook)
+above, installed in your project. It uses `jevc` if it is on your `PATH` and
+`npx -y -p jev-compiler@latest jevc` otherwise, and the plugin registers no hooks of its
+own: a gate belongs to the project it guards.
+
+If you would rather not install a plugin, save this as `.claude/commands/jev.md` — Claude
+Code commands are markdown files, and the body is the prompt:
 
 ```markdown
 ---

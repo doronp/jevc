@@ -35,6 +35,11 @@ $ npx jevc check
 No API key, no network — not for the tests, the examples, or anything in this README
 except `jevc check --live`.
 
+As a Claude Code plugin: `/plugin marketplace add doronp/jevc`, then
+`/plugin install jevc@jevc`. It adds one skill, `/jevc:jevc`, which runs the scan, lift and
+compile below for you and asks before it installs a gate
+([docs/wiring.md](docs/wiring.md#claude-code-skill-and-slash-command)).
+
 ---
 
 ## Your rules are already in the repo
@@ -222,7 +227,7 @@ actually runs:
 | Where the decision happens | Recipe |
 | --- | --- |
 | Claude Code stops a tool call | `PreToolUse` hook |
-| Claude Code runs the compiler for you | a `.claude/commands/jev.md` slash command |
+| Claude Code runs the compiler for you | the `jevc` plugin's skill, or a `.claude/commands/jev.md` slash command |
 | Your own TypeScript agent loop | `--emit sdk` |
 | A Vercel AI SDK app | `--emit ai-sdk` |
 | A Python agent — LangChain, LangGraph, your own | `--emit langchain`, or subprocess the gate |
