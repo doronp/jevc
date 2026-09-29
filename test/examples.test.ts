@@ -405,8 +405,11 @@ describe('README claims recompute from the repo', () => {
       expect(hooks, 'the project registers exactly one gate').toHaveLength(1)
 
       // `$CLAUDE_PROJECT_DIR` is the project root Claude Code expands at spawn time, which
-      // here is this directory — so the registered path must resolve inside it.
-      const rel = hooks[0].command.replace(/^node \$CLAUDE_PROJECT_DIR\//, '')
+      // here is this directory — so the registered path must resolve inside it. It is quoted
+      // because the command runs through a shell: unquoted, a project path with a space
+      // splits, node exits 1, and Claude Code reads exit 1 as a non-blocking error and lets
+      // the tool call through. An unquoted registration leaves a `$` behind and fails here.
+      const rel = hooks[0].command.replace(/^node "\$CLAUDE_PROJECT_DIR"\//, '')
       expect(rel, 'the hook command is not a project-relative node invocation').not.toContain('$')
       expect(existsSync(`${DIR}/${rel}`), `settings.json registers ${rel}, which does not exist`).toBe(true)
 

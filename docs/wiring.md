@@ -43,7 +43,7 @@ Register it in `.claude/settings.json`:
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/gates/gate.mjs" }
         ]
       }
     ]

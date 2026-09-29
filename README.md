@@ -203,7 +203,7 @@ which is the whole file:
   "hooks": {
     "PreToolUse": [
       { "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }] }
+        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/gates/gate.mjs" }] }
     ]
   }
 }

@@ -117,7 +117,7 @@ in, and register the hook —
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/gates/gate.mjs" }
         ]
       }
     ]
