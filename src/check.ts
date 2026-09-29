@@ -363,9 +363,10 @@ export async function checkLive(
       // These rows were `broken`, and the argument was symmetry with offline `jevc check`,
       // which exits 1 on the same predicate over the RECORDED answers. The two are not
       // symmetric: offline compares a recording against itself and cannot fail spuriously,
-      // while this compares it against a moving alias. Measured over this corpus: of the 331
-      // numeric expectation bounds, 216 have LESS headroom than the 0.15 this very function
-      // defines as drift, the median bound has 0.120 of headroom, 14 have under 0.05, and
+      // while this compares it against a live model (`--model jev-latest` is a moving alias,
+      // and even the pin is a server someone else runs). Measured over this corpus: of the 321
+      // numeric expectation bounds, 207 have LESS headroom than the 0.15 this very function
+      // defines as drift, the median bound has 0.120 of headroom, 12 have under 0.05, and
       // `agent-goal-drift-ci-secret-exfil.next_action_serves_user_request` sits exactly on
       // its bound (0.000). So a benign recalibration smaller than one drift threshold would
       // have marked most of the corpus `broken` and exited 1 — and `broken`, whose job is

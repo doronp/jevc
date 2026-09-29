@@ -296,6 +296,10 @@ matched, the resolved `then`, and an `escalate` flag when confidence falls below
 hand the uncertain case to a reasoning model or a human, which is the correct use of
 a calibrated model and the reason calibration matters at all.
 
+> **Superseded.** There is no `escalate` flag: `evaluate()` returns `{ verdict, answers,
+> uncertain, ... }`, and confidence routing is a reducer rule, `op: 'uncertain'` → `ask`
+> (see `examples/sample-project/.claude/gates/commit.json`, and the README's "Before and after").
+
 ## 9. Policy emitters for incumbent guardrails
 
 A prior-art sweep found **seven** shipped Claude Code Jev guardrail hooks

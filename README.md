@@ -212,9 +212,10 @@ which is the whole file:
 }
 ```
 
-For your own project: copy that `.claude/` directory, change the import in `gate.mjs` from
-the relative `dist/` path to `jevc`, and set `TYPESAFE_API_KEY` in the environment Claude
-Code runs in. [`examples/sample-project/README.md`](examples/sample-project/README.md) walks
+For your own project: copy that `.claude/` directory, `npm install jev-compiler` in the
+project (a global install gives you the command, not an importable module), change the
+imports in `gate.mjs` from the relative `dist/` paths to `jev-compiler`, and set
+`TYPESAFE_API_KEY` in the environment Claude Code runs in. [`examples/sample-project/README.md`](examples/sample-project/README.md) walks
 the round trip — scan, lift, compile, install, run — one command at a time.
 
 [**`docs/wiring.md`**](docs/wiring.md) has one recipe per surface, with the code that
@@ -642,7 +643,7 @@ Those are different questions, and the corpus only answers the first.
 
 `--live` compares the recording against the pinned `jev-1.13.0` (or `--model`), and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
-spuriously, while 210 of the 321 numeric bounds in this corpus have less headroom than the
+spuriously, while 207 of the 321 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift
 threshold would otherwise turn most of the corpus red. A band that no longer holds is
 `drifted`, not `broken`, and does not gate the exit. Everything structural still exits 1 on
@@ -806,6 +807,52 @@ is acceptable here and nowhere else in this repo, because nothing downstream con
 classification — `scan` calls no model, writes no files and decides nothing. A human reads
 the list and picks a file to lift, and the lift step is where a model and then a human
 decide what actually becomes a question.
+
+### Where the answers come from, and when they stop
+
+`TYPESAFE_BASE_URL` reroutes every call: jevc's own (`evaluate`, `askModel`, `check --live`,
+all through `@typesafe-ai/sdk`), the emitted `langchain` module's (through
+`langchain-typesafe`) and the emitted `ai-sdk` module's, which passes it as `baseURL`. That is
+how you point jevc at a TypeSafe account or at a local Jev-compatible server. The model guard
+reads the `model` field the server sends back, so a server that echoes whatever model it was
+asked for passes it. Trust the base URL as far as you trust the key.
+
+Thresholds are per model. Every threshold, band and corpus number here was measured on
+`jev-1.13.0`; the guard refuses a verdict from anything that does not say it is a Jev build and
+warns on a Jev build other than the pin. To run a local Jev-compatible server on purpose, name
+its exact model ID in `JEVC_ALLOW_MODEL`, then re-measure: `check --live` against that server
+(it still wants a non-empty `TYPESAFE_API_KEY`) reports every band that moved as a `drifted`
+row. Until then the thresholds describe
+`jev-1.13.0`, not your model. `--model <id>` picks which TypeSafe build `check --live` asks and
+`--threshold <n>` how far an answer may move before it is a row. The guard runs inside
+`evaluate` and `askModel`; the emitted `ai-sdk` and `langchain` modules ask for the pin through
+their own clients and do not check who answered.
+
+The vendor is a single point of failure: there is no local fallback, so when the server is
+down nothing answers. `evaluate()` waits 5 seconds, retries once (`timeoutMs`, `maxRetries`),
+then throws; it never returns a verdict it did not compute, and the emitted modules do not
+catch the error either. The sample gate catches that and answers `ask`, so every gated `Bash` call waits for
+a human until the outage ends; `JEVC_ON_ERROR=allow` keeps the agent working, unguarded,
+instead. The `bouncer` policy ships `on_error: passthrough` and toolgate's `fail_mode` defaults
+to `passthrough`: both let the call through on a backend error, so set them to `ask` or `deny`
+if an outage should stop the agent.
+
+The `bouncer` and `toolgate` policies name no model; the host picks it. Bouncer asks
+`jev-latest` ([target-bouncer.md](docs/targets/target-bouncer.md)) and toolgate's
+`backend.model` defaults to `typesafe-ai/jev` ([target-toolgate.md](docs/targets/target-toolgate.md)),
+so neither the pin nor the guard reaches them, and a vendor model bump reaches you without a
+jevc release.
+
+If TypeSafe retires `jev-1.13.0`, a request naming it either fails, and a gate fails the way
+it does in an outage, or comes back from another build, which the guard reports as a warning
+while the verdict stands. The fix is a jevc release, not a flag: re-measure the corpus
+against the successor in a pinned drift run, bump `PINNED_MODEL`, and recompile, because every
+emitted module carries the model it was compiled with.
+
+To watch a rule before trusting it, run the sample gate with `JEVC_MODE=observe`: every call
+goes through, and the verdict it would have given is appended to `observe.jsonl` beside the
+gate (or `JEVC_OBSERVE_LOG`) with the answers and the uncertain ids, never the state. Read the
+log, adjust the thresholds, then drop the variable.
 
 ### Cost
 

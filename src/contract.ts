@@ -371,7 +371,7 @@ export function validateResponse(
 
     if (d.kind === 'score') {
       // A score answer is the probability-weighted expectation over the level indices, not
-      // the index itself: 23 of the 26 measured score answers in fixtures/ are fractional
+      // the index itself: 22 of the 25 measured score answers in fixtures/ are fractional
       // (1.99, 2.98, 0.57, 3.09 over five levels), which is exactly why reducer thresholds
       // read 2.5. So range is checkable and integrality is NOT — requiring an integer here
       // would reject almost every real response.

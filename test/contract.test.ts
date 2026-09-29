@@ -357,7 +357,7 @@ describe('validateResponse', () => {
   })
 
   // Guard, not a defect test: a score answer is the probability-weighted expectation over
-  // level indices, not the index itself — 23 of the 26 measured score answers in fixtures/
+  // level indices, not the index itself — 22 of the 25 measured score answers in fixtures/
   // are fractional. An integrality check here would reject almost every real response.
   it('accepts a fractional score, which is the normal case', () => {
     expect(validateResponse(p, answers({

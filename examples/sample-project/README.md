@@ -111,8 +111,9 @@ of JSON in a file under review.
 cp -r examples/sample-project/.claude/gates /path/to/your/project/.claude/
 ```
 
-Then change the import at the top of `gate.mjs` from the relative `dist/` path to `jevc`,
-set `TYPESAFE_API_KEY` in the environment Claude Code runs in, and register the hook —
+Then `npm install jev-compiler` in that project, change the imports in `gate.mjs` from the
+relative `dist/` paths to `jev-compiler` (for `JEVC_REPLAY`, point the fixtures path at
+`node_modules/jev-compiler/fixtures`), set `TYPESAFE_API_KEY` in the environment Claude Code runs in, and register the hook —
 [`.claude/settings.json`](.claude/settings.json) here is the whole file:
 
 ```json

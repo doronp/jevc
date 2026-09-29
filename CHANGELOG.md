@@ -5,7 +5,10 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-### Changed
+### Breaking
+
+Recompile every emitted artifact after upgrading: the model it asks for and the `langchain`
+module's API are both baked in at compile time.
 
 - Every default model is now the pinned `jev-1.13.0` (`PINNED_MODEL`, exported), not the
   `jev-latest` alias: `emitJson`, `askModel`/`evaluate` (and so the sample gate), and the model the
@@ -29,6 +32,9 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   called `reduce(classifier.invoke(state).answers)`. `scripts/check-langchain-a3.sh` (opt-in,
   needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
   dummy key and a mock transport; it sends nothing to TypeSafe.
+
+### Changed
+
 - The emitted `ai-sdk` module honours `TYPESAFE_BASE_URL`, the API root jevc's own SDK and
   `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
   the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
@@ -36,6 +42,11 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
   `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
   The recorded case (0.06) is outside the band, so the replay still denies.
+- Docs: the README says where answers come from and what happens when they stop —
+  `TYPESAFE_BASE_URL` for an account or a local Jev-compatible server, thresholds measured on
+  `jev-1.13.0` only, the vendor outage path per surface, pin retirement, `JEVC_MODE=observe`, and
+  that `bouncer`/`toolgate` inherit the host's model. `docs/design.md`'s `escalate` flag is marked
+  superseded.
 
 ### Added
 
@@ -52,6 +63,15 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   before compiling it: a citation that does not quote `<doc>` word for word, or names it
   differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
   `--source` nothing changes. It is refused on a JSON Schema and with `--lift`.
+
+### Fixed
+
+- The install steps told you to import the gate's runtime from `jevc`; the package is
+  `jev-compiler`, and the import needs a project-local install.
+- The README said 210 of the 321 numeric bounds have less than 0.15 of headroom; it is 207. Fifteen
+  sit exactly on 0.15, and float subtraction put three of them under it. Two source comments
+  quoted an older corpus (331 bounds, 23 of 26 fractional score answers) and now match
+  `scripts/corpus-stats.ts`, which recomputes all of them offline.
 
 ## 0.1.0 — 2026-09-20
 
