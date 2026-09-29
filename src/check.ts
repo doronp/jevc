@@ -313,7 +313,16 @@ export async function checkLive(
   for (const f of fixtures) {
     try {
       const res = await askModel(buildProgram(f), f.state, opts)
-      if (res.model) models.add(res.model)
+      const named = typeof res.model === 'string' && res.model !== '' ? res.model : undefined
+      if (named) models.add(named)
+      // Who answered gets its own row, ahead of what moved, on the fixture that saw it. A
+      // non-Jev answerer is `broken` (exit 1): every number below would be a diff against a
+      // model this corpus never described. Another Jev build, or an ID JEVC_ALLOW_MODEL
+      // accepts, is `drifted`: worth a line, not a failed run. A non-string is never printed.
+      for (const i of res.issues.filter(i => i.code === 'model_unexpected')) {
+        rows.push({ id: `${f.id}.model`, recorded: f.measured.model, live: named ?? 'none',
+          delta: null, status: i.severity === 'error' ? 'broken' : 'drifted' })
+      }
       rows.push(...diffFixture(f, res.answers, threshold))
       // The threshold that matters is the one the corpus recorded, not the flat 0.15: a noul
       // moving 0.96 -> 0.82 is inside no band in particular, but `noul_gte: 0.90` is the gate

@@ -841,7 +841,7 @@ describe('the json target is a valid request, and a request that answers back', 
       // every choice option and every score level is the chosen one at least once.
       for (let pick = 0; pick < 5; pick++) {
         const answers = answersFromRequest(req, pick)
-        const res = { model: 'jev-latest', answers, usage: { input_tokens: 10, output_tokens: 10 } }
+        const res = { model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 10 } }
         expect(validateResponse(p, res).filter(i => i.severity === 'error'),
           `${name} pick=${pick}`).toEqual([])
         // Built from the REQUEST; compared against the same construction over the PROGRAM.

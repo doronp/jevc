@@ -655,6 +655,13 @@ are refused locally by `score_too_few_levels`, `choice_too_few_options`, `duplic
 `unknown_field`, `path_unresolved` and `state_empty`, each pinned by
 `test/contract.test.ts`.
 
+The response also has to say who answered. The corpus, and every threshold and band it
+records, was measured on `jev-1.13.0`, the model the request pins, and must be re-measured for
+any other model. A response whose `model` is missing or is not a Jev build is `model_unexpected` at error
+severity, so `evaluate()` throws and a gate fails closed; another Jev build is a warning and the
+verdict stands. `JEVC_ALLOW_MODEL` (comma-separated exact model IDs, read on every call) is the
+one opt-in: it turns a named non-Jev model into a warning. It re-measures nothing.
+
 [`docs/validation.md`](docs/validation.md) has the probe table with what the API actually
 returned, plus the response-side checks, the two closed vocabularies a TypeScript cast
 cannot enforce, and the token budget.
@@ -801,8 +808,9 @@ that no test can pin, because it is not in the repo.
 
 ### Security
 
-`jevc` itself reads one variable, `TYPESAFE_API_KEY`. It is never written to a file, never
-committed, never logged, and never embedded in a fixture. `.env` is gitignored and
+`jevc` itself reads two variables. `TYPESAFE_API_KEY` is never written to a file, never
+committed, never logged, and never embedded in a fixture. `JEVC_ALLOW_MODEL` holds model IDs,
+not a secret (see [What the validator catches](#what-the-validator-catches)). `.env` is gitignored and
 `.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
 
 The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's

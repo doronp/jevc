@@ -228,7 +228,13 @@ export async function askModel(
   }
   const latencyMs = clock() - t0
 
-  issues.push(...validateResponse(p, res))
+  // Read per call, not at import: a hook process is long-lived and a test flips it per case.
+  // Fail-closed is the default; the env var is the single explicit way to accept a non-Jev
+  // answerer, and it takes exact IDs so naming one model cannot let a different one through.
+  // ponytail: env only, no EvaluateOptions field; add a per-call list there if a library
+  // caller ever needs different allow-lists in one process.
+  const allowed = (process.env.JEVC_ALLOW_MODEL ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  issues.push(...validateResponse(p, res, allowed))
   // res.answers was the third of the three bare casts this round exists to close (cli.ts:197
   // and from-prompt.ts:172 are the others). validateResponse has now had its say, so the cast
   // asserts only what was checked — except when there is no answers object at all, where

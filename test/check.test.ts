@@ -322,6 +322,47 @@ describe('checkLive — which model answered', () => {
     expect(report.model).toBe('jev-1.13.0, jev-1.14.0')
   })
 
+  // E0 item 2. askModel now reports a response from outside the pin as `model_unexpected`;
+  // checkLive read none of res.issues, so a whole run answered by something that is not Jev
+  // would have diffed as ordinary drift. One row per fixture, on the fixture that saw it.
+  it('reports a fixture answered by a model that is not Jev as broken, and keeps diffing', async () => {
+    const fs = ['f1', 'f2'].map(id =>
+      fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const report = await checkLive(fs, {
+      client: serves({
+        'state for f1': wire({ destructive: noul(0.9) }),
+        'state for f2': { ...wire({ destructive: noul(0.9) }), model: 'laya-rl-agent' },
+      }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f2.model', recorded: 'jev-1.13.0', live: 'laya-rl-agent', delta: null, status: 'broken' },
+    ])
+    // Its answers are still classified: the model row says who, the diff rows say what moved.
+    expect(report.rows.map(r => r.id)).toEqual(['f1.destructive', 'f2.model', 'f2.destructive'])
+    expect(report.model).toBe('jev-1.13.0, laya-rl-agent')
+  })
+
+  it('reports another Jev build as drifted, not broken', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: 'jev-1.14.0' } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'jev-1.14.0', delta: null, status: 'drifted' },
+    ])
+  })
+
+  it('never prints a model field that is not a model ID', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const report = await checkLive([f], {
+      client: serves({ 'state for f1': { ...wire({ destructive: noul(0.9) }), model: { state: 'SECRET' } } }),
+    })
+    expect(report.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'none', delta: null, status: 'broken' },
+    ])
+    expect(report.model).toBe('')
+  })
+
   it('names the single model unchanged when it does not move', async () => {
     const fs = ['f1', 'f2'].map(id =>
       fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))

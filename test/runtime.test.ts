@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { value, isUncertain, runReducer, choiceOf, evaluate, askModel } from '../src/runtime.js'
 import type { Condition, Program } from '../src/ir.js'
 import type { JevAnswer } from '../src/contract.js'
@@ -446,6 +446,61 @@ describe('askModel — the model it asks for', () => {
     const { seen, client } = asking()
     await askModel(p, 'rm -rf /tmp/build', { client, model: 'jev-latest', now: tick() })
     expect(seen).toEqual(['jev-latest'])
+  })
+})
+
+// E0 item 2, the ship gate. The request pins jev-1.13.0, but a pinned request proves nothing
+// about who answered: TYPESAFE_BASE_URL can point the SDK at anything that speaks the wire
+// format, and `res.model` was never read. Fail closed by default; JEVC_ALLOW_MODEL is the one
+// explicit opt-in, and it is read per call, so each test sets and restores it.
+describe('evaluate and askModel — the model that answered', () => {
+  const saved = process.env.JEVC_ALLOW_MODEL
+  afterEach(() => {
+    if (saved === undefined) delete process.env.JEVC_ALLOW_MODEL
+    else process.env.JEVC_ALLOW_MODEL = saved
+  })
+  beforeEach(() => { delete process.env.JEVC_ALLOW_MODEL })
+
+  const answeredBy = (model: unknown) => serves({ model, answers: answers(), usage })
+  const modelIssues = async (model: unknown) =>
+    (await askModel(p, 'rm -rf /tmp/build', { client: answeredBy(model), now: tick() }))
+      .issues.filter(i => i.code === 'model_unexpected')
+
+  it('refuses a verdict from a model that is not Jev', async () => {
+    await expect(evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('laya-rl-agent') }))
+      .rejects.toThrow(/"laya-rl-agent"/)
+    expect((await modelIssues('laya-rl-agent')).map(i => i.severity)).toEqual(['error'])
+  })
+
+  it('says nothing when the pinned model answered', async () => {
+    expect(await modelIssues('jev-1.13.0')).toEqual([])
+  })
+
+  it('warns for another Jev build and still returns the verdict', async () => {
+    expect((await modelIssues('jev-1.14.0')).map(i => i.severity)).toEqual(['warn'])
+    const r = await evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('jev-1.14.0'), now: tick() })
+    expect(r.verdict).toBe('deny')
+    expect(r.model).toBe('jev-1.14.0')
+  })
+
+  it('JEVC_ALLOW_MODEL turns the named model into a warning, and returns the verdict', async () => {
+    process.env.JEVC_ALLOW_MODEL = ' other-model , laya-rl-agent ,,'
+    expect((await modelIssues('laya-rl-agent')).map(i => i.severity)).toEqual(['warn'])
+    const r = await evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('laya-rl-agent'), now: tick() })
+    expect(r.verdict).toBe('deny')
+  })
+
+  it('JEVC_ALLOW_MODEL does not downgrade a different model', async () => {
+    process.env.JEVC_ALLOW_MODEL = 'laya-rl-agent'
+    await expect(evaluate(p, 'rm -rf /tmp/build', { client: answeredBy('gpt-4o') }))
+      .rejects.toThrow(/"gpt-4o"/)
+    expect((await modelIssues('gpt-4o')).map(i => i.severity)).toEqual(['error'])
+  })
+
+  it('refuses a response that names no model', async () => {
+    await expect(evaluate(p, 'rm -rf /tmp/build', { client: serves({ answers: answers(), usage }) }))
+      .rejects.toThrow(/model/)
+    expect((await modelIssues(undefined)).map(i => i.severity)).toEqual(['error'])
   })
 })
 

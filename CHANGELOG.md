@@ -13,6 +13,14 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   `jev-1.13.0`, so the alias asked a model nobody measured, and a vendor bump would have changed
   every compiled gate without a jevc release. `jev-latest` is still accepted when you name it.
   Recompile emitted artifacts to pick the pin up.
+- `validateResponse` now checks who answered (`model_unexpected`). A response whose `model` is
+  missing or not a Jev build is an error, so `evaluate()` throws and a gate fails closed; another
+  Jev build is a warning and the verdict stands. The corpus and every threshold it records were
+  measured on `jev-1.13.0` and must be re-measured for any other model. `JEVC_ALLOW_MODEL` (comma-separated
+  exact IDs, read on every call) is the one opt-in: a named non-Jev model becomes a warning.
+  `check --live` reports the answering model as a `<fixture>.model` row — `broken` for a non-Jev
+  model, `drifted` for another Jev build or an allowed ID. `validateResponse` takes the allow-list
+  as an optional third argument.
 
 ## 0.1.0 — 2026-09-20
 
