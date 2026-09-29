@@ -548,6 +548,9 @@ npm run build        # -> dist/
 npm test             # offline: no key, no network, no quota
 npm run gallery      # regenerate examples/GALLERY.md from fixtures/
 npm run check:live   # re-measures the corpus; requires TYPESAFE_API_KEY
+bash scripts/pack-smoke.sh          # opt-in, npm: pack, install, run the gate from the tarball; secret scan
+bash scripts/check-ai-sdk.sh        # opt-in, npm: emitted ai-sdk module on the real package, local server
+bash scripts/check-langchain-a3.sh  # opt-in, uv: emitted langchain module on the real a3, mock transport
 ```
 
 - [`docs/wiring.md`](docs/wiring.md) — one recipe per surface, with runnable code.
