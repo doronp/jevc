@@ -209,10 +209,12 @@ which is the whole file:
 }
 ```
 
-For your own project: copy that `.claude/` directory, change the import in `gate.mjs` from
-the relative `dist/` path to `jevc`, and set `TYPESAFE_API_KEY` in the environment Claude
-Code runs in. [`examples/sample-project/README.md`](examples/sample-project/README.md) walks
-the round trip — scan, lift, compile, install, run — one command at a time.
+For your own project: copy that `.claude/` directory, run `npm install jev-compiler` in the
+project (the gate imports it, and a global install is not importable), change the import in
+`gate.mjs` from the relative `dist/` path to `jev-compiler`, and set `TYPESAFE_API_KEY` in
+the environment Claude Code runs in.
+[`examples/sample-project/README.md`](examples/sample-project/README.md) walks the round
+trip — scan, lift, compile, install, run — one command at a time.
 
 [**`docs/wiring.md`**](docs/wiring.md) has one recipe per surface, with the code that
 actually runs:
