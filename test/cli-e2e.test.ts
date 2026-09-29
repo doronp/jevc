@@ -1019,7 +1019,7 @@ describe('the examples, as real processes', () => {
   // 02's caption: "Every number printed below is replayed from fixtures/agent-harness-rules
   // .json — one real call to jev-1.13.0". Each printed number is checked against that
   // fixture, and the printed verdict against the reducer the example itself declares
-  // (examples/02-agents-md-guardrail.ts:41-47, first match wins, otherwise deny).
+  // (examples/02-agents-md-guardrail.ts:44-52, first match wins, otherwise deny).
   it('02 prints numbers that are in the fixture, and a verdict its own rules imply', () => {
     const out = runExample('02-agents-md-guardrail.ts').stdout
     const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
@@ -1044,9 +1044,12 @@ describe('the examples, as real processes', () => {
       expect(printed[id], `${id} printed a number no fixture measured`).toBe(noul(id))
     }
 
-    // The example's reducer, transcribed: first match wins, otherwise deny.
+    // The example's reducer, transcribed: first match wins, otherwise deny. The `uncertain`
+    // rule reads the default noul band, (0.35, 0.65) exclusive.
+    const u = printed.user_explicitly_asked_to_commit
     const expected =
       printed.is_commit_operation <= 0.5 ? 'allow'
+        : u > 0.35 && u < 0.65 ? 'ask'
         : printed.user_explicitly_asked_to_commit >= 0.5 ? 'allow'
           : printed.commit_required_by_requested_task >= 0.5 ? 'allow'
             : 'deny'
@@ -1059,6 +1062,19 @@ describe('the examples, as real processes', () => {
     const collapsed = f.measured.answers.decision
     if (collapsed.type !== 'choice') throw new Error('fixture shape changed')
     expect(out).toContain(`${collapsed.choice} at confidence ${collapsed.confidence}`)
+  })
+
+  // 02 ends on "This program installed in the project the rule came from" and prints the
+  // sample gate's command, so its rules must be the ones commit.json installs, in order.
+  // Read from the source as written, not by running it: the example declares the program
+  // inline, and a reader compares the two files by eye.
+  it('02 declares the reducer rules the sample gate installs', () => {
+    const src = readFileSync(join(ROOT, 'examples', '02-agents-md-guardrail.ts'), 'utf8')
+    const commit = JSON.parse(readFileSync(join(ROOT, 'examples/sample-project/.claude/gates/commit.json'), 'utf8'))
+    const written = [...src.matchAll(/\{ when: \[\{ id: '(\w+)', op: '(\w+)'(?:, value: ([\d.]+))? \}\], then: '(\w+)' \}/g)]
+      .map(([, id, op, value, then]) => ({ when: [value ? { id, op, value: Number(value) } : { id, op }], then }))
+    expect(written).toEqual(commit.reduce.rules)
+    expect(src).toContain(`otherwise: '${commit.reduce.otherwise}'`)
   })
 
   // 03's caption: "the collapsed 'which tier?' question picked the CHEAP tier at confidence

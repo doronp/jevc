@@ -53,6 +53,8 @@ module's API are both baked in at compile time.
 - The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
   `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
   The recorded case (0.06) is outside the band, so the replay still denies.
+  `examples/02-agents-md-guardrail.ts`, which ends by pointing at that gate, declares the same
+  rules, and a test holds the two to each other.
 - Docs: the README says where answers come from and what happens when they stop —
   `TYPESAFE_BASE_URL` for an account or a local Jev-compatible server, thresholds measured on
   `jev-1.13.0` only, the vendor outage path per surface, pin retirement, `JEVC_MODE=observe`, and
