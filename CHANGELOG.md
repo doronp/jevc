@@ -46,6 +46,10 @@ module's API are both baked in at compile time.
 - A model ID a response names is JSON-quoted wherever jevc prints it — `model_unexpected`
   messages (cut at 64 characters) and the `check --live` summary line — so a control character
   arrives escaped. The summary reads `against no named model` when no response named one.
+- The sample project's install steps name the exact fixtures path for `JEVC_REPLAY`,
+  `HERE('../../node_modules/jev-compiler/fixtures')`. "Point it at
+  `node_modules/jev-compiler/fixtures`" read as `./node_modules/...`, which `HERE` resolves
+  inside `.claude/gates/`, so an installed gate replayed nothing and answered `ask`.
 - The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
   `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
   The recorded case (0.06) is outside the band, so the replay still denies.
@@ -75,8 +79,9 @@ module's API are both baked in at compile time.
   module with `tsc --strict` against the real `@ai-sdk/typesafe-ai@3.0.10` and runs it against a
   server on 127.0.0.1 with a dummy key; it sends nothing to TypeSafe.
 - `scripts/pack-smoke.sh` (opt-in, not part of `npm test`): builds, `npm pack`s, installs the
-  tarball into an empty directory, runs the sample gate there with its imports pointed at
-  `jev-compiler` and its fixtures at `node_modules/`, asserts it denies the sample payload, runs
+  tarball into an empty directory, runs the sample gate there from `.claude/gates/` (where the
+  install steps put it) with its imports pointed at `jev-compiler` and its fixtures at
+  `../../node_modules/jev-compiler/fixtures`, asserts it denies the sample payload, runs
   the installed `jevc check`, then scans git history (the CI pattern) and the tracked tree plus
   the unpacked tarball for secret-shaped strings, printing locations only.
 

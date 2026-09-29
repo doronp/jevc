@@ -24,19 +24,24 @@ cd "$tmp"
 echo '{"name":"pack-smoke","private":true,"type":"module"}' > package.json
 env -u TYPESAFE_API_KEY npm install --silent --no-audit --no-fund "./$tgz"
 gates="$repo/examples/sample-project/.claude/gates"
-cp "$gates/gate.mjs" "$gates/commit.json" "$gates/payload.sample.json" .
+# Where the install steps put it, not beside node_modules: a flattened copy once passed with
+# a fixtures path that is wrong in the real layout.
+mkdir -p .claude/gates
+cp "$gates/gate.mjs" "$gates/commit.json" "$gates/payload.sample.json" .claude/gates/
 # The three repo-relative paths the install steps say to change. Every export the gate
 # needs (evaluate, isUncertain, runReducer, loadFixtures) is a root export of the package.
+# HERE() resolves against the gate file, not the cwd, so the fixtures path climbs out of
+# .claude/gates to the project's node_modules.
 sed -i.bak \
   -e "s#'../../../../dist/index.js'#'jev-compiler'#" \
   -e "s#'../../../../dist/check.js'#'jev-compiler'#" \
-  -e "s#'../../../../fixtures'#'./node_modules/jev-compiler/fixtures'#" \
-  gate.mjs
-rm gate.mjs.bak
-if grep -n '\.\./\.\./\.\./\.\./' gate.mjs; then fail "gate.mjs still reaches into the repo"; fi
+  -e "s#'../../../../fixtures'#'../../node_modules/jev-compiler/fixtures'#" \
+  .claude/gates/gate.mjs
+rm .claude/gates/gate.mjs.bak
+if grep -n '\.\./\.\./\.\./\.\./' .claude/gates/gate.mjs; then fail "gate.mjs still reaches into the repo"; fi
 
 echo "== gate, replayed, from $tmp"
-out="$(env -u TYPESAFE_API_KEY JEVC_REPLAY=1 node gate.mjs < payload.sample.json)"
+out="$(env -u TYPESAFE_API_KEY JEVC_REPLAY=1 node .claude/gates/gate.mjs < .claude/gates/payload.sample.json)"
 echo "$out"
 node -e '
   const d = JSON.parse(process.argv[1]).hookSpecificOutput?.permissionDecision
