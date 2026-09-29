@@ -13,12 +13,15 @@ npm test                       # offline: no key, no network, no quota
 npm run typecheck              # tsc over src + test
 npm run gallery                # regenerate examples/GALLERY.md from fixtures/
 bash scripts/pack-smoke.sh     # opt-in: pack, install into an empty dir, run the gate there; secret scan
+bash scripts/check-ai-sdk.sh   # opt-in: an emitted ai-sdk module on the real @ai-sdk/typesafe-ai, local server
+bash scripts/check-langchain-a3.sh  # opt-in, uv: an emitted langchain module on the real langchain-typesafe a3
 ```
 
 Run these from the repository root. `npm run check:live` is the only command that talks to
 TypeSafe; it needs `TYPESAFE_API_KEY` and must never be wired into `npm test`.
 `scripts/pack-smoke.sh` reaches the npm registry for the tarball's dependencies and nothing
-else; run it before a release, because only an installed tarball proves the packaging.
+else; run it before a release, because only an installed tarball proves the packaging. The two
+`check-*` scripts fetch their package from npm or PyPI and answer every request locally.
 
 ## Rules
 

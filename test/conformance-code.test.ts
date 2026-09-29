@@ -885,6 +885,12 @@ describe('the model every code target asks for', () => {
   it('ai-sdk: with TYPESAFE_BASE_URL unset the request goes to the provider default', () => {
     expect(aiSdkUrl(undefined)).toEqual(['https://api.typesafe.ai/v1/systemone'])
   })
+  // O-R6, KA-R5: @typesafe-ai/sdk trims the variable and treats blank as unset, so a .env line
+  // `TYPESAFE_BASE_URL= ` sent jevc's own calls to the default and this module to " /v1".
+  it('ai-sdk: TYPESAFE_BASE_URL is trimmed, and blank means unset, as the native SDK reads it', () => {
+    expect(aiSdkUrl('   ')).toEqual(['https://api.typesafe.ai/v1/systemone'])
+    expect(aiSdkUrl(' http://127.0.0.1:9// ')).toEqual(['http://127.0.0.1:9/v1/systemone'])
+  })
 
   it.runIf(pythonAvailable)('langchain: the classifier is constructed with the pinned jev-1.13.0', () => {
     expect(runPy(emitLangchain(gate), 'classifier.model')).toBe('jev-1.13.0')

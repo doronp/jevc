@@ -39,7 +39,8 @@ module's API are both baked in at compile time.
 - The emitted `ai-sdk` module honours `TYPESAFE_BASE_URL`, the API root jevc's own SDK and
   `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
   the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
-  variable is set and the provider default when it is not. Recompile to pick it up.
+  variable is set and the provider default when it is not. The value is trimmed and a blank one
+  means unset, as `@typesafe-ai/sdk` reads it. Recompile to pick it up.
 - A model ID a response names is JSON-quoted wherever jevc prints it — `model_unexpected`
   messages (cut at 64 characters) and the `check --live` summary line — so a control character
   arrives escaped. The summary reads `against no named model` when no response named one.
@@ -68,6 +69,9 @@ module's API are both baked in at compile time.
   before compiling it: a citation that does not quote `<doc>` word for word, or names it
   differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
   `--source` nothing changes. It is refused on a JSON Schema and with `--lift`.
+- `scripts/check-ai-sdk.sh` (opt-in, not part of `npm test`): typechecks an emitted `ai-sdk`
+  module with `tsc --strict` against the real `@ai-sdk/typesafe-ai@3.0.10` and runs it against a
+  server on 127.0.0.1 with a dummy key; it sends nothing to TypeSafe.
 - `scripts/pack-smoke.sh` (opt-in, not part of `npm test`): builds, `npm pack`s, installs the
   tarball into an empty directory, runs the sample gate there with its imports pointed at
   `jev-compiler` and its fixtures at `node_modules/`, asserts it denies the sample payload, runs
