@@ -55,6 +55,7 @@ grid; when an emitter and a target doc disagree, the doc wins until the doc is u
 | `fixtures/` | 58 recorded fixtures across five domains, plus `ATTRIBUTION.md` |
 | `docs/targets/` | the consumer contract each emitter is written against |
 | `docs/history/` | kept unedited for provenance; do not maintain it |
+| `plugin/`, `.claude-plugin/marketplace.json` | the Claude Code plugin (one skill and its manifest) and the marketplace that lists it. Keep the plugin root in `plugin/`: at the repository root, beside `package.json` and `package-lock.json`, installing would `npm ci` jevc's dev dependencies into every cached copy. Installed copies are pinned to `version` in `plugin.json`, so bump it when the skill changes |
 | `examples/` | runnable end-to-end examples, and `GALLERY.md` (generated). `sample-project/` is the round trip: rules scanned out of its `CLAUDE.md`, the compiled gate installed back into its `.claude/` |
 
 ## About this file

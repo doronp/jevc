@@ -27,6 +27,7 @@ replays the corpus offline — no key, no network.
 
 - [examples/sample-project/README.md](https://raw.githubusercontent.com/doronp/jevc/main/examples/sample-project/README.md): the round trip in one directory — a rule scanned out of a project's own `CLAUDE.md`, compiled, and installed back into that project's `.claude/` as a running hook. Includes where the human judgment actually sits.
 - [docs/wiring.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/wiring.md): one runnable recipe per surface — Claude Code `PreToolUse` hook, tool-call guard, router, output verifier.
+- [plugin/skills/jevc/SKILL.md](https://raw.githubusercontent.com/doronp/jevc/main/plugin/skills/jevc/SKILL.md): the Claude Code plugin's one skill — scan, lift, check citations, compile, and install a `PreToolUse` gate only after asking. Install with `/plugin marketplace add doronp/jevc`, then `/plugin install jevc@jevc`.
 - [docs/schema-mapping.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/schema-mapping.md): every JSON Schema construct, what it compiles to, and the rule behind each drop.
 - [docs/validation.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/validation.md): the 25 live probes that returned 200 OK with a wrong answer, and what refuses each one locally.
 - [docs/design.md](https://raw.githubusercontent.com/doronp/jevc/main/docs/design.md): the design spec and the fullest argument for the decomposition law.

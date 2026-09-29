@@ -114,7 +114,8 @@ of JSON in a file under review.
 cp -r examples/sample-project/.claude/gates /path/to/your/project/.claude/
 ```
 
-Then `npm install jev-compiler` in that project, change the imports in `gate.mjs` from the
+Then run `npm install jev-compiler` in that project — the gate imports it, and a global
+install is not importable — change the imports in `gate.mjs` from the
 relative `dist/` paths to `jev-compiler` (for `JEVC_REPLAY`, change
 `HERE('../../../../fixtures')` to `HERE('../../node_modules/jev-compiler/fixtures')`: `HERE`
 resolves against the gate file, not the working directory), set `TYPESAFE_API_KEY` in the environment Claude Code runs in, and register the hook —
@@ -127,7 +128,7 @@ resolves against the gate file, not the working directory), set `TYPESAFE_API_KE
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/gates/gate.mjs" }
         ]
       }
     ]

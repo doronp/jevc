@@ -35,6 +35,11 @@ $ npx jevc check
 No API key, no network — not for the tests, the examples, or anything in this README
 except `jevc check --live`.
 
+As a Claude Code plugin: `/plugin marketplace add doronp/jevc`, then
+`/plugin install jevc@jevc`. It adds one skill, `/jevc:jevc`, which runs the scan, lift and
+compile below for you and asks before it installs a gate
+([docs/wiring.md](docs/wiring.md#claude-code-skill-and-slash-command)).
+
 ---
 
 ## Your rules are already in the repo
@@ -206,7 +211,7 @@ which is the whole file:
   "hooks": {
     "PreToolUse": [
       { "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs" }] }
+        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/gates/gate.mjs" }] }
     ]
   }
 }
@@ -224,7 +229,7 @@ actually runs:
 | Where the decision happens | Recipe |
 | --- | --- |
 | Claude Code stops a tool call | `PreToolUse` hook |
-| Claude Code runs the compiler for you | a `.claude/commands/jev.md` slash command |
+| Claude Code runs the compiler for you | the `jevc` plugin's skill, or a `.claude/commands/jev.md` slash command |
 | Your own TypeScript agent loop | `--emit sdk` |
 | A Vercel AI SDK app | `--emit ai-sdk` |
 | A Python agent — LangChain, LangGraph, your own | `--emit langchain`, or subprocess the gate |
@@ -685,6 +690,14 @@ checked. A fabricated citation used to survive all the way into an emitted bounc
 exit 0, carrying the invented `file:line — quote` as a provenance comment — and a fabricated
 citation is worse than none, because it turns "I should check this" into "someone already
 did."
+
+These checks run in `parseLiftResponse`, on a lift response as it comes back, and in
+`jevc compile --source <doc>`, which runs it on a saved `program.json`. Without `--source`,
+`jevc compile` and `jevc emit-policy` never see the document the quotes came from, so they do
+not re-verify its citations: a paraphrased quote in a hand-saved program still compiles at
+exit 0 and becomes the artifact's provenance comment. The
+[Claude Code skill](plugin/skills/jevc/SKILL.md) checks each quote with `grep -nF`, because
+the published 0.1.0 it can fetch has no `--source`.
 
 - `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
   re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing

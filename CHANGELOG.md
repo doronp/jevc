@@ -67,6 +67,12 @@ module's API are both baked in at compile time.
 
 ### Added
 
+- A Claude Code plugin: `/plugin marketplace add doronp/jevc`, then `/plugin install jevc@jevc`.
+  It carries one skill, `/jevc:jevc`, that runs scan, lift and compile, has the agent check every
+  citation with `grep` because the published 0.1.0 has no `compile --source`, and installs a `PreToolUse` gate in the
+  project only after asking. It uses `npx -y -p jev-compiler@latest jevc` when `jevc` is not on
+  `PATH`, and the plugin registers no hooks of its own. The plugin root is `plugin/`, so installing
+  copies the manifest and the skill, not the repository and its dev dependencies.
 - `jevc check --live --model <id> --threshold <n>`. `--model` is one of the models jevc can ask
   (default `jev-1.13.0`); `--model jev-latest` is how to see what a vendor bump would change.
   `--threshold` is the drift threshold (default 0.15), a number in [0, 1): noul and confidence
@@ -95,8 +101,18 @@ module's API are both baked in at compile time.
 
 ### Fixed
 
-- The install steps told you to import the gate's runtime from `jevc`; the package is
-  `jev-compiler`, and the import needs a project-local install.
+- The sample hook registration ran `node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs` unquoted. In a
+  project whose path has a space, node got half the path and exited 1, which Claude Code treats as
+  a non-blocking error, so the gate was silently off. `$CLAUDE_PROJECT_DIR` is now quoted in
+  `settings.json` and everywhere the READMEs and `docs/wiring.md` print it.
+- README's "Lift citation rules" read as if its checks ran on every path. They run in
+  `parseLiftResponse` and in `jevc compile --source`; `compile` without `--source` and
+  `emit-policy` on a saved `program.json` do not re-verify citations, and the 0.1.0 entry's
+  "can no longer reach an emitted bouncer policy at exit 0" holds for the checked paths only.
+- The instructions for installing the sample gate in your own project said to import from `jevc`;
+  the package is `jev-compiler`. They now also say to install it in the project, since a global
+  install is not importable and the gate otherwise dies at import, which Claude Code treats as a
+  non-blocking error.
 - The sample project's round trip ran from the repo root, where the lift labels the document
   `examples/sample-project/CLAUDE.md`; the shipped `commit.json` cites `CLAUDE.md`, so step 3
   refused it. The commands now run from `examples/sample-project`, and a test runs them.
