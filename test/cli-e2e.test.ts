@@ -655,6 +655,53 @@ describe('cases with a known history', () => {
     expect(r.stdout).toBe('')
   })
 
+  // E0 item 3. `--model` and `--threshold` are validated BEFORE the key check, so every case
+  // here is decided with no key in the child environment and nothing can reach a socket. The
+  // accepted cases prove it the other way round: valid flags get as far as the key refusal.
+  describe('check --live --model / --threshold', () => {
+    const refuses = (args: string[], ...says: string[]) => {
+      const r = jevc(['check', ...args])
+      expect(r.status, args.join(' ')).toBe(1)
+      for (const s of says) expect(r.stderr, args.join(' ')).toContain(s)
+      expect(r.stderr, args.join(' ')).not.toContain('TYPESAFE_API_KEY')
+      expect(r.stdout).toBe('')
+    }
+
+    it('accepts every Jev model and a threshold, and still stops at the missing key', () => {
+      for (const args of [
+        ['--live', '--model', 'jev-1.13.0'], ['--live', '--model', 'jev-latest'], ['--live', '--model=jev-preview'],
+        ['--live', '--threshold', '0.3'], ['--live', '--threshold=0'], ['--live', '--threshold', '0.999'],
+        ['--live', '--model', 'jev-latest', '--threshold', '0.05', '--fixtures', 'fixtures'],
+      ]) {
+        const r = jevc(['check', ...args])
+        expect(r.status, args.join(' ')).toBe(1)
+        expect(r.stderr, args.join(' ')).toContain('check --live requires TYPESAFE_API_KEY')
+        expect(r.stdout).toBe('')
+      }
+    })
+
+    it('refuses a model that is not a Jev model, naming the choices', () => {
+      refuses(['--live', '--model', 'laya-rl-agent'], '"laya-rl-agent"', 'jev-latest, jev-preview, jev-1.13.0')
+      refuses(['--live', '--model', 'jev-1.14.0'], '"jev-1.14.0"')
+    })
+
+    it('refuses a threshold that is not a number in [0, 1)', () => {
+      for (const t of ['abc', 'NaN', 'Infinity', '1', '1.5', '0x10', '--threshold=-0.1']) {
+        refuses(t.startsWith('--') ? ['--live', t] : ['--live', '--threshold', t], '--threshold', '[0, 1)')
+      }
+    })
+
+    it('refuses either flag without --live, where nothing would read it', () => {
+      refuses(['--model', 'jev-1.13.0'], '--model has no meaning without --live')
+      refuses(['--threshold', '0.3'], '--threshold has no meaning without --live')
+    })
+
+    it('refuses either flag twice', () => {
+      refuses(['--live', '--model', 'jev-1.13.0', '--model', 'jev-latest'], '"--model" was given more than once')
+      refuses(['--live', '--threshold', '0.1', '--threshold', '0.2'], '"--threshold" was given more than once')
+    })
+  })
+
   // "I compiled nothing" must not read as success. Fixed in round 3 for the empty case;
   // asserted here at the process level, across every target including the default.
   for (const args of [[], ['--emit', 'sdk'], ['--emit', 'json'], ['--emit', 'ai-sdk'], ['--emit', 'langchain']]) {

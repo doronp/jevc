@@ -335,7 +335,7 @@ Six commands. Every console block in this file is real output from this repo.
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
 | `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 58. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
-| `jevc check` | `--live`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. |
+| `jevc check` | `--live`, `--model <id>`, `--threshold <n>`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. `--model` (default `jev-1.13.0`) and `--threshold` (default 0.15, range [0, 1)) apply to `--live` only and are refused without it. |
 
 `bouncer` and `toolgate` are reached only through `emit-policy`, never through `--emit`:
 they are policy documents, not modules.
@@ -346,8 +346,10 @@ check --live requires TYPESAFE_API_KEY in the environment.
 ```
 
 `--live` is the only command that touches the network, and it refuses before reaching it if
-there is no key. `jev-latest` is an alias that moves under you, so a TypeSafe model bump
-should surface as a diff in a drift report rather than as a production incident.
+there is no key. It asks the pinned `jev-1.13.0` unless `--model` names another; to see what a
+TypeSafe model bump would change, run it with `--model jev-latest`, and any build other than
+the pin shows up as a `<fixture>.model` row in the drift report rather than as a production
+incident.
 
 ### Compiling a schema
 
@@ -633,7 +635,7 @@ Note that 0.07 is the collapsed verdict question from the decomposition law: wid
 that the recording is a stable assertion, far too narrow to be a verdict you would ship.
 Those are different questions, and the corpus only answers the first.
 
-`--live` compares the recording against the pinned `jev-1.13.0`, and the two commands are not running
+`--live` compares the recording against the pinned `jev-1.13.0` (or `--model`), and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
 spuriously, while 210 of the 321 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift

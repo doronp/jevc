@@ -10,8 +10,8 @@ import { emitAiSdk } from './emit/ai-sdk.js'
 import { emitLangchain } from './emit/langchain.js'
 import { canEmit } from './emit/capability.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
-import { assertExpectation, checkLive, loadFixtures } from './check.js'
-import { validateRequest, type ValidationIssue } from './contract.js'
+import { assertExpectation, checkLive, liveOptions, loadFixtures } from './check.js'
+import { PINNED_MODEL, validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -103,7 +103,7 @@ const flag = (name: string): string | undefined => {
 const has = (name: string) => argv.includes(`--${name}`)
 
 /** Flags that consume the argument after them. Everything else is a bare switch. */
-const VALUED = new Set(['emit', 'o', 'for', 'fixtures'])
+const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold'])
 
 /**
  * The first argument after the subcommand that is neither a flag nor a flag's value.
@@ -138,7 +138,7 @@ const die = (msg: string): never => { toStderr(`${msg}\n`); process.exit(1) }
  */
 const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
   compile: new Set(['emit', 'o', 'lift']),
-  check: new Set(['fixtures', 'live']),
+  check: new Set(['fixtures', 'live', 'model', 'threshold']),
   explain: new Set(['fixtures']),
   'emit-policy': new Set(['for', 'o']),
   scan: new Set(['json']),
@@ -466,16 +466,29 @@ if (cmd === 'compile') {
 }
 
 if (cmd === 'check') {
+  // Both only mean something to a live run: offline check asserts the recorded answers,
+  // which name their own model and are diffed against nothing. Refused rather than ignored,
+  // the same call as `--emit` with `compile --lift` — a flag that silently does nothing
+  // reads as a run that honoured it.
+  for (const name of ['model', 'threshold']) {
+    if (!has('live') && flag(name) !== undefined) {
+      die(`--${name} has no meaning without --live: offline \`jevc check\` asserts the recorded answers and asks no model.`)
+    }
+  }
   const corpus = fixtures(flag('fixtures') ?? PACKAGED_FIXTURES)
 
   if (has('live')) {
+    // Validated before the key check, so a bad flag is reported on a machine with no key
+    // and never costs a call on one that has it.
+    let live: ReturnType<typeof liveOptions> = {}
+    try { live = liveOptions(flag('model'), flag('threshold')) } catch (e) { die((e as Error).message) }
     // Amendment: --live requires a real API key and must never run as part of `npm test`.
     // Offline `check` (the default, above) needs no key and stays that way.
     if (!process.env.TYPESAFE_API_KEY) {
       die('check --live requires TYPESAFE_API_KEY in the environment.')
     }
     // Network, auth and quota failures are the normal case here, not bugs.
-    const report = await checkLive(corpus)
+    const report = await checkLive(corpus, live)
       .catch(e => die(`check --live failed: ${(e as Error).message}`))
     for (const row of report.rows) {
       if (row.status === 'stable') continue
@@ -612,5 +625,8 @@ die(`usage: jevc <command>
   show [fixture-id]             one recorded fixture, end to end
   explain <decision-id>         why a question exists, and what it measured
   check                         replay the measured corpus
+  check --live [--model <id>] [--threshold <n>]
+                                re-measure it against the API (needs TYPESAFE_API_KEY);
+                                --model defaults to ${PINNED_MODEL}, --threshold to 0.15
 
 Start with \`jevc scan\`. \`jevc --version\` prints the version.`)

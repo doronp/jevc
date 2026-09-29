@@ -22,6 +22,14 @@ versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
   model, `drifted` for another Jev build or an allowed ID. `validateResponse` takes the allow-list
   as an optional third argument.
 
+### Added
+
+- `jevc check --live --model <id> --threshold <n>`. `--model` is one of the models jevc can ask
+  (default `jev-1.13.0`); `--model jev-latest` is how to see what a vendor bump would change.
+  `--threshold` is the drift threshold (default 0.15), a number in [0, 1): noul and confidence
+  deltas never exceed 1, so a larger value would report no drift on them. Both are validated
+  before the key check and refused without `--live`.
+
 ## 0.1.0 — 2026-09-20
 
 First release, so everything is new. The entries below are the behaviour changes landed by the

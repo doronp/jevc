@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assertExpectation, checkLive, diffFixture, loadFixtures } from '../src/check.js'
+import { assertExpectation, checkLive, diffFixture, liveOptions, loadFixtures } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
@@ -373,6 +373,50 @@ describe('checkLive — which model answered', () => {
       }),
     })
     expect(report.model).toBe('jev-1.13.0')
+  })
+})
+
+// E0 item 3. cli.ts runs on import, so `liveOptions` is the seam: the CLI builds checkLive's
+// options with it, and these tests hand its result to checkLive exactly as the CLI does, with
+// a stub client in place of the network.
+describe('liveOptions — `check --live --model <id> --threshold <n>`', () => {
+  const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+  const asking = (answer: number) => {
+    const seen: string[] = []
+    const client = { systemOne: async (req: { model: string }) => {
+      seen.push(req.model)
+      return wire({ destructive: noul(answer) })
+    } } as unknown as TypeSafeClient
+    return { seen, client }
+  }
+
+  it('asks the model --model names', async () => {
+    const { seen, client } = asking(0.9)
+    await checkLive([f], { client, ...liveOptions('jev-latest', undefined) })
+    expect(seen).toEqual(['jev-latest'])
+  })
+
+  it('asks the pinned model when --model is absent', async () => {
+    const { seen, client } = asking(0.9)
+    await checkLive([f], { client, ...liveOptions(undefined, undefined) })
+    expect(seen).toEqual(['jev-1.13.0'])
+  })
+
+  it('classifies drift against --threshold instead of the default 0.15', async () => {
+    // A 0.2 move: drift at the default, stable at 0.25, drift again at 0.1.
+    const status = async (t: string | undefined) =>
+      (await checkLive([f], { client: asking(0.7).client, ...liveOptions(undefined, t) })).rows[0]!.status
+    expect(await status(undefined)).toBe('drifted')
+    expect(await status('0.25')).toBe('stable')
+    expect(await status('0.1')).toBe('drifted')
+  })
+
+  it('refuses a model outside MODELS and a threshold outside [0, 1)', () => {
+    expect(() => liveOptions('laya-rl-agent', undefined)).toThrow(/"laya-rl-agent"/)
+    for (const t of ['abc', 'NaN', 'Infinity', '-0.1', '1', '2', ' ', '0.3abc']) {
+      expect(() => liveOptions(undefined, t), t).toThrow(/--threshold/)
+    }
+    expect(liveOptions(undefined, '0')).toEqual({ driftThreshold: 0 })
   })
 })
 
