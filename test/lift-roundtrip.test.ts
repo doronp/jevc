@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -507,6 +507,17 @@ describe('jevc compile <program.json> --source <doc>', () => {
     const out = execFileSync('node', ['dist/cli.js', 'compile', program, '--source', '-', '--emit', 'json'],
       { input: AGENTS, encoding: 'utf8' })
     expect(Object.keys(JSON.parse(out).questions)).toEqual(['deletes_tracked_source', 'targets_build_output'])
+  })
+
+  // KA-R7: stdin can be read once. The Program took it, the document read as empty, and every
+  // citation was reported as not found in it — a forgery verdict on an honest lift.
+  it('refuses a program and a --source that both come from stdin', () => {
+    const r = spawnSync('node', ['dist/cli.js', 'compile', '-', '--source', '-', '--emit', 'json'],
+      { input: JSON.stringify(response('stdin')), encoding: 'utf8' })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('cannot both come from stdin')
+    expect(r.stderr).not.toContain('provenance')
+    expect(r.stdout).toBe('')
   })
 
   it('refuses --source on a JSON Schema, which carries no citations to check', () => {

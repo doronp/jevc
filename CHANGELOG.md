@@ -74,7 +74,8 @@ module's API are both baked in at compile time.
 - `jevc compile <program.json> --source <doc>` runs `parseLiftResponse` on a lifted Program
   before compiling it: a citation that does not quote `<doc>` word for word, or names it
   differently from the lift request, prints the issue and exits 1 with nothing emitted. Without
-  `--source` nothing changes. It is refused on a JSON Schema and with `--lift`.
+  `--source` nothing changes. It is refused on a JSON Schema, with `--lift`, and as `-` when the
+  Program is also read from stdin.
 - `scripts/check-ai-sdk.sh` (opt-in, not part of `npm test`): typechecks an emitted `ai-sdk`
   module with `tsc --strict` against the real `@ai-sdk/typesafe-ai@3.0.10` and runs it against a
   server on 127.0.0.1 with a dummy key; it sends nothing to TypeSafe.

@@ -301,6 +301,11 @@ const PACKAGED_FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url))
 
 if (cmd === 'compile') {
   const path = positional() ?? die('usage: jevc compile <file|-> [--lift] [--source <doc>] [--emit sdk|json|ai-sdk|langchain] [-o out]')
+  // stdin can be read once. The Program took it, the document then read as empty, and every
+  // citation in an honest lift was reported as not found — a forgery verdict with no forgery.
+  if (path === '-' && flag('source') === '-') {
+    die('The program and --source cannot both come from stdin: pass one of them as a file.')
+  }
   const text = read(path)
 
   if (has('lift')) {
