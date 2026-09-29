@@ -10,7 +10,7 @@ import { emitAiSdk } from './emit/ai-sdk.js'
 import { emitLangchain } from './emit/langchain.js'
 import { canEmit } from './emit/capability.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
-import { assertExpectation, checkLive, liveOptions, loadFixtures } from './check.js'
+import { assertExpectation, checkLive, liveOptions, liveSummary, loadFixtures } from './check.js'
 import { PINNED_MODEL, validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
@@ -523,9 +523,7 @@ if (cmd === 'check') {
         `${row.status.toUpperCase()} ${row.id}  recorded=${JSON.stringify(row.recorded)} live=${JSON.stringify(row.live)}${delta}\n`,
       )
     }
-    toStdout(
-      `${report.rows.length} rows checked live against ${report.model}: ${report.drifted} drifted, ${report.broken} broken\n`,
-    )
+    toStdout(liveSummary(report))
     process.exit(report.broken > 0 ? 1 : 0)
   }
 

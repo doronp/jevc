@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assertExpectation, checkLive, diffFixture, liveOptions, loadFixtures } from '../src/check.js'
+import { assertExpectation, checkLive, diffFixture, liveOptions, liveSummary, loadFixtures } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
@@ -373,6 +373,21 @@ describe('checkLive — which model answered', () => {
       }),
     })
     expect(report.model).toBe('jev-1.13.0')
+  })
+})
+
+// KA-R8, KA-R4: the line `check --live` ends on. A run where no response named a model printed
+// "against : ...", and the model list is wire text printed unquoted after rows that quote it.
+describe('liveSummary', () => {
+  const report = (model: string) => ({ model, rows: [], drifted: 1, broken: 2 })
+  it('names the model, quoted', () => {
+    expect(liveSummary(report('jev-1.13.0'))).toBe('0 rows checked live against "jev-1.13.0": 1 drifted, 2 broken\n')
+  })
+  it('says so when no response named a model', () => {
+    expect(liveSummary(report(''))).toBe('0 rows checked live against no named model: 1 drifted, 2 broken\n')
+  })
+  it('prints a control character escaped', () => {
+    expect(liveSummary(report('x\u001b[2J'))).not.toMatch(/\u001b/)
   })
 })
 

@@ -446,6 +446,19 @@ describe('validateResponse', () => {
         .toEqual(['model_unexpected', 'answers_missing'])
     })
 
+    // O-R5, KA-R4: the model string is the one wire value these messages print, and they go to
+    // a terminal (the gate's stderr, `evaluate`'s throw) and into logs. A server behind
+    // TYPESAFE_BASE_URL chooses it.
+    it('quotes a model string so a control character arrives escaped, and bounds it', () => {
+      const [esc] = modelIssues(res({ model: 'evil\u001b[2J\nFAKE: all clear\u009b' }))
+      expect(esc.message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+      expect(esc.message).toContain('"evil\\u001b[2J\\nFAKE: all clear\\u009b"')
+      const [long] = modelIssues(res({ model: 'x'.repeat(10_000) }), ['x'.repeat(10_000)])
+      expect(long.severity).toBe('warn')
+      expect(long.message.length).toBeLessThan(600)
+      expect(long.message).toContain(`"${'x'.repeat(64)}…"`)
+    })
+
     it('describes, never serialises, a model field that is not a string', () => {
       // The same service's error envelope is known to echo the request (redactErrorBody), so
       // a structured `model` is named by its shape and never printed.

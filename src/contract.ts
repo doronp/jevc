@@ -294,22 +294,29 @@ export function validateResponse(
   // one response field a message prints and an echoed request must not leak through it.
   const model = body.model
   const pinned = `jevc's corpus, and every threshold and band it records, was measured on ${PINNED_MODEL}`
+  // The string is the server's choice and lands on a terminal and in logs: JSON-quoted so an
+  // escape sequence arrives as \u001b (JSON leaves DEL and C1 alone, so those are escaped by
+  // hand), and cut at 64 characters because a server that echoes the request can put the whole
+  // state here. No Jev ID comes near 64. Matching above still uses the whole string.
+  const quoted = (s: string): string =>
+    JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s)
+      .replace(/[\u007f-\u009f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
   if (typeof model !== 'string' || model === '') {
     err('model_unexpected', 'model',
       `Response names no model (got ${model === '' ? 'an empty string' : shape(model)}), so nothing says Jev answered; ${pinned}.`)
   } else if (!model.startsWith('jev-')) {
     if (allowedModels.includes(model)) {
       out.push({ code: 'model_unexpected', path: 'model', severity: 'warn',
-        message: `Response came from "${model}", which is not Jev; accepted only because JEVC_ALLOW_MODEL names it, but ${pinned}, so re-measure them on "${model}" before trusting its verdicts.` })
+        message: `Response came from ${quoted(model)}, which is not Jev; accepted only because JEVC_ALLOW_MODEL names it, but ${pinned}, so re-measure them on that model before trusting its verdicts.` })
     } else {
       err('model_unexpected', 'model',
-        `Response came from "${model}", which is not Jev; ${pinned}, so none of them were tested against its answers. If that model is deliberate, name it in JEVC_ALLOW_MODEL (comma-separated exact IDs) to accept it with a warning.`)
+        `Response came from ${quoted(model)}, which is not Jev; ${pinned}, so none of them were tested against its answers. If that model is deliberate, name it in JEVC_ALLOW_MODEL (comma-separated exact IDs) to accept it with a warning.`)
     }
   } else if (model !== PINNED_MODEL) {
     // Another Jev build is the case `jevc check --live` exists for, not a reason to refuse:
     // the answers are Jev's, only their calibration against this corpus is unproven.
     out.push({ code: 'model_unexpected', path: 'model', severity: 'warn',
-      message: `Response came from "${model}", not the pinned ${PINNED_MODEL} the corpus was measured on; thresholds and bands may have moved. Re-measure with \`jevc check --live\`.` })
+      message: `Response came from ${quoted(model)}, not the pinned ${PINNED_MODEL} the corpus was measured on; thresholds and bands may have moved. Re-measure with \`jevc check --live\`.` })
   }
 
   // A null or absent `answers` currently dies as a bare node TypeError ("Cannot read

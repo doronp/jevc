@@ -277,6 +277,14 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
   return rows
 }
 
+/** The line `jevc check --live` ends on, here for the same reason liveOptions is. The model
+ * list is whatever the responses named, so it is quoted the way the rows above it are, and a
+ * run in which no response named one says so rather than printing "against :". */
+export function liveSummary(r: Pick<Report, 'model' | 'rows' | 'drifted' | 'broken'>): string {
+  const against = r.model === '' ? 'no named model' : JSON.stringify(r.model)
+  return `${r.rows.length} rows checked live against ${against}: ${r.drifted} drifted, ${r.broken} broken\n`
+}
+
 /** `jevc check --live --model <id> --threshold <n>`, validated into checkLive's options.
  * Here rather than in cli.ts because cli.ts runs on import: this is the seam a test reaches
  * with no key and no network. Throws a sentence the CLI prints as-is.

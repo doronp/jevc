@@ -40,6 +40,9 @@ module's API are both baked in at compile time.
   `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
   the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
   variable is set and the provider default when it is not. Recompile to pick it up.
+- A model ID a response names is JSON-quoted wherever jevc prints it — `model_unexpected`
+  messages (cut at 64 characters) and the `check --live` summary line — so a control character
+  arrives escaped. The summary reads `against no named model` when no response named one.
 - The sample gate's `commit.json` routes an uncertain `user_explicitly_asked_to_commit` to
   `ask`: when the model cannot tell whether the human asked for the commit, the human confirms.
   The recorded case (0.06) is outside the band, so the replay still denies.
