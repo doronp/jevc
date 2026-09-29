@@ -87,13 +87,14 @@ const decide = async () => {
   return evaluate(program, state)   // needs TYPESAFE_API_KEY
 }
 
-let verdict, model, answers, uncertain, warnings = []
+let verdict, model, answers, uncertain, warnings = [], error = null
 try {
   ({ verdict, model, answers, uncertain, warnings } = await decide())
 } catch (err) {
   verdict = ON_ERROR
   answers = {}
   uncertain = []
+  error = err.message
   process.stderr.write(`jev gate error, failing ${ON_ERROR}: ${err.message}\n`)
 }
 // The verdict stands (another Jev build, or a model JEVC_ALLOW_MODEL names), but the band it
@@ -104,9 +105,11 @@ for (const w of warnings) process.stderr.write(`jev gate: warning: ${w.message}\
 if (process.env.JEVC_MODE === 'observe') {
   // The model's answers and nothing it was shown: no state (the command, the user's words)
   // and no environment, so the log is safe to keep and share. Observing must never block,
-  // so a log that cannot be written costs the line, not the tool call.
+  // so a log that cannot be written costs the line, not the tool call. `error` is set when the
+  // verdict is ON_ERROR's fallback rather than the model's, so an outage is not read as a rule
+  // that fired.
   const line = { ts: new Date().toISOString(), verdict, model: model ?? null,
-    tool_name: hook.tool_name ?? null, uncertain, answers, warnings: warnings.map(w => w.message) }
+    tool_name: hook.tool_name ?? null, uncertain, answers, warnings: warnings.map(w => w.message), error }
   try {
     appendFileSync(process.env.JEVC_OBSERVE_LOG || HERE('./observe.jsonl'), `${JSON.stringify(line)}\n`)
   } catch (err) {

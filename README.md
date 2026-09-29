@@ -852,8 +852,10 @@ emitted module carries the model it was compiled with.
 
 To watch a rule before trusting it, run the sample gate with `JEVC_MODE=observe`: every call
 goes through, and the verdict it would have given is appended to `observe.jsonl` beside the
-gate (or `JEVC_OBSERVE_LOG`) with the answers and the uncertain ids, never the state. Read the
-log, adjust the thresholds, then drop the variable.
+gate (or `JEVC_OBSERVE_LOG`) with the answers and the uncertain ids, never the state. A row
+with a non-null `error` is the fail-closed fallback, not a verdict the model gave. The default
+path sits beside a gate you commit, so gitignore `observe.jsonl`. Read the log, adjust the
+thresholds, then drop the variable.
 
 ### Cost
 

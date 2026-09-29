@@ -27,7 +27,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { validateRequest } from '../src/contract.js'
 import { loadFixtures } from '../src/check.js'
@@ -1326,11 +1326,11 @@ describe('scan, show, and the installable hook', () => {
         const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
         expect(lines).toHaveLength(2)
         const row = JSON.parse(lines[0]) as Record<string, unknown>
-        expect(Object.keys(row).sort()).toEqual(['answers', 'model', 'tool_name', 'ts', 'uncertain', 'verdict', 'warnings'])
+        expect(Object.keys(row).sort()).toEqual(['answers', 'error', 'model', 'tool_name', 'ts', 'uncertain', 'verdict', 'warnings'])
         expect(Number.isNaN(Date.parse(row.ts as string))).toBe(false)
         const f = loadFixtures(join(ROOT, 'fixtures')).find(x => x.id === 'commit-only-when-explicitly-asked')!
         const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
-        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [], warnings: [] })
+        expect(row).toMatchObject({ verdict: 'deny', model: f.measured.model, tool_name: 'Bash', uncertain: [], warnings: [], error: null })
         // The model's answers to this program's questions, and nothing it was shown.
         expect(row.answers).toEqual(Object.fromEntries(program.decisions.map(d => [d.id, f.measured.answers[d.id]])))
         for (const leak of ['git commit', 'go ahead', 'payments-api', 'sentinel-7f3a91', log]) {
@@ -1342,6 +1342,33 @@ describe('scan, show, and the installable hook', () => {
         const r = runHook(sample(), { JEVC_MODE: 'observe', JEVC_OBSERVE_LOG: join(dir, 'no', 'such', 'dir', 'x.jsonl') })
         expect(r.status).toBe(0)
         expect(r.stdout).toBe('')
+        // O-R11: without this, deleting the report left the test green, and a log that silently
+        // stops growing reads as "the rule never fired".
+        expect(r.stderr).toMatch(/^jev gate: observe log not written: .*ENOENT/m)
+      })
+
+      // Every other test names JEVC_OBSERVE_LOG, so the documented default was never exercised.
+      // A copy with its imports made absolute runs from a directory the test owns.
+      it('writes observe.jsonl beside the gate when JEVC_OBSERVE_LOG is unset', () => {
+        const gates = join(dir, 'project', '.claude', 'gates')
+        mkdirSync(gates, { recursive: true })
+        const dist = (f: string) => JSON.stringify(pathToFileURL(join(ROOT, 'dist', f)).href)
+        const gate = readFileSync(join(HOOK, 'gate.mjs'), 'utf8')
+          .replaceAll("'../../../../dist/index.js'", dist('index.js'))
+          .replaceAll("'../../../../dist/check.js'", dist('check.js'))
+          .replaceAll("HERE('../../../../fixtures')", JSON.stringify(join(ROOT, 'fixtures')))
+        expect(gate, 'the gate no longer imports what this copy rewrites').not.toContain('../../../../')
+        writeFileSync(join(gates, 'gate.mjs'), gate)
+        writeFileSync(join(gates, 'commit.json'), readFileSync(join(HOOK, 'commit.json')))
+        const { JEVC_OBSERVE_LOG: _drop, ...env } = { ...OFFLINE_ENV, JEVC_OBSERVE_LOG: '' }
+        const r = spawnSync(process.execPath, [join(gates, 'gate.mjs')], {
+          cwd: join(dir, 'project'), input: JSON.stringify(sample()), encoding: 'utf8',
+          env: { ...env, JEVC_REPLAY: '1', JEVC_MODE: 'observe' }, timeout: 60_000,
+        })
+        expect([r.status, r.stdout, r.stderr]).toEqual([0, '', ''])
+        const lines = readFileSync(join(gates, 'observe.jsonl'), 'utf8').trimEnd().split('\n')
+        expect(lines).toHaveLength(1)
+        expect(JSON.parse(lines[0])).toMatchObject({ verdict: 'deny', error: null })
       })
     })
 
@@ -1434,6 +1461,10 @@ describe('scan, show, and the installable hook', () => {
         expect(r.status).toBe(0)
         expect(decision(r)).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: 'The commit gate could not be evaluated.' })
         expect(r.stderr).toMatch(/^jev gate error, failing ask: [\s\S]*"laya-rl-agent"[\s\S]*JEVC_ALLOW_MODEL/m)
+        // O-R4: the fallback is not the model's verdict, and an observe log that recorded it as
+        // one would tune thresholds against outages. The row says why it is there.
+        expect(await observed()).toMatchObject({ verdict: 'ask', model: null, answers: {},
+          error: expect.stringContaining('"laya-rl-agent"') })
       })
 
       it('takes the verdict from a model JEVC_ALLOW_MODEL names, with a warning', async () => {

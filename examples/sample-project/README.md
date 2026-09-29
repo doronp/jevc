@@ -147,8 +147,11 @@ questions about file writes. Your own rules, not this one: start at `jevc scan .
 - `JEVC_MODE=observe` lets every `Bash` call through and appends the verdict it would have
   had to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the gate), one JSON line per call:
   time, verdict, model, tool name, uncertain ids, the model's answers and any warnings — never the command,
-  the transcript or anything from the environment. A log that cannot be written is reported
-  on stderr and the call still goes through. Run it for a while before trusting the thresholds.
+  the transcript or anything from the environment. A row with a non-null `error` is the
+  fail-closed fallback, not the model's verdict: leave those out when tuning thresholds. A log
+  that cannot be written is reported on stderr and the call still goes through. The default
+  path is inside `.claude/gates/`, which you commit, so add `observe.jsonl` to `.gitignore`.
+  Run it for a while before trusting the thresholds.
 - Non-`Bash` tool calls exit 0 immediately. A question about a tool the rule cannot apply
   to spends a call to learn nothing.
 - The hook returns `deny` rather than exiting 2. Both stop the tool call; the JSON form

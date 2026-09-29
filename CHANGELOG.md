@@ -59,6 +59,7 @@ module's API are both baked in at compile time.
 - `JEVC_MODE=observe` in the sample gate: every call is let through, and the verdict it would
   have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
   gate) — time, verdict, model, tool name, uncertain ids, answers and warnings; no state, no env values. A
+  row whose verdict is the fail-closed fallback carries the error in `error` (null otherwise). A
   log that cannot be written does not block the call.
 - `jevc compile <program.json> --source <doc>` runs `parseLiftResponse` on a lifted Program
   before compiling it: a citation that does not quote `<doc>` word for word, or names it
