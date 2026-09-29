@@ -1385,11 +1385,14 @@ describe('scan, show, and the installable hook', () => {
       // `model: undefined` drops out of JSON.stringify, which is the "names no model" reply.
       let reply: Record<string, unknown> = {}
       const answeredBy = (model: unknown) => { reply = { model, answers: band, usage: { input_tokens: 1, output_tokens: 1 } } }
-      let requests = 0
+      // B5: the body is read, not drained, so the test proves what the gate asked, not just
+      // that something asked.
+      const bodies: { model?: unknown; questions?: Record<string, unknown> }[] = []
       const server = createServer((req, res) => {
-        requests++
-        req.resume()
+        let raw = ''
+        req.on('data', c => { raw += c })
         req.on('end', () => {
+          bodies.push(JSON.parse(raw))
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify(reply))
         })
@@ -1428,7 +1431,7 @@ describe('scan, show, and the installable hook', () => {
 
       it('asks the human when whether they asked for the commit is uncertain', async () => {
         answeredBy('jev-1.13.0')
-        const before = requests
+        const before = bodies.length
         const r = await live()
         expect(r.status, r.stderr).toBe(0)
         const d = decision(r)
@@ -1439,7 +1442,13 @@ describe('scan, show, and the installable hook', () => {
 
         expect(await observed()).toMatchObject(
           { verdict: 'ask', model: 'jev-1.13.0', uncertain: ['user_explicitly_asked_to_commit'], answers: band, warnings: [] })
-        expect(requests - before).toBe(2)
+        const sent = bodies.slice(before)
+        expect(sent).toHaveLength(2)
+        const program = JSON.parse(readFileSync(join(HOOK, 'commit.json'), 'utf8')) as { decisions: { id: string }[] }
+        for (const body of sent) {
+          expect(body.model, 'the gate asks for the pin').toBe('jev-1.13.0')
+          expect(Object.keys(body.questions ?? {})).toEqual(program.decisions.map(d => d.id))
+        }
       })
 
       // O-R1: evaluate() used to drop the warning, so a gate running on an unpinned model said
