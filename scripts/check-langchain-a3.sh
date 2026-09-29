@@ -88,7 +88,19 @@ try:
 except Exception as e:  # raised by a3 before _check_model runs; its class is a3's to choose
     refused = type(e).__name__
 assert refused, "a response with no model was accepted"
+
+# The key a local server ignores still has to be non-empty: a3 validates it when the module
+# constructs its classifier, which is at import. The README's local-server recipe says so.
+import importlib
+os.environ["TYPESAFE_API_KEY"] = ""
+try:
+    importlib.reload(commit_jev)
+    no_key = None
+except Exception as e:
+    no_key = type(e).__name__
+assert no_key, "the module imported with an empty key"
 print(f"langchain-typesafe {version('langchain-typesafe')}: 1 request to {url} (mock), "
       f"{len(body['questions'])} questions = --emit json, model {body['model']}, verdict {verdict}; "
-      f"non-Jev refused, allow-listed warned, no model refused by a3 ({refused})")
+      f"non-Jev refused, allow-listed warned, no model refused by a3 ({refused}), "
+      f"empty key refused at import ({no_key})")
 PY

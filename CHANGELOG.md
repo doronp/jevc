@@ -34,7 +34,8 @@ module's API are both baked in at compile time.
   `evaluate`: a non-Jev model raises `ValueError` unless `JEVC_ALLOW_MODEL` names it, and an
   allowed model or another Jev build is a `warnings.warn`. `scripts/check-langchain-a3.sh` (opt-in,
   needs uv, not part of `npm test`) runs an emitted module against the real 0.0.1a3 with a
-  dummy key and a mock transport; it sends nothing to TypeSafe.
+  dummy key and a mock transport, and shows that an empty key fails at import, so a local
+  server still needs a dummy one; it sends nothing to TypeSafe.
 
 ### Changed
 
