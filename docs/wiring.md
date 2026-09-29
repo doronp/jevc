@@ -234,7 +234,7 @@ jevc compile triage.json --emit json
 
 ```json
 {
-  "model": "jev-latest",
+  "model": "jev-1.13.0",
   "state": "<state>",
   "questions": {
     "is_urgent": { "type": "noul", "instructions": "Does this ticket describe an outage or data loss happening right now?" },

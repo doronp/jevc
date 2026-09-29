@@ -633,7 +633,7 @@ Note that 0.07 is the collapsed verdict question from the decomposition law: wid
 that the recording is a stable assertion, far too narrow to be a verdict you would ship.
 Those are different questions, and the corpus only answers the first.
 
-`--live` compares the recording against `jev-latest`, and the two commands are not running
+`--live` compares the recording against the pinned `jev-1.13.0`, and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
 spuriously, while 210 of the 321 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift

@@ -91,8 +91,10 @@ describe('emitJson', () => {
     expect(validateRequest(emitJson(p, 'rm -rf dist'))).toEqual([])
   })
 
-  it('defaults to jev-latest', () => {
-    expect(emitJson(p, 'x').model).toBe('jev-latest')
+  // The corpus, every threshold and every band were measured on jev-1.13.0. `jev-latest`
+  // is an alias that moves, so defaulting to it asked a model nobody measured.
+  it('defaults to the pinned jev-1.13.0, not the moving jev-latest alias', () => {
+    expect(emitJson(p, 'x').model).toBe('jev-1.13.0')
   })
 
   it('carries noul criteria (true/false branches) verbatim', () => {

@@ -1,4 +1,4 @@
-import type { EntryType, JsonValue } from '../contract.js'
+import { PINNED_MODEL, type EntryType, type JsonValue } from '../contract.js'
 import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
 import { cannotLower, refusal } from './capability.js'
@@ -108,7 +108,7 @@ ${name}_questions = {
 ${p.decisions.map(question).join('\n')}
 }
 
-classifier = TypeSafeClassifier(questions=${name}_questions, model="jev-latest")
+classifier = TypeSafeClassifier(questions=${name}_questions, model="${PINNED_MODEL}")
 
 # Each decision's uncertainty rule as the Program declares it. A noul answer is
 # {type, noul} with no .confidence field at all, so its band is tested on .noul; a choice

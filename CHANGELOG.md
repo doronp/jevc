@@ -3,6 +3,17 @@
 Notable changes to jevc. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Every default model is now the pinned `jev-1.13.0` (`PINNED_MODEL`, exported), not the
+  `jev-latest` alias: `emitJson`, `askModel`/`evaluate` (and so the sample gate), and the model the
+  emitted `ai-sdk` and `langchain` artifacts construct. All 58 fixtures were recorded against
+  `jev-1.13.0`, so the alias asked a model nobody measured, and a vendor bump would have changed
+  every compiled gate without a jevc release. `jev-latest` is still accepted when you name it.
+  Recompile emitted artifacts to pick the pin up.
+
 ## 0.1.0 — 2026-09-20
 
 First release, so everything is new. The entries below are the behaviour changes landed by the

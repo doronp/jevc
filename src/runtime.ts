@@ -1,7 +1,7 @@
 import { TypeSafeClient, APIError } from '@typesafe-ai/sdk'
 import type { SystemOneRequest } from '@typesafe-ai/sdk'
 import type { JevAnswer, JevModel, JevRequest, ValidationIssue } from './contract.js'
-import { redactErrorBody, validateRequest, validateResponse } from './contract.js'
+import { PINNED_MODEL, redactErrorBody, validateRequest, validateResponse } from './contract.js'
 import { uncertaintyOf, validateProgram, type Program } from './ir.js'
 import { emitJson } from './emit/json.js'
 
@@ -167,7 +167,7 @@ export async function askModel(
   // per fixture). Refusing a paid call over a regex on instructions text belongs at the CLI's
   // authoring gate, which is where it already is.
 
-  const req = emitJson(p, state, opts.model ?? 'jev-latest')
+  const req = emitJson(p, state, opts.model ?? PINNED_MODEL)
   // Kept unfiltered: the warns are the request half of AskResult.issues below.
   const issues = validateRequest(req)
   const requestErrors = issues.filter(i => i.severity === 'error')

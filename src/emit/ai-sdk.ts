@@ -1,4 +1,4 @@
-import type { EntryType } from '../contract.js'
+import { PINNED_MODEL, type EntryType } from '../contract.js'
 import { uncertaintyOf } from '../ir.js'
 import type { Decision, Program } from '../ir.js'
 // One definition, shared with native.ts: `idKey` and the line-terminator set were
@@ -229,7 +229,7 @@ ${rules}
 // TYPESAFE_API_KEY. Accept either, or an environment set up for jevc throws
 // AI_LoadAPIKeyError here.
 export const model = createTypeSafeAi({ apiKey: process.env.TYPESAFE_AI_API_KEY ?? process.env.TYPESAFE_API_KEY })
-  .evaluationModel('jev-latest')
+  .evaluationModel('${PINNED_MODEL}')
 ${p.residual ? `\n${['Still requires a generative model:', ...p.residual.split(LINE)]
     .map(l => `// ${l}`).join('\n')}\n` : ''}`
 }

@@ -16,6 +16,13 @@ export type JevQuestion =
 
 export type JevModel = 'jev-latest' | 'jev-preview' | 'jev-1.13.0'
 export const MODELS: readonly JevModel[] = ['jev-latest', 'jev-preview', 'jev-1.13.0']
+/** The model every default asks for. Not a preference: it is the one model the corpus was
+ * recorded against — all 58 fixtures in fixtures/ report `measured.model: "jev-1.13.0"` —
+ * so every threshold, band and README number was measured on it. The defaults used to be
+ * `jev-latest`, an alias that moves under you: a vendor bump would have changed what every
+ * compiled gate asks without any jevc release, and nothing in the corpus would still
+ * describe the model answering. `jev-latest` stays a legal explicit choice. */
+export const PINNED_MODEL = 'jev-1.13.0' satisfies JevModel
 
 // The API silently ignores unknown fields (spec §3.1: a typo like `criterion`
 // never errors), so jevc has to whitelist what it emits instead.

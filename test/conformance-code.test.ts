@@ -855,6 +855,25 @@ describe('the json target is a valid request, and a request that answers back', 
   })
 })
 
+// ---------------------------------------------------------------------------
+// The model each code target asks for, read back from the artifact the way its consumer
+// constructs it. The corpus was recorded on jev-1.13.0; `jev-latest` is an alias that moves.
+// ---------------------------------------------------------------------------
+
+describe('the model every code target asks for', () => {
+  it('ai-sdk: the exported model is the pinned jev-1.13.0', () => {
+    const got = runTs(emitAiSdk(gate), [
+      `import { model } from './mod.ts'`,
+      `console.log(JSON.stringify(model.modelId))`,
+    ])
+    expect(got).toBe('jev-1.13.0')
+  })
+
+  it.runIf(pythonAvailable)('langchain: the classifier is constructed with the pinned jev-1.13.0', () => {
+    expect(runPy(emitLangchain(gate), 'classifier.model')).toBe('jev-1.13.0')
+  })
+})
+
 /** The first few points where a target's verdict differs from the reference, formatted so
  *  a red run names the inputs rather than printing 1,900 strings. */
 function disagreements(got: string[], target: string): string[] {

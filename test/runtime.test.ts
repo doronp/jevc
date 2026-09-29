@@ -420,6 +420,35 @@ describe('askModel — a missing answer is reportable, not fatal', () => {
   })
 })
 
+// E0 item 1: the model a library call asks for when the caller names none. Asserted on the
+// request the client actually receives, not on emitJson's default in isolation — the
+// runtime had its own `?? 'jev-latest'` and that is the one a hook such as the sample gate
+// inherits.
+describe('askModel — the model it asks for', () => {
+  const asking = () => {
+    const seen: string[] = []
+    const client = {
+      systemOne: async (req: { model: string }) => {
+        seen.push(req.model)
+        return { model: 'jev-1.13.0', answers: answers(), usage }
+      },
+    } as unknown as TypeSafeClient
+    return { seen, client }
+  }
+
+  it('sends the pinned jev-1.13.0 by default, not the moving alias', async () => {
+    const { seen, client } = asking()
+    await evaluate(p, 'rm -rf /tmp/build', { client, now: tick() })
+    expect(seen).toEqual(['jev-1.13.0'])
+  })
+
+  it('still sends whichever model the caller names', async () => {
+    const { seen, client } = asking()
+    await askModel(p, 'rm -rf /tmp/build', { client, model: 'jev-latest', now: tick() })
+    expect(seen).toEqual(['jev-latest'])
+  })
+})
+
 // Reviewed alongside F18-F21: `redactErrorBody` deep-clones with
 // JSON.parse(JSON.stringify(body)), and it is called from inside a catch block.
 describe('evaluate — a body that cannot be redacted', () => {
