@@ -669,6 +669,13 @@ exit 0, carrying the invented `file:line — quote` as a provenance comment — 
 citation is worse than none, because it turns "I should check this" into "someone already
 did."
 
+These checks run in `parseLiftResponse`, on a lift response as it comes back. `jevc
+compile` and `jevc emit-policy` on a saved `program.json` never see the document the quotes
+came from, so they do not re-verify its citations: a paraphrased quote in a hand-saved
+program still compiles at exit 0 and becomes the artifact's provenance comment. Check each
+quote against the file before compiling, as the
+[Claude Code skill](plugin/skills/jevc/SKILL.md) does with `grep -nF`.
+
 - `quote` must appear verbatim in the lifted document — whitespace is normalised, so a
   re-wrap is fine — and be at least **12 characters**. A shorter fragment proves nothing
   even when it does occur: taking phrases from an instruction file and asking how often

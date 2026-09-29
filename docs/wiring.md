@@ -80,10 +80,12 @@ Run `jevc scan .` and show me the table.
 
 Then, for the file with the most decidable rules, run `jevc compile <that file> --lift`
 and answer the request it prints. Every decision you return must carry a `source` with a
-verbatim `quote` from the file — jevc rejects the whole response if a citation does not
-check out, so do not paraphrase.
+verbatim `quote` from the file, so do not paraphrase. Save the result to `program.json`.
+`jevc compile` does not re-check citations, so before compiling run
+`grep -nF -f /dev/stdin <that file>` for each decision, with the quote in a `<<'EOF'`
+heredoc so an apostrophe cannot break it, and confirm it prints the line the decision cites.
 
-Save the result to `program.json` and run `jevc compile program.json --emit sdk -o gate.ts`.
+Then run `jevc compile program.json --emit sdk -o gate.ts`.
 
 Then tell me three things: which rules became questions, which stayed in the prompt
 because they are procedure or generation, and which reducer thresholds you guessed at —
