@@ -1,0 +1,13 @@
+{
+  "name": "jevc",
+  "owner": {
+    "name": "doronp"
+  },
+  "description": "The jevc plugin for Claude Code: a skill that compiles written rules into Jev gates.",
+  "plugins": [
+    {
+      "name": "jevc",
+      "source": "./plugin"
+    }
+  ]
+}

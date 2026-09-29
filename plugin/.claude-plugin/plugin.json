@@ -1,0 +1,12 @@
+{
+  "name": "jevc",
+  "version": "0.1.0",
+  "description": "One skill, /jevc:jevc, that turns a rule from CLAUDE.md, AGENTS.md or a skill into narrow typed Jev questions with the verdict computed in code, and optionally installs the result as a project's PreToolUse gate after asking. It runs the jevc CLI (npm: jev-compiler) through npx if it is not installed. No hooks: the gate is registered per project, never by the plugin.",
+  "author": {
+    "name": "doronp"
+  },
+  "homepage": "https://github.com/doronp/jevc",
+  "repository": "https://github.com/doronp/jevc",
+  "license": "Apache-2.0",
+  "keywords": ["jev", "typesafe", "claude-code", "guardrails", "policy", "pretooluse", "agents-md", "claude-md"]
+}
