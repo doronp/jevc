@@ -1,4 +1,4 @@
-# Emit target: @ai-sdk/typesafe-ai@3.0.3 (Target A, TS) + langchain-typesafe>=0.0.1a3 (Target B, Python)
+# Emit target: @ai-sdk/typesafe-ai@3.0.3 (Target A, TS; read at 3.0.3, baseURL and modelId re-verified on 3.0.10) + langchain-typesafe>=0.0.1a3 (Target B, Python)
 
 **Feasible:** True  
 **Format:** ts + py (both targets are configured in code — neither tool reads a config file)  

@@ -64,7 +64,9 @@ re-measured for any other model. `model_unexpected` is an error when `res.model`
 listed non-Jev ID becomes a warning, and no other ID is affected. It is passed to
 `validateResponse(program, res, allowedModels)` by `askModel`, so the validator itself reads no
 environment. `check --live` turns the issue into a `<fixture>.model` row, `broken` or `drifted`
-by the same severity.
+by the same severity. Its `live` column is the ID the reply named, or `none` when the reply
+named no model (missing, empty, or not a string, which is never printed); a `none` row is
+always `broken`.
 
 Budget: `validateRequest` refuses at **45,000 tokens** for the whole request and **32,000**
 for state plus the longest single question, estimated at the measured ratio of 5.1

@@ -820,12 +820,25 @@ asked for passes it. Trust the base URL as far as you trust the key.
 
 Thresholds are per model. Every threshold, band and corpus number here was measured on
 `jev-1.13.0`; the guard refuses a verdict from anything that does not say it is a Jev build and
-warns on a Jev build other than the pin. To run a local Jev-compatible server on purpose, name
-its exact model ID in `JEVC_ALLOW_MODEL`, then re-measure: `check --live` against that server
-(it still wants a non-empty `TYPESAFE_API_KEY`) reports every band that moved as a `drifted`
-row. Until then the thresholds describe
-`jev-1.13.0`, not your model. `--model <id>` picks which TypeSafe build `check --live` asks and
-`--threshold <n>` how far an answer may move before it is a row. The guard runs inside
+warns on a Jev build other than the pin. `--model <id>` picks which TypeSafe build
+`check --live` asks and `--threshold <n>` how far an answer may move before it is a row.
+
+To run a local Jev-compatible server on purpose, it takes all five of these:
+
+1. The server answers `POST <root>/v1/systemone` in TypeSafe's wire format, and
+   `TYPESAFE_BASE_URL=<root>` points jevc at it.
+2. It accepts a request that asks for a Jev build. jevc and the emitted modules ask for
+   `jev-1.13.0`, and `--model` takes only `jev-latest`, `jev-preview` or `jev-1.13.0`, the
+   list the request validator enforces; a server that routes by model ID has to map those to
+   itself. Asking for a non-Jev ID is not in this release.
+3. It names itself in the reply's `model`. A missing, empty or non-string `model` is always an
+   error; the allow-list cannot turn it into a warning.
+4. `JEVC_ALLOW_MODEL` lists that exact ID, which turns the guard's error into a warning.
+5. `TYPESAFE_API_KEY` holds a non-empty dummy: `check --live` and the emitted `langchain`
+   module refuse an empty one, and the server can ignore it.
+
+Then re-measure: `check --live` against that server reports every band that moved as a
+`drifted` row. Until then the thresholds describe `jev-1.13.0`, not your model. The guard runs inside
 `evaluate` and `askModel`, and the emitted `langchain` module's `classify()` applies it too
 (`ValueError`, or `warnings.warn`). The emitted `ai-sdk` module asks for the pin and does not
 check who answered; `@ai-sdk/typesafe-ai` reports the model it asked for when the reply names
@@ -867,9 +880,13 @@ that no test can pin, because it is not in the repo.
 
 ### Security
 
-`jevc` itself reads two variables. `TYPESAFE_API_KEY` is never written to a file, never
-committed, never logged, and never embedded in a fixture. `JEVC_ALLOW_MODEL` holds model IDs,
-not a secret (see [What the validator catches](#what-the-validator-catches)). `.env` is gitignored and
+`jevc` itself reads three variables. `TYPESAFE_API_KEY` is never written to a file, never
+committed, never logged, and never embedded in a fixture. `TYPESAFE_BASE_URL`, read through
+`@typesafe-ai/sdk`, decides where that key is sent: an inherited value ships the key to
+whatever host it names, so treat it like the key (see
+[Where the answers come from](#where-the-answers-come-from-and-when-they-stop)).
+`JEVC_ALLOW_MODEL` holds model IDs, not a secret (see
+[What the validator catches](#what-the-validator-catches)). `.env` is gitignored and
 `.env.example` carries a placeholder (`TYPESAFE_API_KEY=apikey_...`, no body).
 
 The **emitted** `ai-sdk` backend is the one exception, and it is the emitted file's

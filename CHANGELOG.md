@@ -57,7 +57,10 @@ module's API are both baked in at compile time.
   `TYPESAFE_BASE_URL` for an account or a local Jev-compatible server, thresholds measured on
   `jev-1.13.0` only, the vendor outage path per surface, pin retirement, `JEVC_MODE=observe`, and
   that `bouncer`/`toolgate` inherit the host's model. `docs/design.md`'s `escalate` flag is marked
-  superseded.
+  superseded. The local-server path is one list: the server accepts a request asking for a Jev
+  build (`--model` takes no other ID in this release), names itself in the reply's `model`,
+  `JEVC_ALLOW_MODEL` lists that ID, and the key is a non-empty dummy. The Security section counts
+  `TYPESAFE_BASE_URL` among the variables jevc reads, because it decides where the key is sent.
 
 ### Added
 
