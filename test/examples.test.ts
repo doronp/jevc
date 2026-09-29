@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { loadFixtures } from '../src/check.js'
 import { VERDICT_WORDS } from '../src/ir.js'
 import { runReducer } from '../src/runtime.js'
@@ -440,6 +441,32 @@ describe('README claims recompute from the repo', () => {
         expect(d.source.file, `${d.id} was lifted from outside the project`).toBe('CLAUDE.md')
         expect(claudeMd[d.source.line - 1], `${d.id} cites the wrong line`).toContain(d.source.quote)
       }
+    })
+
+    // The sample README's round trip, run as printed against the files it says it produced.
+    // A lift labels the document by the path it was given, and step 3 checks every citation
+    // against that label, so the shipped commit.json (which cites `CLAUDE.md`) passes only
+    // from the directory it was lifted in. Printed from the repo root, step 3 refused it.
+    it('runs the sample round trip from where it says its files were produced', () => {
+      const DIR = 'examples/sample-project'
+      const block = readFileSync(`${DIR}/README.md`, 'utf8')
+        .match(/## The round trip[\s\S]*?```bash\n([\s\S]*?)```/)
+      expect(block, 'the sample README no longer prints the round trip').not.toBeNull()
+      const lines = block![1].split('\n').map(l => l.replace(/\s+#.*$/, '').trim()).filter(Boolean)
+      const cwd = resolve(lines[0].match(/^cd (\S+)$/)?.[1] ?? '.')
+      const args = (prefix: string) => {
+        const line = lines.find(l => l.startsWith(prefix))
+        expect(line, `no \`${prefix}\` step`).toBeDefined()
+        return line!.replace(/ > \/dev\/null$/, '').split(/\s+/).slice(1)
+      }
+      const jevc = (a: string[]) => spawnSync('node', [resolve('dist/cli.js'), ...a],
+        { cwd, encoding: 'utf8', env: { ...process.env, TYPESAFE_API_KEY: '' } })
+
+      expect(jevc(args('jevc scan')).stdout).toMatch(/^\s*CLAUDE\.md\s+13 rules\s+7 decidable/m)
+      const shipped = relative(cwd, resolve(`${DIR}/.claude/gates/commit.json`))
+      const check = jevc(args('jevc compile program.json').map(a => a === 'program.json' ? shipped : a))
+      expect(check.stderr).toBe('')
+      expect(check.status).toBe(0)
     })
 
     it('lists exactly the targets that exist, in a table with one row each', async () => {

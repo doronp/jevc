@@ -23,13 +23,16 @@ gate is here to catch.
 
 ## The round trip
 
-Four commands, and the fourth puts the result back where the first one found it.
+Four commands, and the fourth puts the result back where the first one found it. Run them
+from this directory: the lift request labels the document by the path you typed, step 3 checks
+every citation against that label, and the shipped `commit.json` cites `CLAUDE.md`.
 
 ```bash
-jevc scan examples/sample-project                      # 1. what rules does this project already have?
-jevc compile examples/sample-project/CLAUDE.md --lift  # 2. hand the printed request to your agent
-jevc compile program.json --source examples/sample-project/CLAUDE.md > /dev/null   # 3. save the agent's Program; check every citation
-cp program.json examples/sample-project/.claude/gates/commit.json   # 4. install it
+cd examples/sample-project
+jevc scan .                                   # 1. what rules does this project already have?
+jevc compile CLAUDE.md --lift                 # 2. hand the printed request to your agent
+jevc compile program.json --source CLAUDE.md > /dev/null   # 3. save the agent's Program; check every citation
+cp program.json .claude/gates/commit.json     # 4. install it
 ```
 
 Step 1 reports `CLAUDE.md — 13 rules, 7 decidable`. Step 2 prints a lowering request; no

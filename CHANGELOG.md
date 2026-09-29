@@ -94,6 +94,9 @@ module's API are both baked in at compile time.
 
 - The install steps told you to import the gate's runtime from `jevc`; the package is
   `jev-compiler`, and the import needs a project-local install.
+- The sample project's round trip ran from the repo root, where the lift labels the document
+  `examples/sample-project/CLAUDE.md`; the shipped `commit.json` cites `CLAUDE.md`, so step 3
+  refused it. The commands now run from `examples/sample-project`, and a test runs them.
 - The README said 210 of the 321 numeric bounds have less than 0.15 of headroom; it is 207. Fifteen
   sit exactly on 0.15, and float subtraction put three of them under it. Two source comments
   quoted an older corpus (331 bounds, 23 of 26 fractional score answers) and now match
