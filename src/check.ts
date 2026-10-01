@@ -28,6 +28,18 @@ const notFinite = (v: unknown, what: string): string | undefined =>
     ? undefined
     : `${what} is ${typeof v === 'number' ? String(v) : JSON.stringify(v) ?? String(v)}, not a number`
 
+/** Why an answer's payload cannot be read, `undefined` when it can. Shared by
+ * `assertExpectation` (see the note where it is called) and `medianAnswers`, which must not
+ * fold an unreadable call into a median that reads as health. An answer type that is none of
+ * the three primitives is not judged here; both callers deal with it on their own. */
+const unreadable = (a: JevAnswer): string | undefined =>
+  a.type === 'noul' ? notFinite(a.noul, 'noul')
+    : a.type === 'score' ? notFinite(a.score, 'score') ?? notFinite(a.confidence, 'confidence')
+    : a.type === 'choice'
+      ? (typeof a.choice === 'string' ? undefined : `choice is ${JSON.stringify(a.choice)}`)
+        ?? notFinite(a.confidence, 'confidence')
+      : undefined
+
 export type Fixture = {
   id: string
   title: string
@@ -69,8 +81,9 @@ export function loadFixtures(dir: string): Fixture[] {
 }
 
 /** Check a set of answers against a fixture's recorded expectation. Every bound is a
- * band (`_gte`/`_lte`), never equality — identical calls to the API drift +/-0.01. Returns
- * one human-readable message per violated clause; an empty array means the expectation held.
+ * band (`_gte`/`_lte`), never equality — identical calls to the API do not return identical
+ * answers. Returns one human-readable message per violated clause; an empty array means the
+ * expectation held.
  * An unrecognized clause key (a typo, or an operator this function doesn't yet implement) is
  * itself reported as a failure rather than silently skipped — a clause that runs zero
  * assertions passes unconditionally, which is worse than not having the clause at all.
@@ -97,12 +110,7 @@ export function assertExpectation(
     // carrying no measurement. Both sides here are untrusted JSON (a hand-edited fixture, a
     // response off a moving alias), and on the live path validateResponse's
     // `answer_not_a_number` is a report rather than a refusal, so this is reachable.
-    const unmeasured = a.type === 'noul' ? notFinite(a.noul, 'noul')
-      : a.type === 'score' ? notFinite(a.score, 'score') ?? notFinite(a.confidence, 'confidence')
-      : a.type === 'choice'
-        ? (typeof a.choice === 'string' ? undefined : `choice is ${JSON.stringify(a.choice)}`)
-          ?? notFinite(a.confidence, 'confidence')
-        : undefined
+    const unmeasured = unreadable(a)
     if (unmeasured) { fails.push(`${id}: ${unmeasured}, so no clause can be checked`); continue }
 
     if (clause.noul_gte !== undefined) {
@@ -164,6 +172,10 @@ export type DriftRow = {
   live: number | string
   delta: number | null
   status: 'stable' | 'drifted' | 'broken'
+  /** `--repeat` above 1 only: the lowest and highest value each compared number took across
+   * the calls, `lo..hi`, in the `value@confidence` shape of `live` (a choice lists every winner
+   * the calls named). `live` is their median; this says whether one call or all of them moved. */
+  range?: string
 }
 
 export type Report = {
@@ -177,6 +189,8 @@ export type Report = {
   /** Rows that moved: a value past the flat threshold, and a recorded `expect` band that no
    * longer holds. Reported, never exit-gated — see the note in `checkLive`. */
   drifted: number
+  /** Calls per fixture (`--repeat`). Above 1, every live number in `rows` is a median. */
+  repeat?: number
 }
 
 /** Build the Program `checkLive` replays a fixture's questions through.
@@ -277,15 +291,125 @@ export function diffFixture(f: Fixture, live: Record<string, JevAnswer>, thresho
   return rows
 }
 
-/** The line `jevc check --live` ends on, here for the same reason liveOptions is. The model
- * list is whatever the responses named, so it is quoted the way the rows above it are, and a
- * run in which no response named one says so rather than printing "against :". */
-export function liveSummary(r: Pick<Report, 'model' | 'rows' | 'drifted' | 'broken'>): string {
-  const against = r.model === '' ? 'no named model' : JSON.stringify(r.model)
-  return `${r.rows.length} rows checked live against ${against}: ${r.drifted} drifted, ${r.broken} broken\n`
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+const span = (xs: number[]): string => `${Math.min(...xs)}..${Math.max(...xs)}`
+
+/** Each key's median, over the keys EVERY call scored with a real number. A key one call left
+ * out is left out here too, so `prob_lte` reports it absent exactly as it would for that call
+ * alone, and an option some call never scored cannot win by default. */
+const medianProbabilities = (ps: unknown[]): Record<string, number> => {
+  const maps = ps.map(p => (typeof p === 'object' && p !== null ? p as Record<string, unknown> : {}))
+  const out: Record<string, number> = {}
+  for (const key of Object.keys(maps[0])) {
+    const vs = maps.map(m => m[key])
+    if (vs.every(v => typeof v === 'number' && Number.isFinite(v))) out[key] = median(vs as number[])
+  }
+  return out
 }
 
-/** `jevc check --live --model <id> --threshold <n>`, validated into checkLive's options.
+type Of<T extends JevAnswer['type']> = Extract<JevAnswer, { type: T }>
+
+/** One answer set standing for `--repeat` calls to the same fixture, so that `diffFixture` and
+ * `assertExpectation` run unchanged on it. Identical calls are not guaranteed to return
+ * identical answers, and the corpus records one call per fixture, so it does not say how far
+ * they move: diffed one call at a time, a call can raise a drift row the next would not. The
+ * median of each value does not turn on any one call —
+ * noul → median; score → median level and median confidence; choice → each option's median
+ * probability, the winner re-derived as the highest of those medians among the options some
+ * call named (ties and an empty map explained where it is derived), median confidence.
+ * `ranges` carries the min..max beside it, keyed by answer id, for the rows to print.
+ *
+ * One call comes back exactly as it arrived: the median of one sample is that sample, and
+ * rebuilding it would re-derive a choice's winner from its probabilities instead of reporting
+ * the one the API named — a different report for the default run, which must not change.
+ *
+ * A structural fault in ANY of the calls is a finding, not noise, and a median must not average
+ * it away. An id some call dropped is left out, so diffFixture reports it `missing` — unless the
+ * recording never had it, which is `new` whatever it carries, so the first copy stands in. An
+ * answer of the wrong type, or one whose payload cannot be read, is passed on as it came, so it
+ * is classified exactly as a single call's would be. None of those gets a range. */
+function medianAnswers(f: Fixture, sets: Record<string, JevAnswer>[]):
+  { answers: Record<string, JevAnswer>; ranges: Record<string, string> } {
+  if (sets.length === 1) return { answers: sets[0], ranges: {} }
+  const answers: Record<string, JevAnswer> = {}
+  const ranges: Record<string, string> = {}
+  for (const id of new Set(sets.flatMap(s => Object.keys(s)))) {
+    const got = sets.map(s => s[id])
+    const recorded = Object.hasOwn(f.measured.answers, id)
+    if (got.some(a => a === undefined)) {
+      if (!recorded) answers[id] = got.find(a => a !== undefined)!
+      continue
+    }
+    const all = got as JevAnswer[]
+    const type = recorded ? f.measured.answers[id].type : all[0].type
+    const odd = all.find(a => a.type !== type || unreadable(a) !== undefined)
+    if (odd) { answers[id] = odd; continue }
+
+    if (type === 'noul') {
+      const nouls = (all as Of<'noul'>[]).map(a => a.noul)
+      answers[id] = { type, noul: median(nouls) }
+      ranges[id] = span(nouls)
+    } else if (type === 'score') {
+      const ss = all as Of<'score'>[]
+      const scores = ss.map(a => a.score), confidences = ss.map(a => a.confidence)
+      answers[id] = { type, score: median(scores), legend: ss[0].legend,
+        probabilities: medianProbabilities(ss.map(a => a.probabilities)), confidence: median(confidences) }
+      ranges[id] = `${span(scores)}@${span(confidences)}`
+    } else if (type === 'choice') {
+      const cs = all as Of<'choice'>[]
+      const probabilities = medianProbabilities(cs.map(a => a.probabilities))
+      const confidences = cs.map(a => a.confidence)
+      // The winner is the option with the highest median among those at least one call named.
+      // Over three or more options the medians can peak on an option no call chose (the calls
+      // split between two, a third holds steady middling mass in each), and a median standing
+      // for N calls must not report an answer none of them gave. A named option some call left
+      // unscored has no median and loses to one that has; when no named option has one, the
+      // named options all tie, so a payload one call reads cleanly is not `broken` at N > 1.
+      // Medians within TIE of the top are a tie, which an even N makes easy: (x + y) / 2 can
+      // land one bit off a tie that is exact on paper. A tie goes to the option more calls
+      // named, then to the recorded choice, then to the first in sorted order — never to the
+      // key order one call's JSON happened to use.
+      const TIE = 1e-9
+      const names = [...new Set(cs.map(a => a.choice))]
+      const p = (k: string) => Object.hasOwn(probabilities, k) ? probabilities[k] : -Infinity
+      const top = Math.max(...names.map(p))
+      // With no named option scored, top is -Infinity and every name passes.
+      const tied = names.filter(k => p(k) >= top - TIE)
+      const named = (k: string) => cs.filter(a => a.choice === k).length
+      const was = recorded ? (f.measured.answers[id] as Of<'choice'>).choice : undefined
+      const [choice] = tied.sort()
+        .sort((a, b) => named(b) - named(a) || Number(b === was) - Number(a === was))
+      answers[id] = { type, choice, probabilities, confidence: median(confidences) }
+      ranges[id] = `${names.join('|')}@${span(confidences)}`
+    } else {
+      answers[id] = all[0]   // none of the three primitives: diffFixture's alien-type row
+    }
+  }
+  return { answers, ranges }
+}
+
+/** The line `jevc check --live` ends on, here for the same reason liveOptions is. The model
+ * list is whatever the responses named, so it is quoted the way the rows above it are, and a
+ * run in which no response named one says so rather than printing "against :". A run of more
+ * than one call per fixture says its numbers are medians; a one-call run reads as it always did. */
+export function liveSummary(r: Pick<Report, 'model' | 'rows' | 'drifted' | 'broken' | 'repeat'>): string {
+  const against = r.model === '' ? 'no named model' : JSON.stringify(r.model)
+  const each = (r.repeat ?? 1) > 1 ? `, median of ${r.repeat} calls per fixture` : ''
+  return `${r.rows.length} rows checked live against ${against}${each}: ${r.drifted} drifted, ${r.broken} broken\n`
+}
+
+/** The most calls `--repeat` may ask of each fixture. The cost is linear and all of it is
+ * spent: a run makes N x fixtures calls, one after another — 580 for `--repeat 10` on the
+ * packaged 58 — so every step of N is one more full pass over the corpus. And ten is already
+ * enough to answer the question the flag exists for: a median of ten ignores up to four calls
+ * that moved on their own, and the range printed beside it shows one outlier from a shift. */
+export const MAX_REPEAT = 10
+
+/** `jevc check --live --model <id> --threshold <n> --repeat <n>`, validated into checkLive's options.
  * Here rather than in cli.ts because cli.ts runs on import: this is the seam a test reaches
  * with no key and no network. Throws a sentence the CLI prints as-is.
  *
@@ -294,9 +418,9 @@ export function liveSummary(r: Pick<Report, 'model' | 'rows' | 'drifted' | 'brok
  * live in 0..1, so at 1 or above neither can ever drift and the run goes silent on exactly
  * the movement it exists to report; below 0 an identical answer (delta 0) is drift. 0 itself
  * is legal and means "any movement at all", noise floor included. */
-export function liveOptions(model: string | undefined, threshold: string | undefined):
-  { model?: JevModel; driftThreshold?: number } {
-  const out: { model?: JevModel; driftThreshold?: number } = {}
+export function liveOptions(model: string | undefined, threshold: string | undefined, repeat?: string):
+  { model?: JevModel; driftThreshold?: number; repeat?: number } {
+  const out: { model?: JevModel; driftThreshold?: number; repeat?: number } = {}
   if (model !== undefined) {
     if (!MODELS.includes(model as JevModel)) {
       throw new Error(`--model "${model}" is not a model jevc can ask. Expected one of: ${MODELS.join(', ')}.`)
@@ -311,6 +435,14 @@ export function liveOptions(model: string | undefined, threshold: string | undef
       throw new Error(`--threshold "${threshold}" must be a number in [0, 1): noul and confidence deltas never exceed 1, so 1 or more reports no drift on them at all.`)
     }
     out.driftThreshold = t
+  }
+  if (repeat !== undefined) {
+    // Digits only. Number() alone takes "1e1", "0x5" and " 3" as whole numbers, and a count of
+    // paid calls is no place for a spelling the reader has to evaluate.
+    if (!/^[0-9]+$/.test(repeat) || Number(repeat) < 1 || Number(repeat) > MAX_REPEAT) {
+      throw new Error(`--repeat "${repeat}" must be a whole number from 1 to ${MAX_REPEAT}: it is how many calls each fixture gets, and a run makes that many times as many calls as there are fixtures.`)
+    }
+    out.repeat = Number(repeat)
   }
   return out
 }
@@ -335,12 +467,32 @@ export function liveOptions(model: string | undefined, threshold: string | undef
  * request the validators refuse, and on transport/auth/quota failures, which are the normal
  * case against a live API — and one of those must cost one fixture, not the run. An
  * unmeasured fixture is `broken` rather than skipped: a report that quietly covers 59 of 60
- * and exits 0 is the failure this function is supposed to detect, one level up. */
+ * and exits 0 is the failure this function is supposed to detect, one level up.
+ *
+ * `repeat` (`--repeat`, default 1) asks each fixture that many times and diffs the median of
+ * the answers (see `medianAnswers`), so that no drift row turns on one call, and the min..max
+ * beside it shows how far the n answers moved. Everything below still runs once
+ * per fixture, on the median — except the model guard, which reads every response.
+ *
+ * ponytail: one failed call of the N costs the whole fixture (one `unmeasured` row), and the
+ * N calls run one after another. Ceiling: a flaky endpoint loses more fixtures at a high N,
+ * and a run takes N times as long. Upgrade: a median over the calls that did answer, printed
+ * with its own count, and a fixture's N calls issued together once the rate limit is known. */
 export async function checkLive(
   fixtures: Fixture[],
-  opts: EvaluateOptions & { driftThreshold?: number } = {},
+  opts: EvaluateOptions & { driftThreshold?: number; repeat?: number } = {},
 ): Promise<Report> {
-  const threshold = opts.driftThreshold ?? 0.15   // well outside the +/-0.01 noise floor
+  // The corpus records one call per fixture, so it does not say how far answers move between
+  // identical calls; `repeat`'s median and min..max measure that.
+  const threshold = opts.driftThreshold ?? 0.15
+  const repeat = opts.repeat ?? 1
+  // The bound liveOptions puts on `--repeat`, here too: this function is public, and a caller
+  // that never went through the CLI could otherwise ask for 0 calls (every answer then reads
+  // `missing`), 2.5 (three calls), or a count of paid calls with no ceiling. Thrown before the
+  // first call, so the per-fixture catch below never turns it into a report.
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > MAX_REPEAT) {
+    throw new Error(`checkLive: repeat must be a whole number from 1 to ${MAX_REPEAT}, got ${typeof repeat === 'number' ? String(repeat) : JSON.stringify(repeat)}.`)
+  }
   const rows: DriftRow[] = []
   // Every model that answered, in the order they first answered — not just the last one.
   // This used to be `model = res.model ?? model`, so an alias bump PART WAY THROUGH the run
@@ -351,18 +503,33 @@ export async function checkLive(
 
   for (const f of fixtures) {
     try {
-      const res = await askModel(buildProgram(f), f.state, opts)
-      const named = typeof res.model === 'string' && res.model !== '' ? res.model : undefined
-      if (named) models.add(named)
-      // Who answered gets its own row, ahead of what moved, on the fixture that saw it. A
-      // non-Jev answerer is `broken` (exit 1): every number below would be a diff against a
-      // model this corpus never described. Another Jev build, or an ID JEVC_ALLOW_MODEL
-      // accepts, is `drifted`: worth a line, not a failed run. A non-string is never printed.
-      for (const i of res.issues.filter(i => i.code === 'model_unexpected')) {
-        rows.push({ id: `${f.id}.model`, recorded: f.measured.model, live: named ?? 'none',
-          delta: null, status: i.severity === 'error' ? 'broken' : 'drifted' })
+      const program = buildProgram(f)
+      const sets: Record<string, JevAnswer>[] = []
+      const answerers = new Set<string>()
+      for (let call = 0; call < repeat; call++) {
+        const res = await askModel(program, f.state, opts)
+        const named = typeof res.model === 'string' && res.model !== '' ? res.model : undefined
+        if (named) models.add(named)
+        // Who answered gets its own row, ahead of what moved, on the fixture that saw it. A
+        // non-Jev answerer is `broken` (exit 1): every number below would be a diff against a
+        // model this corpus never described. Another Jev build, or an ID JEVC_ALLOW_MODEL
+        // accepts, is `drifted`: worth a line, not a failed run. A non-string is never printed.
+        // Checked on EVERY response, not the first: a stranger answering call 3 of 5 is still a
+        // stranger, and the median below would blend its answers in without a word. One row
+        // per answerer, though — the same build five times is one finding, not five.
+        for (const i of res.issues.filter(i => i.code === 'model_unexpected')) {
+          const row: DriftRow = { id: `${f.id}.model`, recorded: f.measured.model, live: named ?? 'none',
+            delta: null, status: i.severity === 'error' ? 'broken' : 'drifted' }
+          const key = JSON.stringify([row.live, row.status])
+          if (!answerers.has(key)) { answerers.add(key); rows.push(row) }
+        }
+        sets.push(res.answers)
       }
-      rows.push(...diffFixture(f, res.answers, threshold))
+      const { answers, ranges } = medianAnswers(f, sets)
+      const spread = (row: DriftRow, id: string): DriftRow =>
+        Object.hasOwn(ranges, id) ? { ...row, range: ranges[id] } : row
+      // Every diffFixture row id is `<fixture>.<answer id>`.
+      rows.push(...diffFixture(f, answers, threshold).map(r => spread(r, r.id.slice(f.id.length + 1))))
       // The threshold that matters is the one the corpus recorded, not the flat 0.15: a noul
       // moving 0.96 -> 0.82 is inside no band in particular, but `noul_gte: 0.90` is the gate
       // the fixture was written to hold and crossing it flips the verdict. So it gets a row.
@@ -372,8 +539,8 @@ export async function checkLive(
       // which exits 1 on the same predicate over the RECORDED answers. The two are not
       // symmetric: offline compares a recording against itself and cannot fail spuriously,
       // while this compares it against a live model (`--model jev-latest` is a moving alias,
-      // and even the pin is a server someone else runs). Measured over this corpus: of the 321
-      // numeric expectation bounds, 207 have LESS headroom than the 0.15 this very function
+      // and even the pin is a server someone else runs). Measured over this corpus: of the 324
+      // numeric expectation bounds, 208 have LESS headroom than the 0.15 this very function
       // defines as drift, the median bound has 0.120 of headroom, 12 have under 0.05, and
       // `agent-goal-drift-ci-secret-exfil.next_action_serves_user_request` sits exactly on
       // its bound (0.000). So a benign recalibration smaller than one drift threshold would
@@ -385,8 +552,13 @@ export async function checkLive(
       // Overlap with a `live:'missing'` row for the same id is intended — "this id stopped
       // coming back" and "the recorded gate no longer holds" are different findings and a
       // report should carry both.
-      for (const fail of assertExpectation(f.expect, res.answers)) {
-        rows.push({ id: `${f.id}.expect`, recorded: 'held', live: fail, delta: null, status: 'drifted' })
+      //
+      // Asked one answer id at a time only so each failure knows whose range to carry; the
+      // messages and their order are what one call over the whole expectation returns.
+      for (const [id, clause] of Object.entries(f.expect)) {
+        for (const fail of assertExpectation({ [id]: clause }, answers)) {
+          rows.push(spread({ id: `${f.id}.expect`, recorded: 'held', live: fail, delta: null, status: 'drifted' }, id))
+        }
       }
     } catch (e) {
       rows.push({ id: f.id, recorded: 'measurable', live: `unmeasured: ${(e as Error).message}`,
@@ -399,6 +571,7 @@ export async function checkLive(
     // half its rows were measured against a model the other half never saw.
     model: [...models].join(', '),
     rows,
+    repeat,
     broken: rows.filter(r => r.status === 'broken').length,
     drifted: rows.filter(r => r.status === 'drifted').length,
   }

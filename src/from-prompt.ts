@@ -29,11 +29,11 @@ export function buildLiftRequest(source: string, path: string): string {
 
 A Program is:
   { decisions: Decision[], reduce: Reducer, residual: string, dropped: {reason,quote}[] }
-  Decision = { id, kind: 'noul'|'choice'|'score', instructions, criteria?, uncertain?, dependsOn?, source }
+  Decision = { id, kind: 'noul'|'choice'|'score', instructions, criteria?, uncertain?, source }
   Reducer  = { kind:'rules', rules: [{ when: Condition[], then: string }], otherwise: string }
   Condition = {id,op:'gte'|'lte',value:number} | {id,op:'is',value:string} | {id,op:'uncertain'}
 
-RULES — follow all five, but they are not enforced equally. Only rule 1 fails
+RULES — follow all six, but they are not enforced equally. Only rule 1 fails
 validation outright; passing the others is not the bar, a human reading the
 generated decisions and reducer is:
 
@@ -42,13 +42,9 @@ generated decisions and reducer is:
    returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13, while narrow
    evidence questions on the SAME input reached 0.93-0.97. Emit evidence questions
    and put the verdict in \`reduce\`, which is code.
-2. [WARNING only — and only if you declare it] NEVER emit two questions where one's
-   answer determines the other's. Questions are scored independently with no
-   consistency enforced: one measured response asserted rule_conflict=exception_wins
-   (0.52) and decision=deny (0.73) at the same time. This can only be flagged if you
-   name the dependency yourself on the dependent Decision's \`dependsOn\` field — the
-   validator cannot detect an undeclared dependency from text alone, so declare it
-   even though the rule is "never do this."
+2. [NOT CHECKED — nothing flags it] NEVER emit two questions where one's answer
+   determines the other's. Questions are scored independently with no consistency
+   enforced. Ask the resolving question and derive the other in \`reduce\`.
 3. [WARNING only, heuristic] NEVER emit a question spanning two scopes. A compound
    authorization question measured 0.59 — the wrong side of 0.5 — by anchoring on the
    authorized half of a command. Caught by a text heuristic, so it can miss cases or
@@ -62,6 +58,16 @@ generated decisions and reducer is:
    question on the same input hit 0.96/0.87/0.85. Ask only what a pattern cannot
    express. A textual heuristic flags obvious glob tokens but cannot catch every
    phrasing.
+6. [WARNING only, heuristic] Every tie-break or precedence statement in the document
+   survives the lift: "if both...", "prefer X", "X rather than Y", "if unsure / in
+   doubt, ...", "if they disagree, say ask", "an unrelated failure -> escalate". It goes
+   in the \`criteria\` of the question whose options it separates, worded so those
+   options are mutually exclusive (the winning option says it takes precedence, or the
+   losing one excludes the case), or it is rule order in \`reduce\`, which is code. It
+   must never be dropped: two options that both fit the case turn a stated preference
+   into a guess nobody can see. A textual heuristic flags a tie-break sentence that no
+   question and no reducer verdict mentions, only when the document is supplied, and it
+   can both miss a paraphrase and over-flag.
 
 TYPE RULES: score criteria is an ORDERED ARRAY of 2-10 concrete level descriptions, and
 its answer is a level INDEX (0..n-1), not 0..1. choice criteria is a map of 2-255 options.
@@ -113,10 +119,11 @@ Return only the JSON object.`
  * What it must cover is every field something downstream DEREFERENCES — which is
  * not the same set as the fields `validateProgram`/`lintProgram` inspect, and
  * scoping it to those was a bug. What a caller does with a Program is emit it,
- * and the emitters read `criteria`, `uncertain.band`, `dependsOn` and `residual`,
- * none of which the validator's type rules reach on a value that arrived as the
- * wrong type. So the rule here is: if a consumer will index it, call a method on
- * it or iterate it, its type is checked here. Ranges, vocabularies and
+ * and the emitters read `criteria`, `uncertain.band` and `residual`, none of which
+ * the validator's type rules reach on a value that arrived as the wrong type.
+ * `dependsOn` is read by nothing, but `Decision` still declares it an array of ids.
+ * So the rule here is: if a consumer will index it, call a method on it or iterate
+ * it, or the type declares it, its type is checked here. Ranges, vocabularies and
  * per-target capability are NOT — those are `validateProgram`'s and the emit
  * gate's, and duplicating them here would put the same judgement in two places.
  */
@@ -156,7 +163,7 @@ function checkLiftedShape(parsed: unknown, path: string): ValidationIssue[] {
         // question with no text that the reducer still gates a verdict on.
         err(`${at}.instructions`, `Decision "${label}" is missing non-empty string \`instructions\`. The instructions are the question; there is nothing to ask without them.`)
       }
-      // `criteria`, `uncertain` and `dependsOn` are read by the EMITTERS, which are what
+      // `criteria` and `uncertain` are read by the EMITTERS, which are what
       // a caller does with the Program and which `validateProgram`/`lintProgram` do not
       // stand in for. Measured: a `choice` citing `criteria: "anything"` returned zero
       // issues and emitted a TypeScript artifact offering the options
@@ -178,8 +185,8 @@ function checkLiftedShape(parsed: unknown, path: string): ValidationIssue[] {
       }
       if (d.dependsOn !== undefined
           && !(Array.isArray(d.dependsOn) && d.dependsOn.every(x => typeof x === 'string'))) {
-        // A bare string is iterable, so `dependsOn: "other"` linted as five separate
-        // dependencies on "o", "t", "h", "e" and "r" — a diagnostic about nothing.
+        // Nothing reads it now, but `Decision` types it as ids: a bare `"other"` would
+        // iterate as five one-letter ids for the next caller that does.
         err(`${at}.dependsOn`, `Decision "${label}" has a \`dependsOn\` that is not an array of decision ids.`)
       }
       if (d.source !== undefined) {
@@ -397,7 +404,7 @@ export function parseLiftResponse(
   // check `criteria` or `dependsOn`). Anything that slips past it becomes a
   // reportable issue instead of an uncaught throw.
   try {
-    issues.push(...validateProgram(program), ...lintProgram(program))
+    issues.push(...validateProgram(program), ...lintProgram(program, source))
   } catch (e) {
     issues.push({ code: 'lift_malformed', path, severity: 'error',
       message: `Lifted output passed shape checks but crashed validation: ${(e as Error).message}` })

@@ -61,7 +61,7 @@ describe('fixture corpus', () => {
     }
   })
 
-  it('no expectation asserts exact equality — answers drift +/-0.01', () => {
+  it('no expectation asserts exact equality — identical calls do not return identical answers', () => {
     for (const f of fixtures) {
       for (const clause of Object.values(f.expect)) {
         expect(Object.keys(clause), `${f.id}`).not.toContain('noul_eq')
@@ -79,24 +79,40 @@ describe('fixture corpus', () => {
     }
   })
 
+  // Every clause of these three kinds in the corpus, not one fixture's: a re-record may drop a
+  // clause from any one fixture (scripts/rerecord.ts rewrites expect), and a test hard-wired to
+  // it would then prove nothing or fail. Each kind is also pinned on its own under
+  // assertExpectation below, so the corpus losing every clause of a kind loses no coverage.
   it('choice_in, prob_lte and confidence_lte actually gate — perturbing the recorded answer fails', () => {
-    const f = fixtures.find(f => f.id === 'reread-file-or-trust-stale-context-after-git-pull')
-    if (!f) throw new Error('fixture not found')
-
-    // choice_in: the recorded choice is in {reread_targeted_range, reread_full}; move it out.
-    const wrongChoice = JSON.parse(JSON.stringify(f.measured.answers)) as Record<string, JevAnswer>
-    ;(wrongChoice.action as { choice: string }).choice = 'trust_context'
-    expect(assertExpectation(f.expect, wrongChoice)).not.toEqual([])
-
-    // prob_lte: trust_context must stay <= 0.1; recorded is 0.03 — push it over.
-    const highProb = JSON.parse(JSON.stringify(f.measured.answers)) as Record<string, JevAnswer>
-    ;(highProb.action as { probabilities: Record<string, number> }).probabilities.trust_context = 0.5
-    expect(assertExpectation(f.expect, highProb)).not.toEqual([])
-
-    // confidence_lte: must stay <= 0.7; recorded is 0.5 — push it over.
-    const highConfidence = JSON.parse(JSON.stringify(f.measured.answers)) as Record<string, JevAnswer>
-    ;(highConfidence.action as { confidence: number }).confidence = 0.9
-    expect(assertExpectation(f.expect, highConfidence)).not.toEqual([])
+    const copy = (f: Fixture) => JSON.parse(JSON.stringify(f.measured.answers)) as Record<string, JevAnswer>
+    let perturbed = 0
+    for (const f of fixtures) {
+      for (const [id, clause] of Object.entries(f.expect) as Array<[string, Record<string, unknown>]>) {
+        const q = f.questions[id]
+        if (Array.isArray(clause.choice_in) && q?.type === 'choice') {
+          const outside = Object.keys(q.criteria).find(o => !(clause.choice_in as string[]).includes(o))
+          if (outside) {
+            const a = copy(f)
+            ;(a[id] as { choice: string }).choice = outside
+            expect(assertExpectation(f.expect, a), `${f.id}.${id} choice_in`).not.toEqual([])
+            perturbed++
+          }
+        }
+        for (const [k, bound] of Object.entries((clause.prob_lte ?? {}) as Record<string, number>)) {
+          const a = copy(f)
+          ;(a[id] as { probabilities: Record<string, number> }).probabilities[k] = Math.min(1, bound + 0.2)
+          expect(assertExpectation(f.expect, a), `${f.id}.${id} prob_lte ${k}`).not.toEqual([])
+          perturbed++
+        }
+        if (typeof clause.confidence_lte === 'number') {
+          const a = copy(f)
+          ;(a[id] as { confidence: number }).confidence = Math.min(1, clause.confidence_lte + 0.2)
+          expect(assertExpectation(f.expect, a), `${f.id}.${id} confidence_lte`).not.toEqual([])
+          perturbed++
+        }
+      }
+    }
+    expect(perturbed).toBeGreaterThan(0)
   })
 
   it('loadFixtures names the offending file when a domain file has no top-level fixtures array', () => {

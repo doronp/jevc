@@ -38,6 +38,13 @@ describe('examples', () => {
     }
   })
 
+  // The gallery is generated so it cannot drift from the recordings; this is what makes that
+  // true. A fixture edit that skips `npm run gallery` fails here instead of shipping a stale page.
+  it('GALLERY.md is exactly what `npm run gallery` writes from fixtures/', async () => {
+    const { renderGallery } = await import('../src/show.js')
+    expect(readFileSync('examples/GALLERY.md', 'utf8')).toBe(renderGallery(loadFixtures('fixtures')))
+  })
+
   it('the policy example prints a real policy and a real refusal', () => {
     const out = run(TSX, ['examples/04-policy-emit.ts'], { TYPESAFE_API_KEY: '' })
     expect(out).toMatch(/backend: jev/)                     // bouncer accepted it
@@ -83,9 +90,12 @@ describe('README', () => {
     }
   })
 
-  it('cites the calibration split the corpus records', () => {
-    const wrong = corpus.filter(f => f.measured.prediction_held === false).length
-    expect(readme).toMatch(new RegExp(`${wrong} of (the )?${corpus.length}`))
+  // A prediction is a threshold written before any recording of its fixture was seen, so
+  // only the fixtures still on their first recording carry one.
+  it('cites the calibration split over the fixtures still on their first recording', () => {
+    const first = corpus.filter(f => !/^Re-recorded /.test(f.measured.notes ?? ''))
+    const wrong = first.filter(f => f.measured.prediction_held === false).length
+    expect(readme.replace(/\s+/g, ' ')).toContain(`In ${wrong} of ${first.length} at least one was wrong`)
   })
 
   // The remaining README statistics are derived from the corpus rather than copied from a
@@ -124,18 +134,21 @@ describe('README', () => {
     const low = (xs: number[]) => [...xs].sort((x, y) => x - y).slice(0, 3)
     const [v1, v2, v3] = low(verdicts.map(a => a.confidence))
     expect(readme).toContain(`${v1}, ${v2} and ${v3}`)
-    for (const c of low(others.map(a => a.confidence)).slice(0, 2)) {
-      expect(readme, `non-verdict low tail ${c}`).toContain(`measured ${c}`)
+    // Each of the three lowest non-verdict heads is named with its fixture and its own value:
+    // `(?!\d)` so "measured 0.2" cannot be satisfied by a printed 0.24, and the fixture id
+    // within the same sentence so a value cannot be borrowed from another head.
+    const flatReadme = readme.replace(/\s+/g, ' ')
+    const tail = corpus.flatMap(f => Object.values(f.measured.answers).flatMap(a =>
+      a.type === 'choice' && !verdictish(a) ? [{ id: f.id, c: a.confidence }] : []))
+      .sort((x, y) => x.c - y.c).slice(0, 3)
+    expect(tail.every(t => t.c < v2), 'the README says all three sit below the second verdict head').toBe(true)
+    for (const t of tail) {
+      expect(flatReadme, `non-verdict low tail ${t.id} ${t.c}`)
+        .toMatch(new RegExp(`\`${t.id}\`[^.]{0,120}?measured ${String(t.c).replace('.', '\\.')}(?!\\d)`))
     }
-
-    // Latency is flat in question count, quoted as two real bands.
-    const band = (n: number) => {
-      const ms = corpus.filter(f => Object.keys(f.questions).length === n)
-        .map(f => f.measured.latency_ms!).sort((x, y) => x - y)
-      return `${ms.length}|${ms[0]}-${ms.at(-1)}`
-    }
-    expect(readme).toContain(`${band(5).split('|')[0]} fixtures with 5 questions span ${band(5).split('|')[1]} ms`)
-    expect(readme).toContain(`${band(7).split('|')[0]} with 7 questions span ${band(7).split('|')[1]} ms`)
+    const referent = corpus.find(f => f.id === 'agent-command-referent-disambiguation')!.measured.answers.referent_is_ambiguous
+    if (referent.type !== 'noul') throw new Error('fixture shape changed')
+    expect(flatReadme).toContain(`\`referent_is_ambiguous\` ${referent.noul} —`)
   })
 })
 
@@ -238,13 +251,98 @@ describe('README claims recompute from the repo', () => {
       expect(flat).toContain(`at ${per[0]} each, agent harness rules at ${size('agent-harness-rules')}`)
     })
 
-    it('quotes the prediction-vs-measurement split that motivates the corpus', () => {
-      const held = corpus.filter(f => f.measured.prediction_held === true).length
-      const wrong = corpus.filter(f => f.measured.prediction_held === false).length
-      expect(held + wrong, 'some fixture no longer records prediction_held').toBe(corpus.length)
-      expect(flat).toContain(`Only ${held} of the ${corpus.length} predicted thresholds survived`)
-      expect(flat).toContain(`${wrong} of ${corpus.length}`)
-      expect(flat).toContain(`${Math.round((wrong / corpus.length) * 100)}% of the predicted thresholds`)
+    // A threshold is a prediction only if it was written before any recording of its fixture
+    // was seen, so the split counts the fixtures still on their first recording, and the
+    // re-recorded ones are reported apart: kept thresholds that held, and thresholds adjusted
+    // after the call. The staging file the re-record ran from says which thresholds were in
+    // place before the call, so the seven/two split is checked against it, not against verdicts.
+    const reRecordedOn = (f: (typeof corpus)[number]) => /^Re-recorded (\d{4}-\d{2}-\d{2})/.exec(f.measured.notes ?? '')?.[1]
+    const first = corpus.filter(f => !reRecordedOn(f))
+    const later = corpus.filter(f => reRecordedOn(f))
+    const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+    const cap = (w: string) => w[0].toUpperCase() + w.slice(1)
+
+    it('counts the fixtures on each recording date', () => {
+      expect(new Set(later.map(reRecordedOn))).toEqual(new Set(['2026-09-30']))
+      expect(flat).toContain(`${cap(words[later.length])} were re-recorded on 2026-09-30, after their questions were fixed, so ${first.length} are still on their 2026-09-18 recording`)
+    })
+
+    it('quotes the prediction-vs-measurement split over the first recording only', () => {
+      const held = first.filter(f => f.measured.prediction_held === true).length
+      const wrong = first.filter(f => f.measured.prediction_held === false).length
+      expect(held + wrong, 'some fixture no longer records prediction_held').toBe(first.length)
+      // prediction_held is per fixture, and a fixture can hold several thresholds: every count
+      // and percentage here is of fixtures, never of thresholds.
+      expect(flat).toContain(`**Of the ${first.length} fixtures still on their 2026-09-18 recording, only ${held} had predicted thresholds that all survived`)
+      expect(flat).toContain(`In ${wrong} of ${first.length} at least one was wrong**`)
+      expect(flat).toContain(`That is ${Math.round((wrong / first.length) * 100)}% of those fixtures with a wrong predicted threshold`)
+      expect(flat).not.toMatch(/% of the predicted thresholds/)
+      expect(flat).not.toMatch(new RegExp(`of (the )?${corpus.length} predicted thresholds`))
+    })
+
+    it('reports the re-recorded fixtures apart, split by whether their thresholds came before the call', () => {
+      const staged = JSON.parse(readFileSync('fixtures-staging/2026-09-30.json', 'utf8')) as { entries: Array<{ id: string; expect: unknown }> }
+      expect(staged.entries.map(e => e.id).sort()).toEqual(later.map(f => f.id).sort())
+      const kept = later.filter(f => JSON.stringify(f.expect) === JSON.stringify(staged.entries.find(e => e.id === f.id)!.expect))
+      const adjusted = later.filter(f => !kept.includes(f))
+      // The verdicts agree with the staging file: a kept threshold held, an adjusted one did not.
+      expect(kept.every(f => f.measured.verdict === 'keep')).toBe(true)
+      expect(adjusted.every(f => f.measured.verdict === 'keep-with-adjusted-expectation')).toBe(true)
+      expect(flat).toContain(`The ${words[later.length]} re-recorded fixtures are counted apart`)
+      expect(flat).toContain(`${cap(words[kept.length])} kept the thresholds in place before the 2026-09-30 call and held them unchanged`)
+      expect(adjusted.map(f => f.id).sort()).toEqual(['self-contradicting-rule-file-host-vs-container', 'underspecified-request-clarification-gate'])
+      expect(flat).toContain(`The other ${words[adjusted.length]}, \`${adjusted[0].id}\` and \`${adjusted[1].id}\`, had their thresholds adjusted after the call.`)
+      expect(flat).not.toContain('with thresholds written before that call')
+    })
+
+    // The design doc and the changelog make the same split; recompute it there too.
+    it('quotes the same split in docs/design.md and the changelog', () => {
+      const held = first.filter(f => f.measured.prediction_held === true).length
+      const wrong = first.length - held
+      const kept = later.filter(f => f.measured.verdict === 'keep').length
+      const design = readFileSync('docs/design.md', 'utf8').replace(/\s+/g, ' ')
+      expect(design).toContain(`${first.length} are still on their 2026-09-18 recording; ${words[later.length]} were re-recorded on 2026-09-30`)
+      expect(design).toContain(`only the ${first.length} measure prediction: of those, only **${held} of ${first.length}** had predicted thresholds`)
+      expect(design).toContain(`the other ${wrong} were recalibrated to measured values`)
+      expect(design).toContain(`${Math.round((wrong / first.length) * 100)}% of those fixtures would have encoded fiction`)
+      expect(design).toContain(`Of the ${words[later.length]} re-recorded fixtures, ${words[kept]} held the thresholds`)
+      expect(design).toContain(`the other ${words[later.length - kept]} had their thresholds adjusted after the call`)
+      expect(design).not.toMatch(new RegExp(`\\*\\*\\d+ of ${corpus.length}\\*\\* predicted`))
+      const changelog = readFileSync('CHANGELOG.md', 'utf8').replace(/\s+/g, ' ')
+      expect(changelog).toContain(`covers the ${first.length} fixtures still on their 2026-09-18 recording (${held} held, ${wrong} wrong`)
+      expect(changelog).toContain(`the ${words[later.length]} re-recorded are reported apart`)
+    })
+
+    // The decomposition-law claim at the top of the file: which choice head, across every
+    // recorded choice answer (not only the argmax equalities), has the narrowest margin.
+    it('names the one choice head with a narrower margin than the collapsed verdict question', () => {
+      const all = corpus.flatMap(f => Object.entries(f.measured.answers).flatMap(([id, a]) => {
+        if (a.type !== 'choice') return []
+        const [p1, p2 = 0] = Object.values(a.probabilities).sort((x, y) => y - x)
+        return [{ fixture: f.id, id, p1, p2, margin: Number((p1 - p2).toFixed(10)) }]
+      })).sort((x, y) => x.margin - y.margin)
+      const verdict = all.find(h => h.fixture === 'bash-rm-rf-node-modules-benign' && h.id === 'decision')!
+      const narrower = all.filter(h => h.margin < verdict.margin)
+      expect(narrower).toHaveLength(1)
+      const [n] = narrower
+      expect(flat).toContain(`The verdict head put \`allow\` ${verdict.margin} ahead of \`block\``)
+      expect(flat).toContain(`Only one choice head in the corpus has a narrower winner/runner-up margin: \`${n.id}\` in \`${n.fixture}\`, ${n.p1} against ${n.p2}, a margin of ${n.margin}`)
+      expect(flat).not.toContain('the smallest winner/runner-up margin anywhere in the corpus')
+      expect(readFileSync('CHANGELOG.md', 'utf8').replace(/\s+/g, ' '))
+        .toContain(`\`${n.id}\` in \`${n.fixture}\` is ${n.margin}`)
+    })
+
+    // The corpus records one call per fixture, so nothing in it measures how far an answer
+    // moves between identical calls; no doc may claim a size or a stability for that movement.
+    // `jevc --help` (src/cli.ts) and the comments beside `--repeat` (src/check.ts) included.
+    it('makes no claim about call-to-call movement the corpus does not record', () => {
+      const docs = ['README.md', 'docs/design.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'src/cli.ts', 'src/check.ts']
+        .map(p => [p, readFileSync(p, 'utf8').replace(/\s*\*\s+|\s*\/\/\s*|\s+/g, ' ')] as const)
+      for (const [p, text] of docs) {
+        expect(text, p).not.toMatch(/move (only )?slightly|move[s]? (much )?further|move far more|far more than (the next|its neighbours|the rest)|stable assertion|measured property of the model|±0\.01 across|a third of the time/)
+      }
+      expect(flat).toContain('the corpus records one call per fixture, so it does not measure how far an answer moves')
+      expect(flat).toContain('`jevc check --live --repeat <n>` measures that')
     })
 
     it('quotes the verdict-head tail, using the linter\'s own predicate', () => {
@@ -328,13 +426,34 @@ describe('README claims recompute from the repo', () => {
     // is allowed to record it exactly once and only where a reader has already been told
     // what it is worth. Anything above that footnote reads as a spec, so nothing above it
     // may quote a millisecond at all.
-    it('keeps latency out of the body, in one footnote, quoted unrounded', () => {
-      const ms = corpus.map(x => x.measured.latency_ms!).sort((a, b) => a - b)
+    // Two batches on two days do not compare, so each is quoted on its own and the
+    // question-count bands stay inside the first.
+    it('keeps latency out of the body, in one footnote, quoted unrounded and per batch', () => {
+      const later = (x: (typeof corpus)[number]) => /^Re-recorded /.test(x.measured.notes ?? '')
+      const ms = (xs: typeof corpus) => xs.map(x => x.measured.latency_ms!).sort((a, b) => a - b)
+      const first = ms(corpus.filter(x => !later(x)))
+      const second = ms(corpus.filter(later))
       const cut = readme.lastIndexOf('\\* *Latency')
       expect(cut, 'the latency footnote moved or was deleted').toBeGreaterThan(-1)
       const footnote = readme.slice(cut).replace(/\s+/g, ' ')
-      expect(footnote).toContain(`min ${ms[0]} ms, median ${median(ms)} ms, max ${ms.at(-1)} ms`)
+      expect(footnote).toContain(`The ${first.length} calls on 2026-09-18 came back in min ${first[0]} ms, median ${median(first)} ms, max ${first.at(-1)} ms`)
+      expect(footnote).toContain(`the nine re-recorded on 2026-09-30 in min ${second[0]} ms, median ${median(second)} ms, max ${second.at(-1)} ms`)
+      expect(second).toHaveLength(9)
+      expect(footnote).toContain(`and eight of the nine were faster than the fastest 2026-09-18 call`)
+      expect(second.filter(x => x < first[0])).toHaveLength(8)
       expect(readme.slice(0, cut), 'a latency escaped into the body').not.toMatch(/\d\s?ms\b/)
+
+      // The 2026-09-18 maximum was the first fixture of its domain file, the order it was run in.
+      const slowest = corpus.filter(x => !later(x)).reduce((a, b) => (b.measured.latency_ms! > a.measured.latency_ms! ? b : a))
+      expect(corpus.find(x => x.domain === slowest.domain)!.id).toBe(slowest.id)
+      expect(footnote).toContain('Its maximum was the first call of its domain\'s run')
+
+      // Latency against question count, inside the 2026-09-18 batch only.
+      const band = (n: number) => ms(corpus.filter(x => !later(x) && Object.keys(x.questions).length === n))
+      const [five, seven] = [band(5), band(7)]
+      expect(footnote).toContain(`the ${five.length} fixtures with 5 questions span ${five[0]}-${five.at(-1)} ms`)
+      expect(footnote).toContain(`the ${seven.length} with 7 questions span ${seven[0]}-${seven.at(-1)} ms, ${seven[0]}-${seven.at(-2)} ms without that first call`)
+      expect(seven.at(-1)).toBe(first.at(-1))
     })
   })
 
@@ -355,9 +474,14 @@ describe('README claims recompute from the repo', () => {
       expect(from, 'lintProgram moved').toBeGreaterThan(-1)
       expect(to, 'uncertaintyOf moved — the slice below is no longer lintProgram alone').toBeGreaterThan(from)
       const codes = new Set([...ir.slice(from, to).matchAll(/code: '([a-z_]+)'/g)].map(m => m[1]))
-      const word = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'][codes.size]
+      const words = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
+      const word = words[codes.size]
       expect(word, `lintProgram runs ${codes.size} checks — past the end of the number words here`).toBeTruthy()
-      expect(flat).toContain(`three of the ${word} checks it runs`)
+      // The README names two in the decomposition law and the rest further down; AGENTS.md
+      // states the total.
+      expect(flat).toContain(`two of the ${word} checks it runs`)
+      expect(flat).toContain(`the other ${words[codes.size - 2]} checks \`lintProgram\` runs`)
+      expect(readFileSync('AGENTS.md', 'utf8')).toContain(`\`lintProgram\` — ${word} checks`)
     })
   })
 

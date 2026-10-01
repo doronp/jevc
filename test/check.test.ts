@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { assertExpectation, checkLive, diffFixture, liveOptions, liveSummary, loadFixtures } from '../src/check.js'
+import { assertExpectation, checkLive, diffFixture, liveOptions, liveSummary, loadFixtures, MAX_REPEAT } from '../src/check.js'
 import type { Expectation, Fixture } from '../src/check.js'
 import type { JevAnswer, JevQuestion } from '../src/contract.js'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
@@ -331,7 +331,7 @@ describe('checkLive — which model answered', () => {
     expect(report.model).toBe('jev-1.13.0, jev-1.14.0')
   })
 
-  // E0 item 2. askModel now reports a response from outside the pin as `model_unexpected`;
+  // askModel now reports a response from outside the pin as `model_unexpected`;
   // checkLive read none of res.issues, so a whole run answered by something that is not Jev
   // would have diffed as ordinary drift. One row per fixture, on the fixture that saw it.
   it('reports a fixture answered by a model that is not Jev as broken, and keeps diffing', async () => {
@@ -414,7 +414,7 @@ describe('liveSummary', () => {
   })
 })
 
-// E0 item 3. cli.ts runs on import, so `liveOptions` is the seam: the CLI builds checkLive's
+// cli.ts runs on import, so `liveOptions` is the seam: the CLI builds checkLive's
 // options with it, and these tests hand its result to checkLive exactly as the CLI does, with
 // a stub client in place of the network.
 describe('liveOptions — `check --live --model <id> --threshold <n>`', () => {
@@ -474,5 +474,252 @@ describe('checkLive — the 58-fixture corpus replayed against itself', () => {
     const noisy = report.rows.filter(r => r.status !== 'stable')
     expect(noisy, noisy.map(r => `${r.id} ${r.status} ${r.live}`).join('\n')).toEqual([])
     expect(report.rows).toHaveLength(corpus.reduce((n, f) => n + Object.keys(f.measured.answers).length, 0))
+  })
+})
+
+// `check --live --repeat N`. Identical calls are not guaranteed to return identical answers,
+// so one call can raise a drift row that the next call would not. With N > 1 each fixture is asked N times and the per-value MEDIAN is what
+// diffFixture and the recorded bands see; the min..max across the N rides along on the row.
+describe('checkLive --repeat — the median of N calls is what gets diffed', () => {
+  // askModel reads JEVC_ALLOW_MODEL per call; the model-guard cases below assume it is unset.
+  const saved = process.env.JEVC_ALLOW_MODEL
+  beforeEach(() => { delete process.env.JEVC_ALLOW_MODEL })
+  afterEach(() => {
+    if (saved === undefined) delete process.env.JEVC_ALLOW_MODEL
+    else process.env.JEVC_ALLOW_MODEL = saved
+  })
+
+  /** The i-th reply answers the i-th request, and every request's state is kept, so a test
+   * can count the calls and see which fixture each one was for. */
+  const sequence = (replies: unknown[]) => {
+    const states: string[] = []
+    const client = { systemOne: async (req: { state: unknown }) => {
+      states.push(String(req.state))
+      const r = replies[states.length - 1]
+      if (r === undefined) throw new Error('more requests than stubbed replies')
+      if (r instanceof Error) throw r
+      return r
+    } } as unknown as TypeSafeClient
+    return { client, states }
+  }
+  const nouls = (...ns: number[]) => ns.map(n => wire({ destructive: noul(n) }))
+  /** A choice with BOTH options in its probability map, the way the API returns one. */
+  const two = (reread: number, trust: number, confidence: number): JevAnswer => ({ type: 'choice',
+    choice: reread >= trust ? 'reread_full' : 'trust_context',
+    probabilities: { reread_full: reread, trust_context: trust }, confidence })
+
+  it('asks every fixture N times, one fixture after another', async () => {
+    const fs = ['f1', 'f2'].map(id => fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const { client, states } = sequence(nouls(0.9, 0.9, 0.9, 0.9, 0.9, 0.9))
+    const report = await checkLive(fs, { client, repeat: 3 })
+    expect(states).toEqual(['state for f1', 'state for f1', 'state for f1',
+      'state for f2', 'state for f2', 'state for f2'])
+    expect(report.rows.map(r => [r.id, r.status])).toEqual([['f1.destructive', 'stable'], ['f2.destructive', 'stable']])
+    expect(report.repeat).toBe(3)
+  })
+
+  it('does not flag a single outlier among five, which one call on its own would', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) },
+      { destructive: { noul_gte: 0.8 } })
+    const five = await checkLive([f], { client: sequence(nouls(0.9, 0.91, 0.3, 0.89, 0.9)).client, repeat: 5 })
+    expect(five.rows).toEqual([{ id: 'f1.destructive', recorded: 0.9, live: 0.9, delta: 0,
+      status: 'stable', range: '0.3..0.91' }])
+    expect(five).toMatchObject({ drifted: 0, broken: 0 })
+    // The same outlier as the only sample: a drift row and a crossed band, both false alarms.
+    const one = await checkLive([f], { client: sequence(nouls(0.3)).client })
+    expect(one).toMatchObject({ drifted: 2, broken: 0 })
+  })
+
+  it('flags a consistent shift, and shows the spread on the drift row and the band row', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) },
+      { destructive: { noul_gte: 0.8 } })
+    const report = await checkLive([f], { client: sequence(nouls(0.6, 0.62, 0.58, 0.61, 0.95)).client, repeat: 5 })
+    expect(report.rows).toEqual([
+      { id: 'f1.destructive', recorded: 0.9, live: 0.61, delta: expect.closeTo(0.29, 5), status: 'drifted', range: '0.58..0.95' },
+      { id: 'f1.expect', recorded: 'held', live: 'destructive: noul 0.61 < 0.8', delta: null, status: 'drifted', range: '0.58..0.95' },
+    ])
+  })
+
+  it('takes a choice\'s median per option, its winner from the argmax of those medians, and its median confidence', async () => {
+    const f = fixture('f1', { action: Q.action }, { action: two(0.9, 0.1, 0.9) })
+    const replies = (answers: JevAnswer[]) => answers.map(a => wire({ action: a }))
+    // One call of five flipped to the other option: the medians still favour reread_full.
+    const outlier = await checkLive([f], { repeat: 5, client: sequence(replies([
+      two(0.9, 0.1, 0.9), two(0.88, 0.12, 0.92), two(0.2, 0.8, 0.6), two(0.91, 0.09, 0.91), two(0.89, 0.11, 0.89),
+    ])).client })
+    expect(outlier.rows).toEqual([{ id: 'f1.action', recorded: 'reread_full@0.9', live: 'reread_full@0.9',
+      delta: 0, status: 'stable', range: 'reread_full|trust_context@0.6..0.92' }])
+    // Three of five flipped: the argmax of the medians is trust_context, so the winner moved.
+    const flipped = await checkLive([f], { repeat: 5, client: sequence(replies([
+      two(0.3, 0.7, 0.9), two(0.88, 0.12, 0.92), two(0.2, 0.8, 0.9), two(0.25, 0.75, 0.91), two(0.89, 0.11, 0.89),
+    ])).client })
+    expect(flipped.rows).toEqual([{ id: 'f1.action', recorded: 'reread_full@0.9', live: 'trust_context@0.9',
+      delta: 0, status: 'drifted', range: 'trust_context|reread_full@0.89..0.92' }])
+  })
+
+  // Two calls that each name a different winner at mirrored odds tie exactly on the medians.
+  // Neither call's JSON key order may pick the winner: the order reverses nothing in the data.
+  it('breaks an exact median tie the same way whatever order the calls came back in', async () => {
+    const readFirst = two(0.55, 0.45, 0.9)
+    const trustFirst: JevAnswer = { type: 'choice', choice: 'trust_context',
+      probabilities: { trust_context: 0.55, reread_full: 0.45 }, confidence: 0.9 }
+    for (const recorded of [two(0.9, 0.1, 0.9), two(0.1, 0.9, 0.9)]) {
+      const f = fixture('f1', { action: Q.action }, { action: recorded })
+      const lives = await Promise.all([[readFirst, trustFirst], [trustFirst, readFirst]].map(async order =>
+        (await checkLive([f], { repeat: 2, client: sequence(order.map(a => wire({ action: a }))).client })).rows[0]!.live))
+      // Each option was named by one call of two, so the tie goes to the recorded choice.
+      expect(lives, JSON.stringify(recorded)).toEqual([0, 1].map(() => `${(recorded as { choice: string }).choice}@0.9`))
+    }
+  })
+
+  /** Three options, the shape of the corpus's allow/ask/deny heads. */
+  const gate: JevQuestion = { type: 'choice', instructions: 'Which verdict?', criteria: { allow: null, ask: null, deny: null } }
+  const three = (named: string, allow: number, ask: number, deny: number): JevAnswer =>
+    ({ type: 'choice', choice: named, probabilities: { allow, ask, deny }, confidence: 0.6 })
+
+  // With three options the per-option medians can peak on an option no call chose: the calls
+  // split between allow and ask, while deny keeps steady middling mass in every one of them.
+  it('lets only an option some call named win, however high the median of another', async () => {
+    const f = fixture('f1', { verdict: gate }, { verdict: three('allow', 0.5, 0.05, 0.45) },
+      { verdict: { choice_in: ['allow', 'ask'] } })
+    const report = await checkLive([f], { repeat: 3, client: sequence([
+      three('allow', 0.5, 0.05, 0.45), three('ask', 0.05, 0.5, 0.45), three('allow', 0.34, 0.33, 0.33),
+    ].map(a => wire({ verdict: a }))).client })
+    // Medians: allow 0.34, ask 0.33, deny 0.45. Every call held the band; deny was never named.
+    expect(report.rows).toEqual([{ id: 'f1.verdict', recorded: 'allow@0.6', live: 'allow@0.6',
+      delta: 0, status: 'stable', range: 'allow|ask@0.6..0.6' }])
+    expect(report).toMatchObject({ drifted: 0, broken: 0 })
+  })
+
+  // An even N takes the mean of the middle two, so a tie exact on paper can differ in the last
+  // bit: (0.28 + 0.33) / 2 is 0.30500000000000005, while (0.15 + 0.46) / 2 is 0.305.
+  it('treats medians a rounding error apart as a tie, and gives it to the option more calls named', async () => {
+    const calls = [three('ask', 0.28, 0.6, 0.12), three('allow', 0.51, 0.34, 0.15),
+      three('deny', 0.13, 0.19, 0.68), three('deny', 0.33, 0.21, 0.46)]
+    // deny was named twice and allow once, so deny wins whichever of the two was recorded.
+    for (const recorded of ['allow', 'deny']) {
+      const f = fixture('f1', { verdict: gate }, { verdict: three(recorded, 0.4, 0.2, 0.4) })
+      const report = await checkLive([f], { repeat: 4, client: sequence(calls.map(a => wire({ verdict: a }))).client })
+      expect(report.rows[0]!.live, recorded).toBe('deny@0.6')
+    }
+  })
+
+  // One call alone is read by its named choice, so the same payload at N > 1 must not turn a
+  // missing probability map into a choice of `undefined`, a broken row one call never gives.
+  it('falls back to the named choices when no probability key survives the median', async () => {
+    const f = fixture('f1', { action: Q.action }, { action: two(0.2, 0.8, 0.8) })
+    const bare = { type: 'choice', choice: 'trust_context', confidence: 0.8 } as unknown as JevAnswer
+    const report = await checkLive([f], { repeat: 3, client: sequence(
+      [two(0.2, 0.8, 0.8), bare, two(0.3, 0.7, 0.8)].map(a => wire({ action: a }))).client })
+    expect(report.rows.map(r => [r.id, r.status, r.live])).toEqual([['f1.action', 'stable', 'trust_context@0.8']])
+  })
+
+  it('takes a score\'s median level and median confidence', async () => {
+    const f = fixture('f1', { radius: Q.radius }, { radius: score(2, 0.97) })
+    const report = await checkLive([f], { repeat: 5, client: sequence(
+      [score(2, 0.97), score(2, 0.95), score(0, 0.3), score(2, 0.96), score(1.9, 0.97)].map(a => wire({ radius: a })),
+    ).client })
+    expect(report.rows).toEqual([{ id: 'f1.radius', recorded: '2@0.97', live: '2@0.96',
+      delta: expect.closeTo(0.01, 5), status: 'stable', range: '0..2@0.3..0.97' }])
+  })
+
+  it('runs the model guard on every one of the N responses, one row per answerer', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    const answeredBy = (...models: string[]) => models.map(model => ({ ...wire({ destructive: noul(0.9) }), model }))
+    // A stranger on the second call of three is still caught, and fails the run.
+    const middle = await checkLive([f], { repeat: 3, client: sequence(answeredBy('jev-1.13.0', 'laya-rl-agent', 'jev-1.13.0')).client })
+    expect(middle.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'laya-rl-agent', delta: null, status: 'broken' },
+    ])
+    expect(middle.model).toBe('jev-1.13.0, laya-rl-agent')
+    // The same build three times is one finding, not three.
+    const bumped = await checkLive([f], { repeat: 3, client: sequence(answeredBy('jev-1.14.0', 'jev-1.14.0', 'jev-1.14.0')).client })
+    expect(bumped.rows.filter(r => r.status !== 'stable')).toEqual([
+      { id: 'f1.model', recorded: 'jev-1.13.0', live: 'jev-1.14.0', delta: null, status: 'drifted' },
+    ])
+  })
+
+  it('does not let a median average away a structural fault in one of the N calls', async () => {
+    const f = fixture('f1', { destructive: Q.destructive, action: Q.action, radius: Q.radius },
+      { destructive: noul(0.9), action: two(0.9, 0.1, 0.9), radius: score(2, 0.97) })
+    const ok = { destructive: noul(0.9), action: two(0.9, 0.1, 0.9), radius: score(2, 0.97) }
+    const report = await checkLive([f], { repeat: 3, client: sequence([
+      wire(ok),
+      // Second call: destructive vanished, action came back as a noul, radius has no score,
+      // and an id nobody asked for appeared.
+      wire({ action: noul(0.9), radius: { type: 'score', legend: {}, probabilities: {}, confidence: 0.9 } as unknown as JevAnswer,
+        extra: noul(0.5) }),
+      wire(ok),
+    ]).client })
+    expect(report.rows.map(r => [r.id, r.status, r.live])).toEqual([
+      ['f1.action', 'broken', 'noul'],
+      ['f1.radius', 'broken', 'undefined@0.9'],
+      ['f1.extra', 'broken', 'new'],
+      ['f1.destructive', 'broken', 'missing'],
+    ])
+    expect(report.broken).toBe(4)
+  })
+
+  it('costs the fixture, not the run, when one of its N calls fails', async () => {
+    const fs = ['f1', 'f2'].map(id => fixture(id, { destructive: Q.destructive }, { destructive: noul(0.9) }))
+    const { client, states } = sequence([...nouls(0.9), new Error('503 upstream unavailable'), ...nouls(0.9, 0.9, 0.9)])
+    const report = await checkLive(fs, { client, repeat: 3 })
+    expect(states).toEqual(['state for f1', 'state for f1', 'state for f2', 'state for f2', 'state for f2'])
+    expect(report.rows).toEqual([
+      { id: 'f1', recorded: 'measurable', live: 'unmeasured: 503 upstream unavailable', delta: null, status: 'broken' },
+      { id: 'f2.destructive', recorded: 0.9, live: 0.9, delta: 0, status: 'stable', range: '0.9..0.9' },
+    ])
+  })
+
+  // checkLive is public, so a caller can reach it without liveOptions. A count of 0 or NaN
+  // used to run no call at all and report every answer `missing`, and 2.5 ran three calls.
+  it('refuses a repeat that is not a whole number from 1 to MAX_REPEAT, before any call', async () => {
+    const f = fixture('f1', { destructive: Q.destructive }, { destructive: noul(0.9) })
+    for (const repeat of [0, -1, 2.5, NaN, Infinity, MAX_REPEAT + 1, '3' as unknown as number]) {
+      const { client, states } = sequence(nouls(0.9, 0.9, 0.9))
+      await expect(checkLive([f], { client, repeat }), String(repeat))
+        .rejects.toThrow(`repeat must be a whole number from 1 to ${MAX_REPEAT}`)
+      expect(states, String(repeat)).toHaveLength(0)
+    }
+  })
+
+  it('leaves the default path — one call, its answers diffed as they came — exactly as it was', async () => {
+    // A reply whose `choice` is not the argmax of its own probabilities: a median would
+    // recompute the winner, one call must report what the API said. No `range` either.
+    const f = fixture('f1', { action: Q.action }, { action: two(0.9, 0.1, 0.9) })
+    const odd: JevAnswer = { type: 'choice', choice: 'trust_context', probabilities: { reread_full: 0.9, trust_context: 0.1 }, confidence: 0.9 }
+    for (const opts of [{}, { repeat: 1 }]) {
+      const report = await checkLive([f], { ...opts, client: sequence([wire({ action: odd })]).client })
+      expect(report.rows).toEqual([{ id: 'f1.action', recorded: 'reread_full@0.9', live: 'trust_context@0.9',
+        delta: 0, status: 'drifted' }])
+      expect(report.rows[0]).not.toHaveProperty('range')
+    }
+  })
+})
+
+describe('liveOptions — `check --live --repeat <n>`', () => {
+  it('accepts a whole number of calls from 1 to MAX_REPEAT', () => {
+    expect(MAX_REPEAT).toBe(10)
+    expect(liveOptions(undefined, undefined, '1')).toEqual({ repeat: 1 })
+    expect(liveOptions(undefined, undefined, '5')).toEqual({ repeat: 5 })
+    expect(liveOptions(undefined, undefined, '10')).toEqual({ repeat: 10 })
+    expect(liveOptions(undefined, undefined, undefined)).toEqual({})
+  })
+
+  it('refuses zero, negatives, fractions, anything above the cap and anything not a number', () => {
+    for (const n of ['0', '-1', '1.5', '11', '100', 'abc', '', ' ', '1e1', '0x5', '+3', '3 ']) {
+      expect(() => liveOptions(undefined, undefined, n), JSON.stringify(n)).toThrow(/--repeat/)
+    }
+  })
+})
+
+describe('liveSummary — with --repeat', () => {
+  const report = { model: 'jev-1.13.0', rows: [], drifted: 1, broken: 2 }
+  it('says the rows are medians when there was more than one call per fixture', () => {
+    expect(liveSummary({ ...report, repeat: 5 }))
+      .toBe('0 rows checked live against "jev-1.13.0", median of 5 calls per fixture: 1 drifted, 2 broken\n')
+  })
+  it('reads as it always did for one call', () => {
+    expect(liveSummary({ ...report, repeat: 1 })).toBe('0 rows checked live against "jev-1.13.0": 1 drifted, 2 broken\n')
   })
 })

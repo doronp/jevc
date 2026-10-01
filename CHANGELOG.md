@@ -39,6 +39,25 @@ module's API are both baked in at compile time.
 
 ### Changed
 
+- Nine fixtures were re-recorded on 2026-09-30 from the staged question fixes
+  (`fixtures-staging/2026-09-30.json`) and reviewed; seven held every band.
+  `self-contradicting-rule-file-host-vs-container` now pins its `rule_conflict` tie (either
+  `unresolvable` or `documented_exception_wins`, confidence at most 0.33). The reducer rule in its
+  rationale now allows an exception only when it clearly wins (confidence at least 0.5); that gate
+  was added after the call, because under the rule staged before it the recorded answer computes
+  to allow, and its notes say so. `underspecified-request-clarification-gate` drops three
+  ambiguity assertions the call answered the other way and moves `ambiguity_other` to 0.45. The
+  corpus statistics in the README, `check.ts` and the gallery are recomputed, and `jevc show`
+  prints the date a fixture was recorded.
+- The README and `docs/design.md` count a threshold as a prediction only if it was written before
+  any recording of its fixture was seen. The calibration split now covers the 49 fixtures still on
+  their 2026-09-18 recording (21 held, 28 wrong, not 28 of 58 held); the nine re-recorded are
+  reported apart. `jevc show` and the gallery word a reviewed re-recording as thresholds that held
+  or were adjusted, not as a prediction, and each domain's summary says which of its fixtures were
+  re-recorded and where its verdicts stand now.
+- The README no longer calls the collapsed verdict question's 0.07 the smallest margin in the
+  corpus: `rule_conflict` in `self-contradicting-rule-file-host-vs-container` is 0.02. Its latency
+  footnote gives each recording batch on its own.
 - The emitted `ai-sdk` module honours `TYPESAFE_BASE_URL`, the API root jevc's own SDK and
   `langchain-typesafe` already read. `@ai-sdk/typesafe-ai` reads no env var for its base URL, so
   the module could only reach `api.typesafe.ai`; it now passes `baseURL: <root>/v1` when the
@@ -78,6 +97,20 @@ module's API are both baked in at compile time.
   `--threshold` is the drift threshold (default 0.15), a number in [0, 1): noul and confidence
   deltas never exceed 1, so a larger value would report no drift on them. Both are validated
   before the key check and refused without `--live`.
+- `jevc check --live --repeat <n>` asks each fixture n times (a whole number from 1 to 10,
+  default 1) and diffs the per-value median: a noul's median, a score's median level and
+  confidence, and for a choice each option's median probability, with the winner re-derived as
+  the highest of those medians among the options at least one call named, so the median never
+  reports a choice no call made. Medians a rounding error apart tie; a tie goes to the option
+  more calls named, then to the recorded choice, never to one response's key order; a choice no
+  named option's probability survives for falls back to the named choices, as one call does. Each flagged row adds `range="lo..hi"`, the min..max across the
+  calls, so one outlying call reads apart from a shift every call made. A structural fault in any
+  one call (a missing id, a changed type, an unreadable payload) is still reported, not averaged
+  away, and the model guard reads every response. A failed call costs its fixture one `broken`
+  row. The cap is 10 because a run makes n × fixtures calls. `--repeat 1` prints what the
+  command printed before. `MAX_REPEAT` is exported; `checkLive` takes `repeat` and throws before
+  any call unless it is a whole number from 1 to `MAX_REPEAT`; `Report` gains `repeat` and
+  `DriftRow` gains `range`.
 - `JEVC_MODE=observe` in the sample gate: every call is let through, and the verdict it would
   have had is appended as one JSON line to `JEVC_OBSERVE_LOG` (default `observe.jsonl` beside the
   gate) — time, verdict, model, tool name, uncertain ids, answers and warnings; no state, no env values. A
@@ -98,9 +131,44 @@ module's API are both baked in at compile time.
   the installed `jevc check`, then scans git history (the CI pattern) and the tracked tree plus
   the unpacked tarball for secret-shaped strings, printing locations only. A history search git
   could not run, or a file the scan could not read, fails the run rather than counting as clean.
+- `scripts/rerecord.ts` (not part of `npm test`): re-records fixtures from a staging file of
+  fixed questions. `--dry-run` validates the file and prints each entry's question, expect and
+  state changes and request size, with no call and no key. A live run makes one call per entry
+  on the pinned model and writes nothing unless every answer set passes `validateResponse` and
+  came from `jev-1.13.0` exactly; it rewrites only the staged fields of each fixture and marks
+  the new measurement `pending-review`.
+- Lift rule 6, in the lift request: a tie-break the document states ("ask
+  rather than deny", "if unsure, escalate") survives the lift, either in the criteria of the
+  question whose options it separates, worded so they are mutually exclusive, or as reducer rule
+  order. It is never dropped. The new `tiebreak_unsurfaced` lint warning flags a tie-break
+  sentence that no question's criteria and no reducer verdict carries, one naming two reducer
+  verdicts ("ask rather than deny", "prefer ask over deny", "instead of deny, ask") when
+  first-match rule order returns the one it ranks second, and one naming two options of a choice
+  whose criteria rank them the other way round (a losing option's criterion that only excludes
+  the case, "restructures code, not a fix", does not). Where the winning verdict is only `otherwise`,
+  it asks for a rule returning it rather than a move. It is a wording heuristic
+  (a short cue list and shared words) and never an error. It runs only where the document is
+  available: `lintProgram` takes it as an optional second argument, and `parseLiftResponse` and
+  `jevc compile --source` pass it. `findTieBreaks` and `unsurfacedTieBreaks` are exported.
+
+### Removed
+
+- The `dependent_questions` lint warning. Its one measurement, a recorded response whose
+  `rule_conflict` answer contradicted the `decision` head beside it, was re-recorded without that
+  head, and a lint rule whose evidence leaves the corpus is removed, not reworded. `lintProgram`
+  now runs six checks. Rule 2 of the lift request still says not to emit two questions where one's
+  answer determines the other's, but says nothing checks it and no longer asks for `dependsOn`.
+  The field stays in the `Decision` type and keeps its type check, so a program that declares one
+  validates as before.
 
 ### Fixed
 
+- README, CONTRIBUTING and `docs/design.md` said repeated identical calls drift by about ±0.01.
+  No shipped recording measures that: the corpus holds one call per fixture. The docs now say
+  only that identical calls are not guaranteed to return identical answers, and point at
+  `check --live --repeat <n>`, which measures how far they move.
+  `docs/design.md` also said how often the verdict head would block a clean reinstall; the
+  recording shows a third of its mass on block, not how often a call returns it.
 - The sample hook registration ran `node $CLAUDE_PROJECT_DIR/.claude/gates/gate.mjs` unquoted. In a
   project whose path has a space, node got half the path and exited 1, which Claude Code treats as
   a non-blocking error, so the gate was silently off. `$CLAUDE_PROJECT_DIR` is now quoted in

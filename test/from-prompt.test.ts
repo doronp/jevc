@@ -17,13 +17,30 @@ describe('buildLiftRequest', () => {
   it('demands provenance on every decision', () => {
     expect(buildLiftRequest(AGENTS, 'AGENTS.md')).toMatch(/source.*line/i)
   })
-  it('tells the agent about `dependsOn`, since it is the only way rule 2 can fire', () => {
-    expect(buildLiftRequest(AGENTS, 'AGENTS.md')).toContain('dependsOn')
+  // No lint check reads a declared dependency any more, so asking the agent to declare one
+  // would promise a warning nothing raises.
+  it('says rule 2 is not checked, and does not ask for `dependsOn`', () => {
+    const req = buildLiftRequest(AGENTS, 'AGENTS.md')
+    expect(req).toMatch(/^2\. \[NOT CHECKED — nothing flags it\] NEVER emit two questions/m)
+    expect(req).not.toContain('dependsOn')
   })
   it('does not overclaim enforcement: only the verdict rule is a hard error, the rest warn', () => {
     const req = buildLiftRequest(AGENTS, 'AGENTS.md')
     expect(req).toMatch(/hard error/i)
     expect(req).toMatch(/warning/i)
+  })
+
+  // A tie-break ("ask rather than deny") is the sentence that says which of two
+  // overlapping options wins. Lifted into options that both fit the case, it is gone, and
+  // nothing downstream can tell it was ever there. The count is pinned because the header
+  // says "follow all N": a sixth rule under a header that says five is a rule a model may
+  // treat as optional.
+  it('keeps every tie-break, and says honestly that only a heuristic warns about it', () => {
+    const req = buildLiftRequest(AGENTS, 'AGENTS.md')
+    expect(req).toMatch(/follow all six/)
+    expect(req).toMatch(/^6\. \[WARNING only, heuristic\].*tie-break/m)
+    expect(req).toMatch(/mutually exclusive/)
+    expect(req).toMatch(/never be dropped/)
   })
 
   // The source is an untrusted instruction file: it can contain the fence line
@@ -348,7 +365,7 @@ describe('the shape guard covers what the emitters dereference, not just the val
     ['a score with an ordered level array', { kind: 'score', criteria: ['none', 'some', 'a lot'] }],
     ['a noul with a band inside 0..1', { uncertain: { band: [0.35, 0.65] } }],
     ['a choice with belowConfidence', { kind: 'choice', criteria: { yes: 'y', no: 'n' }, uncertain: { belowConfidence: 0.6 } }],
-    ['a declared dependency', { dependsOn: ['other_question'] }],
+    ['a declared dependency, which earlier lift requests asked for', { dependsOn: ['other_question'] }],
     ['no optional fields at all', {}],
   ])('still accepts %s', (_label, decision) => {
     expect(lift(decision).issues.filter(i => i.severity === 'error')).toEqual([])

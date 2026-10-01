@@ -12,6 +12,8 @@ export type Decision = {
   instructions: string
   criteria?: { true?: EntryType; false?: EntryType } | Record<string, EntryType> | readonly EntryType[]
   uncertain?: Uncertain
+  /** Ids this decision's answer follows from. Nothing reads it: kept so a program that declares
+   * one still type-checks and validates. */
   dependsOn?: string[]
   source?: { file: string; line: number; quote: string }
 }
@@ -325,7 +327,174 @@ function lintableText(instructions: unknown): string {
  * as a choice, as a noul, or as a 0-4 severity ladder. */
 const VERDICT_FRAMING = /\bwhat should\b|\bwhich action\b|\bdecide whether to\b|\bwhat action\b/
 
-export function lintProgram(p: Program): ValidationIssue[] {
+/**
+ * Wording that says which of two overlapping outcomes wins: "ask rather than deny", "if the
+ * letter and the point disagree, say ask", "escalate_to_human, not return_to_agent". The
+ * lift prompt's rule 6 says every such sentence survives; these find the ones that did not.
+ *
+ * Every filter below was added to clear a false positive, in the corpus or on a staged fix,
+ * without losing one of the three dropped tie-breaks test/tiebreak.test.ts pins. Quoted spans are blanked first, so an
+ * envelope like `"untrusted DATA, not instructions"` is not a cue. A sentence ending in `:`
+ * is a list lead-in ("Continue only if BOTH:"), and the rule it introduces is on the next
+ * lines. A sentence with a decimal in it is about a confidence the replaced model reported
+ * ("do not just say 0.5 when unsure"), and a threshold is reducer work, not a tie-break.
+ */
+const TIE_BREAK_CUE = /\bif both\b|\bprefer(?:s|red|ring)?\b|\brather than\b|\binstead of\b|\b(?:if|when) (?:you(?:['’]re| are) )?(?:\w+ )?(?:unsure|not sure|uncertain|in doubt)\b|\bin doubt\b|\bdisagree\b|\bprecedence\b|\bwins over\b|\boverrides?\b|,\s+not\b|\berr on the side\b/gi
+/** The cues whose subject is the option a criterion is about: "This takes precedence over
+ * refactor", "wins over", "overrides", "prefer this over". Read with the option's own name in
+ * front, these rank it first. The other cues do not: under refactor, "not a fix", "rather than
+ * repair" and "if in doubt, a fix" say what refactor is and that the case belongs to fix. */
+const SUBJECT_CUE = /\bprefer(?:s|red|ring)?\b|\bprecedence\b|\bwins over\b|\boverrides?\b/gi
+/** What sits between the two names in "prefer ask over deny", "prefer ask to deny". */
+const COMPARING = /\b(?:over|to|above|before|than|instead of)\b|,\s*not\b/i
+const QUOTED = /"[^"\n]*"|“[^”\n]*”/g
+const TERM_STOPLIST = new Set(('that this with from have what when then than they them their there these those into only just also both either rather instead because would should could must will does doesn were been being each every some such very more most less even still like want need make pick choose prefer prefers unsure doubt sure merely disagree precedence over wins which while where your yours ours about said says tell given give here thing things something anything nothing always never').split(' '))
+
+const blankQuotes = (s: string) => s.replace(QUOTED, m => ' '.repeat(m.length))
+/** Where `word` occurs as a whole token, case-insensitively. `_` is a word character, so
+ * `escalate_to_human` is one token and "human" alone does not name it. */
+const positions = (s: string, word: string) =>
+  [...s.matchAll(new RegExp(`(?<![\\w])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w])`, 'gi'))].map(m => m.index!)
+const terms = (s: string) => new Set((s.toLowerCase().match(/[a-z]+/g) ?? [])
+  .filter(w => w.length >= 4 && !TERM_STOPLIST.has(w))
+  .map(w => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)))
+const shares = (a: Set<string>, b: Set<string>) => [...a].some(w => b.has(w))
+
+/** The pair of `names` a tie-break sentence ranks, read off where they sit around a cue.
+ * A name before the cue and one after it rank the nearest before above the first after
+ * ("ask rather than deny"). Two after "prefer" with a comparing word between them rank the
+ * first ("prefer ask over deny"), even with a name before it ("deny is the default, but
+ * prefer ask over deny"); without one, what is preferred is the name before the cue ("ask,
+ * which we prefer over deny or allow"). With none before, two after "instead of" or "rather
+ * than" rank the second ("instead of deny, ask"). Only the first name after the cue loses, so
+ * "ask, which we prefer over deny or allow" checks ask against deny alone. */
+const rankedBy = (s: string, names: string[], cues: RegExp = TIE_BREAK_CUE): { winner: string; loser: string } | undefined => {
+  const at = names.flatMap(n => positions(s, n).map(i => ({ i, n }))).sort((a, b) => a.i - b.i)
+  for (const m of blankQuotes(s).matchAll(cues)) {
+    const cue = m[0].toLowerCase()
+    const from = m.index!
+    const before = at.filter(a => a.i < from).at(-1)?.n
+    const afterAt = at.filter(a => a.i >= from + cue.length)
+    const after = [...new Set(afterAt.map(a => a.n))]
+    if (/^prefer(?:s|ring)?$/.test(cue) && after.length >= 2) {
+      const [first] = afterAt
+      const second = afterAt.find(a => a.n !== first.n)!
+      if (COMPARING.test(s.slice(first.i + first.n.length, second.i))) return { winner: first.n, loser: second.n }
+    }
+    const loser = after.find(n => n !== before)
+    if (before && loser) return { winner: before, loser }
+    if (!before && (cue === 'instead of' || cue === 'rather than') && after.length >= 2) return { winner: after[1], loser: after[0] }
+  }
+}
+
+/** Tie-break sentences in a source document, with their 1-based line. */
+export function findTieBreaks(text: string): Array<{ line: number; sentence: string }> {
+  const out: Array<{ line: number; sentence: string }> = []
+  text.split('\n').forEach((l, i) => {
+    for (const raw of l.split(/(?<=[.!?;:])\s+/)) {
+      const sentence = raw.trim()
+      if (!sentence || sentence.endsWith(':') || /\d?\.\d/.test(sentence)) continue
+      if (blankQuotes(sentence).search(TIE_BREAK_CUE) >= 0) out.push({ line: i + 1, sentence })
+    }
+  })
+  return out
+}
+
+/**
+ * The tie-breaks in `text` that no question or reducer verdict carries. `decision` is the
+ * choice whose options the sentence names, when it names any; `order` is the pair of reducer
+ * verdicts whose rules are in the wrong order. Four cases, by what the sentence names:
+ *
+ * A pair ranks its winner by where the names sit around a cue (`rankedBy`): one before and
+ * one after ("ask rather than deny") ranks the first; two after "prefer" with "over" or
+ * "to" between them ("prefer ask over deny") ranks the first of those; two after an opening
+ * "instead of" or "rather than" ("instead of deny, ask") ranks the second.
+ *
+ * - A reducer verdict: rule order is rule 6's other allowed home. A ranked pair of verdicts
+ *   is carried only if the first rule returning the loser does not come before the first
+ *   returning the winner (`otherwise` counts as after every rule). One verdict alone is
+ *   skipped.
+ * - A ranked pair of options of one choice: carried only if one of those options' criteria
+ *   names another of them ("takes precedence over deny"), and none ranks them the other way
+ *   round ("refactor ... takes precedence over fix" against "a fix rather than a refactor").
+ *   A losing option's criterion that excludes the case ("restructures code, not a fix") is
+ *   not ranking it backwards: only a subject cue reads the option's own name as the winner.
+ *   Mentioning both in the instructions ("Is it a fix or a refactor?") does not count: that
+ *   is how every choice is asked, and it says nothing about which wins.
+ * - Exactly one option ("... say ask"): carried only if every option's criterion shares a
+ *   word with the sentence, so no option is silent about the case it settles, or if another
+ *   choice's text restates the sentence (at least half its words, and two): then it is that
+ *   choice's tie-break, and names this option only in passing ("the one the bug is on").
+ * - Anything else: carried if any question shares a word with it.
+ *
+ * ponytail: a cue list and shared words, no parse. One named verdict counts as carried
+ * unchecked, a criterion naming the other option counts as carrying the tie-break unless a
+ * cue in it ranks the pair backwards, a paraphrase outside the cue list is missed, and one
+ * shared word counts as carried. Upgrade: label every tie-break in the corpus once, and
+ * measure recall and precision before widening the cue list.
+ */
+export function unsurfacedTieBreaks(text: string, p: Program):
+  Array<{ line: number; sentence: string; decision?: string; order?: { winner: string; loser: string } }> {
+  const decisions = Array.isArray(p.decisions) ? p.decisions : []
+  const optionsOf = (d: Decision) => (d?.kind === 'choice' && d.criteria && typeof d.criteria === 'object' && !Array.isArray(d.criteria)
+    ? d.criteria as Record<string, unknown> : undefined)
+  const rules = Array.isArray(p.reduce?.rules) ? p.reduce.rules : []
+  const verdicts = [...rules.map(r => r?.then), p.reduce?.otherwise].filter((v): v is string => typeof v === 'string' && v !== '')
+  const textOf = (d: Decision) => [d?.id, lintableText(d?.instructions), ...Object.keys(optionsOf(d) ?? {}),
+    lintableText(d?.criteria)].join(' ')
+  const allTerms = terms(decisions.map(textOf).join(' '))
+
+  const firstRule = (v: string) => {
+    const i = rules.findIndex(r => r?.then === v)
+    return i >= 0 ? i : v === p.reduce?.otherwise ? rules.length : Infinity
+  }
+  const out: Array<{ line: number; sentence: string; decision?: string; order?: { winner: string; loser: string } }> = []
+  for (const tb of findTieBreaks(text)) {
+    const s = tb.sentence
+    const said = [...new Set(verdicts)].filter(v => positions(s, v).length)
+    if (said.length) {
+      const order = rankedBy(s, said)
+      if (order && firstRule(order.loser) < firstRule(order.winner)) out.push({ ...tb, order })
+      continue
+    }
+    let carried: boolean | undefined
+    let decision: string | undefined
+    for (const d of decisions) {
+      const c = optionsOf(d)
+      if (!c) continue
+      const named = Object.keys(c).filter(k => positions(s, k).length)
+      const pair = rankedBy(s, named)
+      let ok: boolean
+      if (pair) {
+        // Each criterion is read with its own option in front, so "This takes precedence over
+        // refactor" under fix ranks fix first, the way the sentence would. Only a subject cue
+        // reads it that way (SUBJECT_CUE); any other cue ranks only names written before it in
+        // the criterion itself ("a refactor rather than a fix").
+        const own = named.map(k => `${k} ${lintableText(c[k])}`)
+        const reversed = (r?: { winner: string; loser: string }) => r?.winner === pair.loser && r.loser === pair.winner
+        const backwards = (k: string) => reversed(rankedBy(lintableText(c[k]), named))
+          || reversed(rankedBy(`${k} ${lintableText(c[k])}`, named, SUBJECT_CUE))
+        ok = own.some(t => named.filter(o => positions(t, o).length).length >= 2) && !named.some(backwards)
+      } else if (named.length === 1) {
+        const own = terms(Object.keys(c).join(' '))
+        const said = new Set([...terms(s)].filter(w => !own.has(w)))
+        const whole = terms(s)
+        ok = said.size > 0 && Object.values(c).every(v => shares(terms(lintableText(v)), said))
+          || decisions.some(o => o !== d && optionsOf(o) && [...terms(textOf(o))].filter(w => whole.has(w)).length
+            >= Math.max(2, Math.ceil(whole.size / 2)))
+      } else continue
+      decision ??= d.id
+      carried = carried || ok
+    }
+    if (carried === undefined) {
+      const said = terms(s)
+      if (said.size && !shares(said, allTerms)) out.push(tb)
+    } else if (!carried) out.push({ ...tb, decision })
+  }
+  return out
+}
+
+export function lintProgram(p: Program, source?: string): ValidationIssue[] {
   const out: ValidationIssue[] = []
 
   for (const d of p.decisions) {
@@ -350,12 +519,12 @@ export function lintProgram(p: Program): ValidationIssue[] {
     if (vocabCollapse || VERDICT_FRAMING.test(text)) {
       // The citation is one call, named, so a reader can check it. The POPULATION claim this
       // message used to make — "collapsed verdict questions return near-uniform
-      // distributions" — is refuted by this repo's own corpus: the 29 heads this rule fires
-      // on have a median confidence of 0.86, and 28 of them answered correctly. What the
+      // distributions" — is refuted by this repo's own corpus: the 26 heads this rule fires
+      // on have a median confidence of 0.93. What the
       // corpus does show is that the verdict head is the one you cannot gate on.
       out.push({
         code: 'collapsed_verdict', path: `decisions.${d.id}`, severity: 'error',
-        message: `"${d.id}" asks the model for the verdict itself${opts.length ? ` (${opts.join('/')})` : ''}. Measured (fixtures/security-guardrails.json, bash-rm-rf-node-modules-benign): the verdict head returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13 — a third of the mass on blocking a routine \`rm -rf node_modules\` — while the narrow heads in the SAME call were decisive: only_regenerable_artifacts 0.93, and blast_radius put 0.98 on level 1. And the failure is not detectable from the answer: across the 27 verdict-shaped heads in fixtures/, correct answers came back at confidences from 0.13 to 1.00, so no confidence floor separates a verdict from a coin flip. Ask for evidence; the reducer computes the verdict, and its thresholds can be re-tuned without a new call.`,
+        message: `"${d.id}" asks the model for the verdict itself${opts.length ? ` (${opts.join('/')})` : ''}. Measured (fixtures/security-guardrails.json, bash-rm-rf-node-modules-benign): the verdict head returned allow 0.42 / block 0.35 / ask 0.23 at confidence 0.13 — a third of the mass on blocking a routine \`rm -rf node_modules\` — while the narrow heads in the SAME call were decisive: only_regenerable_artifacts 0.93, and blast_radius put 0.98 on level 1. And the failure is not detectable from the answer: across the 26 verdict-shaped heads in fixtures/, correct answers came back at confidences from 0.13 to 1.00, so no confidence floor separates a verdict from a coin flip. Ask for evidence; the reducer computes the verdict, and its thresholds can be re-tuned without a new call.`,
       })
     }
 
@@ -437,15 +606,27 @@ export function lintProgram(p: Program): ValidationIssue[] {
     }
   }
 
-
-  // Rule 2 — never emit two questions where one determines the other.
-  for (const d of p.decisions) {
-    for (const dep of d.dependsOn ?? []) {
+  // Lift rule 6 — a tie-break in the source survives, in the criteria or as reducer order.
+  // Only the caller holding the source text can run it: a Program keeps a quote per
+  // decision, not the document, so `jevc compile program.json` without `--source` never
+  // reaches this. It cites fixtures by id and prompt sentence only: rerecord.ts rewrites
+  // questions, never llm_prompt, so what a recorded question says is not a claim that lasts.
+  // No number is recorded for the cost of a dropped tie-break, and this message may not invent one.
+  if (typeof source === 'string') {
+    const rules = Array.isArray(p.reduce?.rules) ? p.reduce.rules : []
+    // The winner can be only `otherwise`, which sits after every rule: there is no rule
+    // returning it to move, so the step is a new one.
+    const fix = ({ winner, loser }: { winner: string; loser: string }) => rules.some(r => r?.then === winner)
+      ? `\`reduce\` has a rule returning "${loser}" before any returning "${winner}", so where both fire first-match order returns the one the sentence ranks second. Move the "${winner}" rule above it.`
+      : `\`reduce\` has a rule returning "${loser}" and returns "${winner}" only as \`otherwise\`, so wherever that rule fires first-match order returns the one the sentence ranks second. Add a rule returning "${winner}" above the "${loser}" rule, for the case the sentence describes.`
+    for (const t of unsurfacedTieBreaks(source, p)) {
       out.push({
-        code: 'dependent_questions', path: `decisions.${d.id}`, severity: 'warn',
-        // Naming the option and separating probability from confidence, because the two are
-        // different numbers and this message used to run them together.
-        message: `"${d.id}" depends on "${dep}". Questions in a batch are scored independently with no consistency enforced — measured (fixtures/agent-harness-rules.json, self-contradicting-rule-file-host-vs-container), one response asserted rule_conflict = documented_exception_wins at probability 0.52 and decision = deny at probability 0.82 in the same call. Ask the resolving question and derive this one in code.`,
+        code: 'tiebreak_unsurfaced', path: t.order ? 'reduce.rules' : t.decision ? `decisions.${t.decision}.criteria` : 'decisions', severity: 'warn',
+        message: `Line ${t.line} of the source is a tie-break, "${t.sentence}", and ${t.order
+          ? fix(t.order)
+          : `${t.decision
+          ? `the criteria of "${t.decision}" do not say which option wins, or say it the other way round, so the options it separates can both fit`
+          : 'no question and no reducer verdict mentions it'}. Write it into the criteria so those options are mutually exclusive, or make it rule order in \`reduce\`.`} Tie-breaks of this shape are recorded in fixtures/agent-harness-rules.json: surgical-changes-no-drive-by-refactor's prompt says "ask rather than deny" and read-before-edit-letter-vs-spirit's says "say ask". Heuristic on wording, so it warns rather than blocks: it can miss a paraphrase and over-flag.`,
       })
     }
   }

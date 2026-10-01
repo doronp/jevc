@@ -458,7 +458,7 @@ describe('--lift round trip, what the file check deliberately forgives', () => {
   })
 })
 
-// E0 item 7. `parseLiftResponse` is the gate on the prose route, and the CLI never ran it:
+// `parseLiftResponse` is the gate on the prose route, and the CLI never ran it:
 // `jevc compile program.json` checked a lifted Program's shape and lint, never its
 // citations, so a quote the model invented compiled at exit 0 and the emitted module's
 // `// from <file>:<line>` comment vouched for it. `--source <doc>` runs it before anything
