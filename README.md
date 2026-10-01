@@ -302,10 +302,11 @@ below comes from **one** recorded call evaluating `rm -rf node_modules`
 | `only_regenerable_artifacts` — noul | 0.93 | — (a noul has none) |
 
 The decomposed heads are right and certain. The verdict head put `allow` 0.07 ahead of
-`block` — the smallest winner/runner-up margin anywhere in the corpus, and only seven times
-the ±0.01 that repeated identical calls drift by. A 0.07 margin is all that
-keeps this gate from blocking `rm -rf node_modules`, which would not be a guard, it would
-be an outage.
+`block`, from a model whose identical calls are not guaranteed to return identical answers.
+Only one choice head in the corpus has a narrower winner/runner-up margin: `rule_conflict` in
+`self-contradicting-rule-file-host-vs-container`, 0.4 against 0.38, a margin of 0.02 that its
+expectation pins as a tie rather than a winner. A 0.07 margin is all that keeps this gate from
+blocking `rm -rf node_modules`, which would not be a guard, it would be an outage.
 
 The same shape shows up where it costs money rather than uptime. In
 `tier-router-ambiguous-scope-error-handling`, the collapsed "which model tier?" question
@@ -314,15 +315,11 @@ evidence questions in the same call said `request_scope_ambiguous` 0.79 and
 `touches_irreversible_surface` 0.76. Reading the argmax ships a silent downgrade; reducing
 the evidence in code routes it up. (`npx tsx examples/03-model-router.ts`.)
 
-Three rules follow, all enforced by `lintProgram` — three of the six checks it runs:
+Two rules follow, both enforced by `lintProgram` — two of the six checks it runs:
 
 1. **Never emit a collapsed verdict question.** Emit evidence; compute the verdict in code.
    This one is a hard error.
-2. **Never emit two questions where one's answer determines the other's.** Questions in a
-   batch are scored independently with no consistency enforced — one measured response
-   asserted `rule_conflict = documented_exception_wins` (p 0.52, confidence 0.37) and
-   `decision = deny` (confidence 0.73) in the same call.
-3. **Never emit a question spanning two scopes.** A compound authorization question
+2. **Never emit a question spanning two scopes.** A compound authorization question
    measured 0.59 — the wrong side of 0.5 — on a command whose deletions were partly
    authorized, because it anchored on the authorized half.
 
@@ -344,7 +341,7 @@ Six commands. Every console block in this file is real output from this repo.
 | `jevc emit-policy --for <bouncer\|toolgate>` | `<program.json>`, `-o <path>` | Lowers a compiled program into an incumbent guardrail's own config format, after the same `validateProgram` + `lintProgram` gate `compile` runs. |
 | `jevc show [fixture-id]` | `--fixtures <dir>` | One recorded fixture end to end: the prompt it replaces, the state, the questions, the measured answers. No argument lists all 58. |
 | `jevc explain <decision-id>` | `--fixtures <dir>` | Why a question exists — its provenance, the prompt it replaced, and what it measured. |
-| `jevc check` | `--live`, `--model <id>`, `--threshold <n>`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. `--model` (default `jev-1.13.0`) and `--threshold` (default 0.15, range [0, 1)) apply to `--live` only and are refused without it. |
+| `jevc check` | `--live`, `--model <id>`, `--threshold <n>`, `--repeat <n>`, `--fixtures <dir>` | Replays the measured corpus offline; `--live` re-measures against the API and reports drift, one fixture at a time — a fixture that cannot be measured is one `broken` row, not a dead report. `--model` (default `jev-1.13.0`), `--threshold` (default 0.15, range [0, 1)) and `--repeat` (default 1, at most 10: calls per fixture, diffing their median and printing each flagged row's min..max) apply to `--live` only and are refused without it. |
 
 `bouncer` and `toolgate` are reached only through `emit-policy`, never through `--emit`:
 they are policy documents, not modules.
@@ -595,63 +592,87 @@ The body of this README says what the thing does. This section says where the ed
 
 **Be precise about the claim.** Collapse is not a property of verdict words; it is what
 happens when a collapsed question meets a genuinely borderline input. Across the corpus,
-the 17 verdict-shaped choice heads — option sets that trip the same `VERDICT_WORDS` test
-the linter uses — have a median confidence of 0.93, close to
-the 0.97 median of the other 46 choice heads.
+the 16 verdict-shaped choice heads — option sets that trip the same `VERDICT_WORDS` test
+the linter uses — have a median confidence of 0.94, close to
+the 0.99 median of the other 45 choice heads.
 The separation is in the tail, not the middle: the three least confident
 verdict heads are 0.13, 0.36 and 0.63, each on an input where two rules point
 opposite ways at once.
 
-And the tail is not exclusively theirs. The router's `tier` head measured 0.24, and it is a
-collapsed verdict in everything but vocabulary — the `VERDICT_WORDS` test is a heuristic,
-and `powerful`/`fast`/`balanced` are not in it. The other is honest uncertainty rather than
-collapse: in `agent-command-referent-disambiguation` the four-way "which of `candidate_ids`
-does *that* refer to?" head measured 0.23, because the command genuinely was ambiguous. The
-decomposed noul in the same call said so plainly — `referent_is_ambiguous` 0.68 — which is
-the shape a program should branch on, and why `uncertain` is part of the IR.
+And the tail is not exclusively theirs: the three least confident of the other choice heads
+all sit below the second verdict head. The lowest, `rule_conflict` in
+`self-contradicting-rule-file-host-vs-container`, measured 0.2 — the same two-rules-at-once
+shape, asked as which rule wins rather than as a verdict, and a tie its expectation pins as
+one. In `tier-router-ambiguous-scope-error-handling` the router's `tier` head measured 0.24,
+and it is a collapsed verdict in everything but vocabulary — the `VERDICT_WORDS` test is a
+heuristic, and `powerful`/`fast`/`balanced` are not in it. The third is honest uncertainty
+rather than collapse: in `agent-command-referent-disambiguation` the four-way "which of
+`candidate_ids` does *that* refer to?" head measured 0.25, because the command genuinely was
+ambiguous. The decomposed noul in the same call said so plainly — `referent_is_ambiguous`
+0.68 — which is the shape a program should branch on, and why `uncertain` is part of the IR.
 
 Carve-outs ("except `rm -rf node_modules`") are allowlists and belong in `reduce`
 (`embedded_carveout`). A separate warning, `embedded_pattern`, covers the other half:
 asking Jev whether a declared glob or deny pattern matched. Those questions measured
 0.25 / 0.10 / 0.14 across three tool families — push, PR, edit — while the semantic
 question on the same input answered 0.96 / 0.87 / 0.85. Keep pattern matching in code; ask
-Jev only what a pattern cannot express. Those two warnings and `score_levels_undescribed`
-are the other three checks `lintProgram` runs.
+Jev only what a pattern cannot express. `tiebreak_unsurfaced` needs the source document, so it
+runs only in `parseLiftResponse` and `jevc compile --source`: it warns when a tie-break the
+document states ("ask rather than deny", "prefer ask over deny") reaches no question's
+criteria and no reducer verdict, names two reducer verdicts whose first rules sit in the
+opposite order, or names two options of a choice whose criteria rank them the other way
+round. It reads wording, not meaning: a tie-break phrased outside its short cue list is
+missed, and one shared word counts as carried, so a clean run does not show that every
+tie-break survived. Those
+three warnings and `score_levels_undescribed` are the other four checks `lintProgram` runs.
 
 ### The corpus is measured, not written
 
 `fixtures/` holds **58 fixtures** across five domains — security guardrails, cost
 optimization, intent understanding and output verification at 12 each, agent harness rules
-at 10 — and 332 questions
-(244 noul, 63 choice, 25 score). Every one was executed live against
+at 10 — and 336 questions
+(250 noul, 61 choice, 25 score). Every one was executed live against
 `POST https://api.typesafe.ai/v1/systemone` on 2026-09-18, model `jev-1.13.0`: 58/58 HTTP
-200 on the first attempt, zero dropped. Each fixture carries the real natural-language
-prompt it replaces, its provenance, and its measured response.
+200 on the first attempt, zero dropped. Nine were re-recorded on 2026-09-30, after their
+questions were fixed, so 49 are still on their 2026-09-18 recording; each re-recorded fixture
+says so at the head of its notes. Each fixture carries the real natural-language prompt it
+replaces, its provenance, and its measured response.
 
 Those numbers are a **recording**, and the recording is the only thing this repo asserts.
 The key is deliberately not here, so nothing in the repo claims the endpoint answers today
 — `jevc check --live` is the command that finds out.
 
-**Only 23 of the 58 predicted thresholds survived contact with the real model. 35 of 58
-were wrong** and were recalibrated to measured values. 60% of the predicted thresholds were wrong, so the corpus is
-measured rather than written.
+A threshold counts as a prediction here only if it was written before any recording of its
+fixture was seen. **Of the 49 fixtures still on their 2026-09-18 recording, only 21 had
+predicted thresholds that all survived contact with the real model. In 28 of 49 at least one was
+wrong** and was recalibrated to a measured value. That is 57% of those fixtures with a wrong
+predicted threshold, so the corpus is measured rather than written.
 
-Answers are near-deterministic but **not bit-identical** — repeated identical calls drift
-by about ±0.01. Every *numeric* assertion in the corpus is therefore a band, never an
-equality: of the **319** `expect` entries across the 58 fixtures, 260 are bands, and the
+The nine re-recorded fixtures are counted apart, because an earlier recording of each had been
+seen before their thresholds were last written. Seven kept the thresholds in place before the
+2026-09-30 call and held them unchanged, but some of those thresholds had been set from the
+2026-09-18 recording, so they show an answer staying put, not a prediction coming true. The
+other two, `self-contradicting-rule-file-host-vs-container` and
+`underspecified-request-clarification-gate`, had their thresholds adjusted after the call.
+
+Identical calls are **not guaranteed to return identical answers**, and the corpus records one
+call per fixture, so it does not measure how far an answer moves from one call to the next.
+`jevc check --live --repeat <n>` measures that: it diffs the median of n calls, where a single
+live call can raise a drift row the next call would not. Every *numeric* assertion in the corpus is therefore a band,
+never an equality: of the **323** `expect` entries across the 58 fixtures, 264 are bands, and the
 remaining **59** assert an equality — but on the *argmax* of a choice, not on a number, and
-51 of those 59 carry a confidence band alongside. Between them those entries pin **321**
-numeric bounds (`noul_gte` 148, `noul_lte` 86, `confidence_gte` 50, `score_gte` 21,
-`score_lte` 9, `confidence_lte` 7) — more bounds than entries, because a single entry can
+50 of those 59 carry a confidence band alongside. Between them those entries pin **324**
+numeric bounds (`noul_gte` 151, `noul_lte` 88, `confidence_gte` 50, `score_gte` 21,
+`score_lte` 9, `confidence_lte` 5) — more bounds than entries, because a single entry can
 pin both ends. The smallest gap between winner and runner-up anywhere in those 59 is
-**0.07** and the median is **0.96**, so the drift does not reach the quantity being pinned.
-Note that 0.07 is the collapsed verdict question from the decomposition law: wide enough
-that the recording is a stable assertion, far too narrow to be a verdict you would ship.
-Those are different questions, and the corpus only answers the first.
+**0.07** and the median is **0.96**.
+Note that 0.07 is the collapsed verdict question from the decomposition law. The recording
+asserts which option won that one call; whether the same option wins the next one is what
+`--repeat` measures, and a margin that narrow is far too thin to ship as a verdict either way.
 
 `--live` compares the recording against the pinned `jev-1.13.0` (or `--model`), and the two commands are not running
 the same predicate: offline `check` compares a recording against itself and cannot fail
-spuriously, while 207 of the 321 numeric bounds in this corpus have less headroom than the
+spuriously, while 208 of the 324 numeric bounds in this corpus have less headroom than the
 0.15 the drift threshold itself allows, so a benign recalibration smaller than one drift
 threshold would otherwise turn most of the corpus red. A band that no longer holds is
 `drifted`, not `broken`, and does not gate the exit. Everything structural still exits 1 on
@@ -837,7 +858,8 @@ asked for passes it. Trust the base URL as far as you trust the key.
 Thresholds are per model. Every threshold, band and corpus number here was measured on
 `jev-1.13.0`; the guard refuses a verdict from anything that does not say it is a Jev build and
 warns on a Jev build other than the pin. `--model <id>` picks which TypeSafe build
-`check --live` asks and `--threshold <n>` how far an answer may move before it is a row.
+`check --live` asks, `--threshold <n>` how far an answer may move before it is a row, and
+`--repeat <n>` how many calls each fixture's median is taken over.
 
 To run a local Jev-compatible server on purpose, it takes all five of these:
 
@@ -960,14 +982,17 @@ JSON in the first place — the deterministic path has no model in it at all).
 
 ---
 
-\* *Latency, which is deliberately absent from everything above: across the 58 calls
-recorded on 2026-09-18, answers came back in a range of min 695 ms, median 779 ms, max
-2584 ms. That is an incidental observation from one batch on one day against one endpoint —
-not a benchmark, which would control for question count, payload size, concurrency,
-connection reuse and time of day. Do not plan against it; measure your own. Two things in
-it are still worth knowing. The maximum was the first call recorded in its batch, which is
-consistent with connection setup but was not isolated and measured. And latency looks flat
-in question count rather than linear — the 17 fixtures with 5 questions span 695-993 ms and
-the 12 with 7 questions span 701-2584 ms — which, together with the fact that questions in
-one request evaluate in parallel, is the argument for batching aggressively. The only reason
+\* *Latency, which is deliberately absent from everything above: the 58 recorded calls came
+in two batches, given separately because they do not compare. The 49 calls on 2026-09-18
+came back in min 695 ms, median 775 ms, max 2584 ms; the nine re-recorded on 2026-09-30 in
+min 272 ms, median 303 ms, max 1382 ms, and eight of the nine were faster than the fastest
+2026-09-18 call. Those are incidental observations from two batches on two days against one
+endpoint — not a benchmark, which would control for question count, payload size,
+concurrency, connection reuse and time of day. Do not plan against them; measure your own.
+Two things in the 2026-09-18 batch are still worth knowing. Its maximum was the first call of
+its domain's run, which is consistent with connection setup but was not isolated and
+measured. And within that batch latency looks flat in question count rather than linear —
+the 14 fixtures with 5 questions span 695-993 ms and the 9 with 7 questions span 701-2584 ms,
+701-984 ms without that first call — which, together with the fact that questions in one
+request evaluate in parallel, is the argument for batching aggressively. The only reason
 to split a request is the shared token budget.*

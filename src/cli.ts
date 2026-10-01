@@ -10,7 +10,7 @@ import { emitAiSdk } from './emit/ai-sdk.js'
 import { emitLangchain } from './emit/langchain.js'
 import { canEmit } from './emit/capability.js'
 import { lintProgram, validateProgram, type Program } from './ir.js'
-import { assertExpectation, checkLive, liveOptions, liveSummary, loadFixtures } from './check.js'
+import { assertExpectation, checkLive, liveOptions, liveSummary, loadFixtures, MAX_REPEAT } from './check.js'
 import { PINNED_MODEL, validateRequest, type ValidationIssue } from './contract.js'
 
 const argv = process.argv.slice(2)
@@ -103,7 +103,7 @@ const flag = (name: string): string | undefined => {
 const has = (name: string) => argv.includes(`--${name}`)
 
 /** Flags that consume the argument after them. Everything else is a bare switch. */
-const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold', 'source'])
+const VALUED = new Set(['emit', 'o', 'for', 'fixtures', 'model', 'threshold', 'repeat', 'source'])
 
 /**
  * The first argument after the subcommand that is neither a flag nor a flag's value.
@@ -138,7 +138,7 @@ const die = (msg: string): never => { toStderr(`${msg}\n`); process.exit(1) }
  */
 const KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
   compile: new Set(['emit', 'o', 'lift', 'source']),
-  check: new Set(['fixtures', 'live', 'model', 'threshold']),
+  check: new Set(['fixtures', 'live', 'model', 'threshold', 'repeat']),
   explain: new Set(['fixtures']),
   'emit-policy': new Set(['for', 'o']),
   scan: new Set(['json']),
@@ -497,11 +497,11 @@ if (cmd === 'compile') {
 }
 
 if (cmd === 'check') {
-  // Both only mean something to a live run: offline check asserts the recorded answers,
-  // which name their own model and are diffed against nothing. Refused rather than ignored,
-  // the same call as `--emit` with `compile --lift` — a flag that silently does nothing
-  // reads as a run that honoured it.
-  for (const name of ['model', 'threshold']) {
+  // All three only mean something to a live run: offline check asserts the recorded answers,
+  // which name their own model, are diffed against nothing and are one call each already.
+  // Refused rather than ignored, the same call as `--emit` with `compile --lift` — a flag
+  // that silently does nothing reads as a run that honoured it.
+  for (const name of ['model', 'threshold', 'repeat']) {
     if (!has('live') && flag(name) !== undefined) {
       die(`--${name} has no meaning without --live: offline \`jevc check\` asserts the recorded answers and asks no model.`)
     }
@@ -512,7 +512,7 @@ if (cmd === 'check') {
     // Validated before the key check, so a bad flag is reported on a machine with no key
     // and never costs a call on one that has it.
     let live: ReturnType<typeof liveOptions> = {}
-    try { live = liveOptions(flag('model'), flag('threshold')) } catch (e) { die((e as Error).message) }
+    try { live = liveOptions(flag('model'), flag('threshold'), flag('repeat')) } catch (e) { die((e as Error).message) }
     // Amendment: --live requires a real API key and must never run as part of `npm test`.
     // Offline `check` (the default, above) needs no key and stays that way.
     if (!process.env.TYPESAFE_API_KEY) {
@@ -524,8 +524,10 @@ if (cmd === 'check') {
     for (const row of report.rows) {
       if (row.status === 'stable') continue
       const delta = row.delta === null ? '' : ` delta=${row.delta.toFixed(3)}`
+      // Quoted like `live`: a choice's range carries option names off the wire.
+      const range = row.range === undefined ? '' : ` range=${JSON.stringify(row.range)}`
       toStdout(
-        `${row.status.toUpperCase()} ${row.id}  recorded=${JSON.stringify(row.recorded)} live=${JSON.stringify(row.live)}${delta}\n`,
+        `${row.status.toUpperCase()} ${row.id}  recorded=${JSON.stringify(row.recorded)} live=${JSON.stringify(row.live)}${delta}${range}\n`,
       )
     }
     toStdout(liveSummary(report))
@@ -657,8 +659,12 @@ die(`usage: jevc <command>
   show [fixture-id]             one recorded fixture, end to end
   explain <decision-id>         why a question exists, and what it measured
   check                         replay the measured corpus
-  check --live [--model <id>] [--threshold <n>]
+  check --live [--model <id>] [--threshold <n>] [--repeat <n>]
                                 re-measure it against the API (needs TYPESAFE_API_KEY);
-                                --model defaults to ${PINNED_MODEL}, --threshold to 0.15
+                                --model defaults to ${PINNED_MODEL}, --threshold to 0.15;
+                                --repeat (1 to ${MAX_REPEAT}, default 1) asks each fixture n
+                                times, diffs the median and prints each flagged row's
+                                min..max, since identical calls are not guaranteed to
+                                return identical answers
 
 Start with \`jevc scan\`. \`jevc --version\` prints the version.`)

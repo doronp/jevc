@@ -101,8 +101,9 @@ budget. Batch aggressively.
 Budget: **64k tokens total**, **32k for state + longest single question**, ≈5.1
 chars/token. ~45k tokens returns `400 max_tokens_exceeded`.
 
-Answers are **near-deterministic, not bit-identical** (±0.01 across identical calls).
-Golden tests must assert bands, never equality.
+Identical calls are **not guaranteed to return identical answers**, and the corpus records
+one call per fixture, so it does not measure how far an answer moves between calls;
+`check --live --repeat <n>` measures it. Golden tests must assert bands, never equality.
 
 An undocumented fourth question type, `bounding_box`, appears in the server's
 discriminator enum but in none of the 19k lines of documentation. Out of scope.
@@ -168,22 +169,15 @@ near-randomly.** Measured on one request evaluating `rm -rf node_modules`:
 | `blast_radius` — score | 1.02 | **0.97** |
 | `only_regenerable_artifacts` — noul | 0.93 | — |
 
-The decomposed heads are right and certain. The verdict head is a coin flip that would
-have blocked a routine clean reinstall a third of the time.
+The decomposed heads are right and certain. The verdict head is a coin flip: it put a third
+of its mass on blocking a routine clean reinstall.
 
-**Questions in a batch are scored independently, with no consistency enforced between
-them.** One measured response asserted `rule_conflict = documented_exception_wins`
-(p=0.52) and `decision = deny` (confidence 0.73) simultaneously — a self-contradiction
-inside a single answer set.
-
-Three rules follow, all enforced by the linter:
+Two rules follow, both enforced by the linter:
 
 1. **Never emit a collapsed verdict question.** Emit evidence questions; compute the
    verdict in code. A prompt saying "decide whether to block this" compiles to *several*
    evidence decisions plus a generated code-level reducer — never to one `choice`.
-2. **Never emit two questions where one's answer logically determines the other's.**
-   Ask the resolving question; derive the rest in code.
-3. **Never emit a question spanning two scopes.** A compound question measured 0.59 —
+2. **Never emit a question spanning two scopes.** A compound question measured 0.59 —
    the wrong side of 0.5 — on a command whose deletions were partly authorized and
    partly not, because it anchored on the authorized segment. Split by scope.
 
@@ -342,10 +336,11 @@ set. Same failure mode, measured by a different team.
 
 Two tiers, because tests that require a paid API key do not get run.
 
-Answers are near-deterministic but **not bit-identical** — repeated identical calls
-drift by ~±0.01. Every assertion is therefore a band (`noul_gte`, `score_gte`,
-`confidence_gte`), never an equality. This is not defensive padding: it is a measured
-property of the model.
+Identical calls are **not guaranteed to return identical answers**. Every assertion is
+therefore a band (`noul_gte`, `score_gte`, `confidence_gte`), never an equality. The corpus
+records one call per fixture, so it does not measure how far answers move between calls;
+`check --live --repeat <n>` diffs the median of n calls rather than one, and is the way to
+measure it.
 
 **Offline (default, `npm test`).** Fixtures carry their *measured* Jev responses,
 recorded at build time. The suite replays them: deterministic mapping, validation,
@@ -357,10 +352,16 @@ that moves under you, so a changed answer distribution should surface as a diff 
 calibration report rather than as a production incident.
 
 The corpus is already built and measured: **58 fixtures across five domains, 58/58
-executed successfully against the live API, 0 dropped**. Notably only **23 of 58**
-predicted thresholds survived contact with the real model — the other 35 were
-recalibrated to measured values. Had the corpus been written from predictions instead of
-measurements, 60% of the suite would have encoded fiction.
+executed successfully against the live API, 0 dropped**. 49 are still on their 2026-09-18
+recording; nine were re-recorded on 2026-09-30 after their questions were fixed. A threshold
+counts as a prediction only if it was written before any recording of its fixture was seen,
+so only the 49 measure prediction: of those, only **21 of 49** had predicted thresholds that
+survived contact with the real model — the other 28 were recalibrated to measured values.
+Had the corpus been written from predictions instead of measurements, 57% of those fixtures
+would have encoded fiction. Of the nine re-recorded fixtures, seven held the thresholds in
+place before their 2026-09-30 call, some of them set from the 2026-09-18 recording, so they
+test stability rather than prediction; the other two had their thresholds adjusted after
+the call.
 
 The corpus spans five domains — security guardrails, cost optimization, intent
 understanding, agent harness rules, output verification — with every fixture carrying

@@ -30,10 +30,16 @@ nowhere else. `.env.example` carries the placeholder only, and CI scans every co
 history for a real one.
 
 **A fixture is a recording, not a document.** `state` is the exact input a measured response
-was produced against, and `measured.answers` is what came back on 2026-09-18 from
-`jev-1.13.0`. Never hand-edit either to make something pass. If a recording is wrong, it is
-re-recorded with `check --live`, or it is deleted. Paraphrasing a `state` leaves the corpus
-asserting measured answers for a prompt nobody measured.
+was produced against, and `measured.answers` is what came back from `jev-1.13.0` on
+2026-09-18, or on the date a re-recording puts at the head of `notes`. Never hand-edit
+either to make something pass. If a recording is wrong, it is re-recorded or it is deleted.
+Re-recording runs from a staging file in `fixtures-staging/` that holds the fixed questions
+and expectations: `scripts/rerecord.ts <staging.json> --dry-run` validates it offline, and
+the live run (one paid call per entry, needs `TYPESAFE_API_KEY`) writes each fixture as
+`pending-review`. A person then reviews every one and sets its verdict to `keep` or
+`keep-with-adjusted-expectation` before release. `check --live` only reports drift; it never
+writes a fixture. Paraphrasing a `state` leaves the corpus asserting measured answers for a
+prompt nobody measured.
 
 **Measured or it does not ship.** Any number in the README, in a lint message, or in a doc
 must be a value a shipped fixture actually records. `test/ir.test.ts` enforces this for lint
@@ -50,9 +56,10 @@ grid; when an emitter and a target doc disagree, the doc wins until the doc is u
 
 | Path | What is in it |
 | --- | --- |
-| `src/ir.ts` | the IR, the reducer, and `lintProgram` — six checks, each grounded in a measured fixture |
+| `src/ir.ts` | the IR, the reducer, and `lintProgram` — six checks, each grounded in a recorded fixture |
 | `src/emit/` | one emitter per target: `sdk`, `json`, `ai-sdk`, `langchain`, `bouncer`, `toolgate` |
 | `fixtures/` | 58 recorded fixtures across five domains, plus `ATTRIBUTION.md` |
+| `fixtures-staging/`, `scripts/rerecord.ts` | question fixes staged for re-recording, and the script that re-records them as `pending-review` |
 | `docs/targets/` | the consumer contract each emitter is written against |
 | `docs/history/` | kept unedited for provenance; do not maintain it |
 | `plugin/`, `.claude-plugin/marketplace.json` | the Claude Code plugin (one skill and its manifest) and the marketplace that lists it. Keep the plugin root in `plugin/`: at the repository root, beside `package.json` and `package-lock.json`, installing would `npm ci` jevc's dev dependencies into every cached copy. Installed copies are pinned to `version` in `plugin.json`, so bump it when the skill changes |

@@ -2,6 +2,7 @@
 // runtime: ir.ts imports ValidationIssue from here, and validateResponse needs the program
 // it is checking the response against (kinds, option names, level counts).
 import type { Program } from './ir.js'
+import { quoted } from './quote.js'
 
 // Mirrors the SDK's JsonValue/EntryType shape (see test/contract.sdk-compat.test-d.ts):
 // `unknown` isn't assignable to the SDK's JSON-only value type, so the wire
@@ -294,13 +295,6 @@ export function validateResponse(
   // one response field a message prints and an echoed request must not leak through it.
   const model = body.model
   const pinned = `jevc's corpus, and every threshold and band it records, was measured on ${PINNED_MODEL}`
-  // The string is the server's choice and lands on a terminal and in logs: JSON-quoted so an
-  // escape sequence arrives as \u001b (JSON leaves DEL and C1 alone, so those are escaped by
-  // hand), and cut at 64 characters because a server that echoes the request can put the whole
-  // state here. No Jev ID comes near 64. Matching above still uses the whole string.
-  const quoted = (s: string): string =>
-    JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s)
-      .replace(/[\u007f-\u009f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
   if (typeof model !== 'string' || model === '') {
     err('model_unexpected', 'model',
       `Response names no model (got ${model === '' ? 'an empty string' : shape(model)}), so nothing says Jev answered; ${pinned}.`)

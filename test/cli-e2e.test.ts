@@ -657,7 +657,7 @@ describe('cases with a known history', () => {
     expect(r.stdout).toBe('')
   })
 
-  // E0 item 3. `--model` and `--threshold` are validated BEFORE the key check, so every case
+  // `--model` and `--threshold` are validated BEFORE the key check, so every case
   // here is decided with no key in the child environment and nothing can reach a socket. The
   // accepted cases prove it the other way round: valid flags get as far as the key refusal.
   describe('check --live --model / --threshold', () => {
@@ -701,6 +701,113 @@ describe('cases with a known history', () => {
     it('refuses either flag twice', () => {
       refuses(['--live', '--model', 'jev-1.13.0', '--model', 'jev-latest'], '"--model" was given more than once')
       refuses(['--live', '--threshold', '0.1', '--threshold', '0.2'], '"--threshold" was given more than once')
+    })
+  })
+
+  // `--repeat` is validated with the other two, before the key check, so every
+  // refusal here is decided with no key and no socket.
+  describe('check --live --repeat', () => {
+    const refuses = (args: string[], ...says: string[]) => {
+      const r = jevc(['check', ...args])
+      expect(r.status, args.join(' ')).toBe(1)
+      for (const s of says) expect(r.stderr, args.join(' ')).toContain(s)
+      expect(r.stderr, args.join(' ')).not.toContain('TYPESAFE_API_KEY')
+      expect(r.stdout).toBe('')
+    }
+
+    it('accepts a whole number from 1 to 10, and still stops at the missing key', () => {
+      for (const args of [['--live', '--repeat', '1'], ['--live', '--repeat', '5'], ['--live', '--repeat=10'],
+        ['--live', '--repeat', '3', '--model', 'jev-latest', '--threshold', '0.2', '--fixtures', 'fixtures']]) {
+        const r = jevc(['check', ...args])
+        expect(r.status, args.join(' ')).toBe(1)
+        expect(r.stderr, args.join(' ')).toContain('check --live requires TYPESAFE_API_KEY')
+        expect(r.stdout).toBe('')
+      }
+    })
+
+    it('refuses zero, a negative, a fraction, more than 10 and a non-number', () => {
+      for (const n of ['0', '--repeat=-1', '1.5', '11', 'abc', '0x5']) {
+        refuses(n.startsWith('--') ? ['--live', n] : ['--live', '--repeat', n], '--repeat', 'whole number from 1 to 10')
+      }
+      // The space-separated negative never reaches the validator: flag() reads a
+      // flag-shaped value as a missing one, as it does for every valued option.
+      refuses(['--live', '--repeat', '-1'], '--repeat requires a value')
+    })
+
+    it('refuses --repeat without --live, and twice', () => {
+      refuses(['--repeat', '3'], '--repeat has no meaning without --live')
+      refuses(['--live', '--repeat', '3', '--repeat', '5'], '"--repeat" was given more than once')
+    })
+
+    it('is in the usage text', () => {
+      expect(jevc(['help']).stderr).toContain('--repeat <n>')
+    })
+
+    // The printed report, from a real process: a local server behind TYPESAFE_BASE_URL with a
+    // dummy key answers every call, the same way the sample gate's live path is tested below,
+    // so nothing leaves 127.0.0.1. Proves the rows the CLI prints, which checkLive's tests
+    // cannot: the range column, the summary, and that the default run prints as it always did.
+    describe('against a local server', () => {
+      let replies: number[] = []
+      let asked = 0
+      const server = createServer((req, res) => {
+        req.resume()
+        req.on('end', () => {
+          const noul = replies[asked++]
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { destructive: { type: 'noul', noul } },
+            usage: { input_tokens: 1, output_tokens: 1 } }))
+        })
+      })
+      let corpus: string
+      beforeAll(async () => {
+        corpus = p('repeat-corpus')
+        mkdirSync(corpus)
+        writeFileSync(join(corpus, 'one.json'), JSON.stringify({ domain: 'test', fixtures: [{
+          id: 'shift', title: 'one noul', provenance: 'written for this test', llm_prompt: 'Does it delete data?',
+          rationale: 'one question is enough to print one row', state: 'rm -rf build',
+          questions: { destructive: { type: 'noul', instructions: 'Does the command delete data?' } },
+          expect: {}, measured: { answers: { destructive: { type: 'noul', noul: 0.9 } }, model: 'jev-1.13.0', verdict: 'n/a' },
+        }] }))
+        await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+      })
+      afterAll(() => { server.close() })
+
+      const { JEVC_ALLOW_MODEL: _a, ...offline } = OFFLINE_ENV as Record<string, string>
+      const run = (args: string[], served: number[]) => new Promise<Result>((done, fail) => {
+        replies = served
+        asked = 0
+        const c = spawn(process.execPath, [CLI, 'check', '--live', '--fixtures', corpus, ...args], {
+          cwd: ROOT,
+          env: { ...offline, TYPESAFE_API_KEY: 'dummy-not-a-key',
+            TYPESAFE_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}` },
+        })
+        let stdout = '', stderr = ''
+        c.stdout.on('data', d => { stdout += d })
+        c.stderr.on('data', d => { stderr += d })
+        c.on('error', fail)
+        c.on('close', (status, signal) => {
+          const r = { args, status, signal, stdout, stderr }
+          assertNoCrashLeak(r)
+          done(r)
+        })
+      })
+
+      it('prints the median, the min..max across the calls, and says the rows are medians', async () => {
+        const r = await run(['--repeat', '3'], [0.6, 0.62, 0.3])
+        expect(asked).toBe(3)
+        expect([r.status, r.stderr]).toEqual([0, ''])
+        expect(r.stdout).toBe('DRIFTED shift.destructive  recorded=0.9 live=0.6 delta=0.300 range="0.3..0.62"\n'
+          + '1 rows checked live against "jev-1.13.0", median of 3 calls per fixture: 1 drifted, 0 broken\n')
+      })
+
+      it('prints the default one-call run exactly as before --repeat existed', async () => {
+        const r = await run([], [0.6])
+        expect(asked).toBe(1)
+        expect([r.status, r.stderr]).toEqual([0, ''])
+        expect(r.stdout).toBe('DRIFTED shift.destructive  recorded=0.9 live=0.6 delta=0.300\n'
+          + '1 rows checked live against "jev-1.13.0": 1 drifted, 0 broken\n')
+      })
     })
   })
 

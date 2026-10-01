@@ -397,7 +397,7 @@ describe('validateResponse', () => {
     expect(partial.map(i => [i.code, i.severity])).toEqual([['usage_missing', 'warn']])
   })
 
-  // E0 item 2. `res.model` was never read, so anything that speaks the wire format — a local
+  // `res.model` was never read, so anything that speaks the wire format — a local
   // encoder behind TYPESAFE_BASE_URL, a misrouted proxy — could answer in Jev's place and the
   // verdict was computed from a model no threshold in this repo was measured on.
   describe('model_unexpected', () => {
@@ -482,6 +482,14 @@ describe('validateResponse', () => {
       })
       expect(issues, `${f.id}: ${issues.map(i => `${i.path}: ${i.message}`).join('; ')}`).toEqual([])
     }
+  })
+})
+
+// The quoter validateResponse prints a model ID with is shared with scripts/rerecord.ts, which
+// is not a reason to publish it: whatever index.ts exports is something a caller may import.
+describe('the package API', () => {
+  it('does not export the model-ID quoter', async () => {
+    expect(await import('../src/index.js')).not.toHaveProperty('quoted')
   })
 })
 

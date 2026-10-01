@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { validateProgram, lintProgram, type Program } from '../src/ir.js'
+import { readFileSync } from 'node:fs'
+import { validateProgram, lintProgram, findTieBreaks, type Program } from '../src/ir.js'
 import { loadFixtures } from '../src/check.js'
 
 const prog = (over: Partial<Program> = {}): Program => ({
@@ -269,14 +270,20 @@ describe('lintProgram — the decomposition law', () => {
     expect(lintProgram(p)).toEqual([])
   })
 
-  it('warns when one decision logically determines another', () => {
+  // A declared dependency used to be a warning. Its one measurement, a recorded `rule_conflict`
+  // answer contradicting the `decision` head beside it, was re-recorded without that head, and
+  // a check whose evidence leaves the corpus is removed, not reworded. If a recording shows
+  // the contradiction again, the check can come back citing it.
+  it('reports nothing for a declared dependency, since no recording shows the contradiction', () => {
     const p = prog()
     p.decisions.push({ id: 'rule_conflict', kind: 'choice', instructions: 'Which rule wins?',
       criteria: { exception_wins: 'the documented exception governs', rule_wins: 'the base rule governs' } })
-    p.decisions.push({ id: 'should_deny', kind: 'noul',
-      instructions: 'Should this be denied given the rule conflict?', dependsOn: ['rule_conflict'] })
-    const issues = lintProgram(p)
-    expect(issues.some(i => i.code === 'dependent_questions')).toBe(true)
+    p.decisions.push({ id: 'command_is_read_only', kind: 'noul',
+      instructions: 'Does the command only read files?', dependsOn: ['rule_conflict'] })
+    expect(lintProgram(p)).toEqual([])
+    expect(validateProgram(p)).toEqual([])
+    const f = corpus.find(x => x.id === 'self-contradicting-rule-file-host-vs-container')!
+    expect(f.measured.answers).not.toHaveProperty('decision')
   })
 
   it('warns on a question spanning two scopes', () => {
@@ -572,7 +579,7 @@ describe('validateProgram — a noul criteria key that is neither true nor false
     expect(validateProgram(withCriteria(['yes', 'no'])).map(i => i.code)).toEqual(['criteria_shape'])
   })
 
-  it('costs the corpus nothing: 244 nouls, and every key is true or false', () => {
+  it('costs the corpus nothing: 250 nouls, and every key is true or false', () => {
     const keys = new Set<string>()
     let nouls = 0
     for (const f of corpus) {
@@ -582,7 +589,7 @@ describe('validateProgram — a noul criteria key that is neither true nor false
         for (const k of Object.keys(q.criteria ?? {})) keys.add(k)
       }
     }
-    expect(nouls).toBe(244)
+    expect(nouls).toBe(250)
     expect([...keys].sort()).toEqual(['false', 'true'])
   })
 })
@@ -633,7 +640,7 @@ describe('lintProgram — the collapsed verdict is not a choice-only defect', ()
         fired.push(`${f.id}.${i.path}:${kindOf.get(i.path.replace('decisions.', ''))}`)
       }
     }
-    expect(fired).toHaveLength(27)
+    expect(fired).toHaveLength(26)
     expect(fired.filter(x => !x.endsWith(':choice'))).toEqual([])
   })
 })
@@ -843,7 +850,7 @@ describe('lint prose — every measurement a message cites is recorded in fixtur
   it('collapsed_verdict — the corpus refutes the population claim the message used to make', () => {
     // "collapsed verdict questions return near-uniform distributions" is a claim about the
     // population, and this corpus is the population. It is false here: the heads this rule
-    // fires on have a median confidence of 0.86 and 28 of 29 answered correctly. The rule
+    // fires on have a median confidence of 0.93. The rule
     // survives on a different measurement — that the head's confidence carries no signal —
     // and the message now says that instead.
     const fired: number[] = []
@@ -866,8 +873,8 @@ describe('lint prose — every measurement a message cites is recorded in fixtur
       ? fired[(fired.length - 1) / 2]
       : (fired[fired.length / 2 - 1] + fired[fired.length / 2]) / 2
 
-    expect(fired).toHaveLength(27)
-    expect(median).toBe(0.86)                 // not near-uniform, and not close to it
+    expect(fired).toHaveLength(26)
+    expect(median).toBe(0.93)                 // not near-uniform, and not close to it
     expect(fired.filter(c => c < 0.3)).toHaveLength(1)
 
     // What IS true, and what the message is now allowed to say.
@@ -944,17 +951,31 @@ describe('lint prose — every measurement a message cites is recorded in fixtur
     for (const n of ['0.25', '0.10', '0.14', '0.96', '0.87', '0.85']) expect(m, n).toContain(n)
   })
 
-  it('dependent_questions — a probability and a confidence are different numbers', () => {
+  // Nothing in fixtures/ records what a dropped tie-break costs, so this message carries no
+  // number at all. It names two recorded prompts that state a tie-break, and cites only the
+  // prompt sentence: scripts/rerecord.ts never writes llm_prompt, while it does rewrite the
+  // questions, so a claim about what the recorded question says would be falsified by the next
+  // re-record. That the old questions dropped them is pinned in test/tiebreak.test.ts instead.
+  it('tiebreak_unsurfaced — the two recorded prompts it names, and no number', () => {
     const p = prog()
-    p.decisions.push({ id: 'should_deny', kind: 'noul',
-      instructions: 'Should this be denied?', dependsOn: ['rule_conflict'] })
-    const m = messageFor('dependent_questions', p)
-    const conflict = choice('self-contradicting-rule-file-host-vs-container', 'rule_conflict')
-    const decision = choice('self-contradicting-rule-file-host-vs-container', 'decision')
-    expect(conflict.choice).toBe('documented_exception_wins')
-    expect(conflict.probabilities.documented_exception_wins).toBe(0.52)
-    expect(decision.probabilities.deny).toBe(0.82)
-    expect(m).toContain('documented_exception_wins at probability 0.52')
-    expect(m).toContain('deny at probability 0.82')
+    p.decisions.push({ id: 'change_kind', kind: 'choice', instructions: 'Is it a fix or a refactor?',
+      criteria: { fix: 'It repairs a bug.', refactor: 'It restructures code.' } })
+    const hit = lintProgram(p, 'Call it a fix rather than a refactor.').find(i => i.code === 'tiebreak_unsurfaced')
+    if (!hit) throw new Error('lintProgram produced no tiebreak_unsurfaced for this program')
+    const m = hit.message
+    expect(m.replace(/^Line \d+/, ''), 'a number no fixture records').not.toMatch(/\d/)
+    expect(m).toContain('fixtures/agent-harness-rules.json')
+    expect(m, 'a claim about recorded questions, which a re-record rewrites').not.toMatch(/recorded (decision )?question|says which option wins/)
+
+    type Recorded = { id: string; llm_prompt: string }
+    const file: Recorded[] = JSON.parse(readFileSync('fixtures/agent-harness-rules.json', 'utf8')).fixtures
+    for (const [id, phrase] of [['surgical-changes-no-drive-by-refactor', 'ask rather than deny'],
+      ['read-before-edit-letter-vs-spirit', 'say ask']]) {
+      expect(m).toContain(`${id}'s`)
+      expect(m).toContain(`"${phrase}"`)
+      const f = file.find(x => x.id === id)
+      if (!f) throw new Error(`no fixture ${id}`)
+      expect(findTieBreaks(f.llm_prompt).some(t => t.sentence.includes(phrase)), id).toBe(true)
+    }
   })
 })

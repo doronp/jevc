@@ -32,7 +32,8 @@ regenerated `examples/GALLERY.md`.
 
 - **Fixtures are recordings.** `state` is the exact input a measured response was produced
   against. Never edit a `state` or a `measured.answers` value to make an assertion pass —
-  re-record with `jevc check --live`, or delete the fixture. See [AGENTS.md](AGENTS.md).
+  stage the fix in `fixtures-staging/` and re-record it with `scripts/rerecord.ts`, then
+  review each `pending-review` result, or delete the fixture. See [AGENTS.md](AGENTS.md).
 - **Rule text quoted in a fixture comes from Apache-2.0 or MIT sources only,** and the row
   goes into [`fixtures/ATTRIBUTION.md`](fixtures/ATTRIBUTION.md) in the same change.
 - **`docs/targets/*.md` is the contract the emitters are written against.** An emitter
@@ -46,8 +47,9 @@ regenerated `examples/GALLERY.md`.
 
 A fixture is only worth adding if it was measured. The shape is one recorded call: the
 natural-language prompt it replaces, its provenance with a named source, the questions, the
-measured answers, and `expect` bands around them. Bands, not equalities — repeated identical
-calls drift by about ±0.01.
+measured answers, and `expect` bands around them. Bands, not equalities — identical calls are
+not guaranteed to return identical answers, and one recorded call does not show how far an
+answer moves. `jevc check --live --repeat <n>` diffs the median of n calls, which measures it.
 
 Adversarial negatives are as valuable as positives. A corpus of only true positives rewards
 a transpiler that denies everything.

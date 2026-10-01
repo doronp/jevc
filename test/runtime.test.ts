@@ -420,7 +420,7 @@ describe('askModel — a missing answer is reportable, not fatal', () => {
   })
 })
 
-// E0 item 1: the model a library call asks for when the caller names none. Asserted on the
+// The model a library call asks for when the caller names none. Asserted on the
 // request the client actually receives, not on emitJson's default in isolation — the
 // runtime had its own `?? 'jev-latest'` and that is the one a hook such as the sample gate
 // inherits.
@@ -449,7 +449,7 @@ describe('askModel — the model it asks for', () => {
   })
 })
 
-// E0 item 2, the ship gate. The request pins jev-1.13.0, but a pinned request proves nothing
+// The ship gate. The request pins jev-1.13.0, but a pinned request proves nothing
 // about who answered: TYPESAFE_BASE_URL can point the SDK at anything that speaks the wire
 // format, and `res.model` was never read. Fail closed by default; JEVC_ALLOW_MODEL is the one
 // explicit opt-in, and it is read per call, so each test sets and restores it.

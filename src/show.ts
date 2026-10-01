@@ -62,6 +62,10 @@ export interface ShowOptions {
   promptChars?: number
 }
 
+// scripts/rerecord.ts dates a re-recording at the head of `notes`; the rest is the first batch.
+const FIRST_BATCH = '2026-09-18'
+const recordedOn = (f: Fixture) => /^Re-recorded (\d{4}-\d{2}-\d{2})/.exec(f.measured.notes ?? '')?.[1] ?? FIRST_BATCH
+
 export function renderFixture(f: Fixture, opts: ShowOptions = {}): string {
   const ids = Object.keys(f.questions)
   const pad = Math.max(...ids.map(i => i.length))
@@ -88,7 +92,9 @@ export function renderFixture(f: Fixture, opts: ShowOptions = {}): string {
   for (const id of ids) out.push(questionLine(id, f.questions[id], pad))
   out.push('')
 
-  out.push(`MEASURED — one call, ${f.measured.model}, recorded 2026-09-18`)
+  // scripts/rerecord.ts writes `pending-review` and dates the re-recording in `notes`.
+  const pending = f.measured.verdict === 'pending-review'
+  out.push(`MEASURED — one call, ${f.measured.model}, ${pending ? 're-recorded (see notes)' : `recorded ${recordedOn(f)}`}`)
   for (const id of ids) out.push(answerLine(id, f.measured.answers[id], pad))
   out.push('')
 
@@ -96,12 +102,22 @@ export function renderFixture(f: Fixture, opts: ShowOptions = {}): string {
   // not a reducer verdict, and labelling it one would be a false claim of exactly the kind
   // this repo exists to catch. A fixture records questions and answers; it carries no
   // `reduce`, so there is no computed verdict here to print. The reducer is the caller's.
-  out.push('DID THE PREDICTION HOLD?')
-  out.push(f.measured.verdict === 'keep'
-    ? '  Yes — the thresholds written before the call survived it unchanged. 24 of 60 did.'
+  // A re-recording's thresholds were written after an earlier recording of the same fixture
+  // had been seen, and some were set from it, so they are not called a prediction.
+  const again = recordedOn(f) !== FIRST_BATCH
+  out.push(again || pending ? 'DID THE THRESHOLDS HOLD?' : 'DID THE PREDICTION HOLD?')
+  out.push(pending
+    ? '  Not reviewed yet — re-recorded after its questions were fixed, and the thresholds\n'
+      + '  have not been checked against the new answers.'
+    : again
+    ? f.measured.verdict === 'keep'
+      ? '  Held — the thresholds in place before this re-recording survived it unchanged.'
+      : '  No — the thresholds in place before this re-recording were adjusted after it; the\n'
+        + '  notes below say how.'
+    : f.measured.verdict === 'keep'
+    ? '  Yes — the thresholds written before the call survived it unchanged.'
     : '  No — the thresholds written before the call were wrong, and were recalibrated to'
-      + '\n  what the model actually returned. So were 36 of the 60, which is why this'
-      + '\n  corpus is measured rather than written.')
+      + '\n  what the model actually returned.')
   out.push('')
 
   if (f.rationale) {
@@ -151,7 +167,14 @@ export function renderFixtureMarkdown(f: Fixture, opts: ShowOptions = {}): strin
     out.push(`| \`${id}\` | ${kind} | ${ans} |`)
   }
   out.push('')
-  out.push(f.measured.verdict === 'keep'
+  const again = recordedOn(f) !== FIRST_BATCH
+  out.push(f.measured.verdict === 'pending-review'
+    ? '**Not reviewed yet.** Re-recorded after its questions were fixed; the thresholds await review.'
+    : again
+    ? f.measured.verdict === 'keep'
+      ? '**Held.** The thresholds in place before this re-recording survived it unchanged.'
+      : '**Did not hold.** The thresholds in place before this re-recording were adjusted after it; `jevc show` prints the notes that say how.'
+    : f.measured.verdict === 'keep'
     ? '**Prediction held.** The thresholds written before the call survived it unchanged.'
     : '**Prediction did not hold.** The thresholds were recalibrated to the measured answers.')
   out.push('')
@@ -167,8 +190,9 @@ export function renderGallery(fixtures: Fixture[]): string {
   const out: string[] = []
   out.push('# The corpus, as a gallery')
   out.push('')
+  const later = fixtures.filter(f => recordedOn(f) !== FIRST_BATCH).length
   out.push(`Every one of these ${fixtures.length} entries is a real prompt from a real harness, run once`)
-  out.push('against `jev-1.13.0` on 2026-09-18 and recorded. Nothing here is written by hand or')
+  out.push(`against \`jev-1.13.0\` on ${FIRST_BATCH}${later ? ` (${later} re-recorded later; \`jevc show <id>\` prints the date)` : ''} and recorded. Nothing here is written by hand or`)
   out.push('predicted — the answers are what the model returned, and `npm test` asserts them.')
   out.push('')
   out.push('This file is generated. Run `npm run gallery` to rebuild it from `fixtures/`.')
