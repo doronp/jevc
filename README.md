@@ -16,6 +16,10 @@ It is for anyone shipping a gate an LLM currently judges — a Claude Code `PreT
 a tool-call guard, a model router, an output verifier — who needs that decision to be
 reproducible and reviewable.
 
+Related, by the same author: if the decision is one label from a fixed list that your LLM already makes
+at volume (routing, triage, moderation), [NoGPU](https://nogpu.dev) measures for free, on your own past
+decisions, how many of them a small CPU model can take alone.
+
 ## Start here
 
 ```bash
